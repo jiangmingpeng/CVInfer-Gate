@@ -1,0 +1,8 @@
+build/
+.git/
+.vscode/
+*.mp4
+*.avi
+*.jpg
+*.pt
+docker/

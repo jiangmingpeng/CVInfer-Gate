@@ -1,0 +1,10 @@
+model:
+  xml_path: "models/yolov8n.xml"
+  bin_path: "models/yolov8n.bin"
+  labels_path: "models/labels.txt"
+  input_width: 640
+  input_height: 640
+
+thresholds:
+  conf: 0.25     # 置信度阈值
+  nms: 0.45      # 非极大值抑制阈值

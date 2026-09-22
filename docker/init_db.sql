@@ -1,0 +1,21 @@
+CREATE DATABASE IF NOT EXISTS cv_infer;
+USE cv_infer;
+
+-- 检测记录表
+CREATE TABLE IF NOT EXISTS detections (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    class_id INT NOT NULL,
+    label VARCHAR(50) NOT NULL,
+    confidence FLOAT NOT NULL,
+    x1 INT NOT NULL, y1 INT NOT NULL,
+    x2 INT NOT NULL, y2 INT NOT NULL,
+    detect_time DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 告警记录表
+CREATE TABLE IF NOT EXISTS alerts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    alert_type VARCHAR(50) NOT NULL,
+    description VARCHAR(255),
+    alert_time DATETIME DEFAULT CURRENT_TIMESTAMP
+);

@@ -1,0 +1,25 @@
+```text
+# 编译产物
+build/
+*.o
+*.a
+*.so
+
+# 测试视频与图片
+*.mp4
+*.avi
+*.jpg
+*.png
+
+# 模型权重 (如果文件太大，不建议传 GitHub，只传 xml 和 bin)
+*.pt
+*.onnx
+
+# 配置文件 
+config/config.yaml
+
+
+# Python 缓存
+__pycache__/
+*.pyc
+web_gateway/*.log
