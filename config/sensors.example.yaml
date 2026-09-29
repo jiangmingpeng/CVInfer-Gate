@@ -1,0 +1,60 @@
+# ============================================================
+# 多模态传感器 / 决策级融合 配置模板 (T23-T26)
+# ------------------------------------------------------------
+# 用法: 把下面的 sensors: 与 fusion: 两个段**合并进** config/config.yaml
+#       (本文件不会被程序自动加载; 与 config/review.example.yaml 同例)。
+#
+# 说明:
+#   * sensors: 只列**非视频**传感器(雷达/红外)。视频仍由 video: 段描述,
+#     并自动作为融合的"时间基准"(见 sensor/VideoSensorSource.h)。
+#   * fusion.enabled=true 且 sensors: 非空时才会启用融合; 否则行为与纯视觉一致。
+#   * 融合是**决策级**: 各模态各自出结论后再融合, 不共享中间特征。
+#     融合只调整目标的 confidence, 并补充 distance_m 等元数据;
+#     原始视觉置信度保存在 DetectionResult::vision_confidence(便于追溯)。
+# ============================================================
+
+sensors:
+  # ---- 雷达: 只给距离/方位(无像素框) => 融合走"标签关联"分支 ----
+  - kind: radar
+    name: radar_front
+    backend: stub          # stub = 无硬件合成源; file = 逐行回放
+    rate_hz: 10
+    labels: ["person"]     # 标签白名单(空 = 不过滤)
+
+  # ---- 红外: 带热目标框 => 融合走"IoU 关联"分支 ----
+  - kind: infrared
+    name: ir_1
+    backend: stub
+    rate_hz: 8
+    # backend: file 时必填 path, 回放文件格式(每行 = 一次采样/单目标):
+    #   [timestamp_ms,]label,confidence[,distance_m[,x,y,w,h]]
+    # 例:
+    #   1700000000000,person,0.72,6.1,320,180,110,260
+    #   1700000000100,person,0.66,6.4,            <- 省略框(只给标签+置信度)
+    #   1700000000200,person,0.80                  <- 省略时间戳 => 用读取时刻
+    # '#' 开头与空行忽略; 多目标写成同一时间戳的多行即可。
+    # path: config/ir_targets.txt
+
+fusion:
+  enabled: false           # 置 true 且 sensors 非空才启用融合
+  level: decision          # 目前仅支持 decision(决策级)
+  time_tolerance_ms: 50    # 时间对齐容差窗口(±ms): |采样时刻-视频时刻| <= 该值才参与融合
+  match_iou: 0.30          # 视觉框 vs 传感器框(红外)的关联阈值; 传感器无框(雷达)时退化为标签关联
+  sensor_weight: 0.35      # 加权融合中传感器的权重 w:
+                           #   fused_conf = (1-w)*vision_conf + w*sensor_conf
+                           # 调大 => 更信任雷达/红外; 调小 => 更信任视觉
+  emit_sensor_only: false  # 未关联的传感器目标是否作为新目标输出
+                           #   (仅当其自带像素框时才输出; 无框的雷达点只计数, 避免假框)
+  adopt_sensor_label: false# 关联成功后是否用传感器标签覆盖视觉标签
+  buffer_capacity: 256     # 采样时间缓冲容量(满则丢最旧; 实时性优先)
+
+# ------------------------------------------------------------
+# 调参建议:
+#   1) 先确认 video 链路单独跑通, 再开 fusion.enabled;
+#   2) time_tolerance_ms 至少覆盖"传感器采样间隔 + 推理耗时", 否则大量目标
+#      会因"无对齐采样"而得不到融合(统计里的 aligned/targets 会偏低);
+#   3) sensor_weight: 雷达/红外在本场景若可靠性高于视觉可提到 0.5;
+#      不确定时先用 0.3 左右(以视觉为主);
+#   4) 想验证融合是否生效, 看退出时的"融合统计: matched=... "
+#      matched>0 说明确实发生了关联与置信度融合。
+# ------------------------------------------------------------

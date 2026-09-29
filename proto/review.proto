@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package review;
+
+// ============================================================
+// 大模型/外部复核服务契约 (T20)
+// ------------------------------------------------------------
+// 说明: 本服务由"复核方"(如部署了大模型/VLM 的进程)实现;
+//       本仓库只实现客户端(见 src/review/GrpcLlmReviewer.*)。
+//       复用 gRPC, 不引入 HTTP/SDK 等新依赖。
+//
+// 与 inference.proto(DetectionService, 本仓库作为服务端)方向相反:
+//       这里本仓库是客户端, 外部大模型服务是服务端。
+// ============================================================
+
+message ReviewRequest {
+    bytes  image_jpeg = 1;   // 目标 ROI 的 JPEG 编码字节
+    string label      = 2;   // 主模型标签(如 "person")
+    float  confidence = 3;   // 主模型置信度
+    uint64 frame_seq  = 4;   // 帧序号(上层按此回收结果)
+    string prompt     = 5;   // 业务提示(可空), 如"判断该人员是否未佩戴安全帽"
+}
+
+message ReviewResponse {
+    bool   ok         = 1;   // 复核服务是否成功处理该请求
+    bool   confirmed  = 2;   // 是否确认(确认 = 应告警)
+    string label      = 3;   // 复核标签(如 "no_helmet")
+    float  confidence = 4;   // 复核置信度
+    string reason     = 5;   // 复核理由(可空, 便于留痕)
+}
+
+service ReviewService {
+    rpc Review (ReviewRequest) returns (ReviewResponse);
+}

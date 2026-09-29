@@ -1,12 +1,10 @@
 #include "service/DetectionServiceImpl.h"
 #include <opencv2/opencv.hpp>
 
-DetectionServiceImpl::DetectionServiceImpl(OpenVINOEngine& engine, 
-                                           YoloPostProcessor& post_processor,
-                                           const std::vector<std::string>& labels)
-    : engine_(engine), post_processor_(post_processor), labels_(labels) {}
+DetectionServiceImpl::DetectionServiceImpl(IDetector& detector)
+    : detector_(detector) {}
 
-grpc::Status DetectionServiceImpl::Detect(grpc::ServerContext* context,
+grpc::Status DetectionServiceImpl::Detect(grpc::ServerContext* /*context*/,
                                           const inference::DetectRequest* request,
                                           inference::DetectResponse* response) {
     // 1. 把收到的二进制数据解码为 cv::Mat
@@ -19,17 +17,21 @@ grpc::Status DetectionServiceImpl::Detect(grpc::ServerContext* context,
         return grpc::Status::OK;
     }
 
-    // 2. 推理与后处理
-    std::vector<ov::Tensor> outputs;
-    if (!engine_.infer(img, outputs)) {
+    // 2. 借引擎/推理/后处理统一在模型内部完成 (YoloDetector); 与流水线线程安全共享
+    std::vector<DetectionResult> detections;
+    const DetectStatus status = detector_.detect(img, detections);
+    if (status == DetectStatus::Busy) {
+        response->set_success(false);
+        response->set_message("推理引擎繁忙, 请稍后重试");
+        return grpc::Status::OK;
+    }
+    if (status != DetectStatus::Ok) {
         response->set_success(false);
         response->set_message("推理失败");
         return grpc::Status::OK;
     }
 
-    auto detections = post_processor_.process(outputs[0], img.size(), labels_);
-
-    // 3. 组装响应
+    // 4. 组装响应
     response->set_success(true);
     response->set_message("检测成功");
     for (const auto& det : detections) {

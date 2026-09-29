@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 import grpc
@@ -5,10 +6,50 @@ from flask import Flask, request, Response, render_template_string
 from inference_pb2 import DetectRequest
 from inference_pb2_grpc import DetectionServiceStub
 
+# ---------------------- T10: 运行参数全部来自环境变量 ----------------------
+# 去除硬编码 IP：不再把 C++ 服务地址写死在源码里。
+# 可选：若安装了 python-dotenv，则自动加载同目录 .env（本地开发方便）。
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+
+def _env_str(name, default):
+    value = os.environ.get(name)
+    return value if value not in (None, "") else default
+
+
+def _env_int(name, default):
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(f"环境变量 {name}={value!r} 不是合法整数")
+
+
+# C++ gRPC 服务地址 host:port（默认本地，避免写死任何真实 IP）
+GRPC_SERVER = _env_str("GRPC_SERVER", "localhost:50051")
+# 调用超时(ms)，与 C++ 端 grpc.timeout_ms 对齐
+GRPC_TIMEOUT_MS = _env_int("GRPC_TIMEOUT_MS", 5000)
+# 收发消息上限(MB)，与 C++ 端 grpc.max_message_size_mb 对齐（默认 4MB 会挡住大图）
+GRPC_MAX_MSG_MB = _env_int("GRPC_MAX_MSG_MB", 16)
+# Flask 监听地址与端口
+WEB_HOST = _env_str("WEB_HOST", "0.0.0.0")
+WEB_PORT = _env_int("WEB_PORT", 8080)
+
 app = Flask(__name__)
 
-# 1. 连接 Docker 里映射出来的 C++ gRPC 服务
-channel = grpc.insecure_channel('106.15.88.152:50051')
+# 1. 连接 C++ gRPC 服务（地址/超时/消息上限均由环境变量注入）
+channel = grpc.insecure_channel(
+    GRPC_SERVER,
+    options=[
+        ("grpc.max_receive_message_length", GRPC_MAX_MSG_MB * 1024 * 1024),
+    ],
+)
 stub = DetectionServiceStub(channel)
 
 # 2. 一个极简的前端 HTML 页面（原生写在代码里，免去建模板文件）
@@ -43,7 +84,7 @@ def detect():
     # 4.1 构造 gRPC 请求并调用 C++
     try:
         request_grpc = DetectRequest(image_data=img_bytes)
-        response = stub.Detect(request_grpc)
+        response = stub.Detect(request_grpc, timeout=GRPC_TIMEOUT_MS / 1000.0)
     except grpc.RpcError as e:
         return f"C++ 服务调用失败: {e.details()}", 500
     
@@ -66,5 +107,8 @@ def detect():
     return Response(buffer.tobytes(), mimetype='image/jpeg')
 
 if __name__ == '__main__':
-    # 监听 0.0.0.0 允许外部访问，端口 8080
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    # 监听地址与端口来自环境变量（默认 0.0.0.0:8080）
+    print(f"[web_gateway] gRPC -> {GRPC_SERVER} "
+          f"(timeout={GRPC_TIMEOUT_MS}ms, max_msg={GRPC_MAX_MSG_MB}MB)")
+    print(f"[web_gateway] HTTP  -> {WEB_HOST}:{WEB_PORT}")
+    app.run(host=WEB_HOST, port=WEB_PORT, debug=False)

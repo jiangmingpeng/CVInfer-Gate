@@ -1,0 +1,1 @@
+exit=0 log --oneline -20git statusgit log --oneline -10

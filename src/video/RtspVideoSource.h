@@ -20,6 +20,8 @@ public:
 
     int getWidth() const { return codec_ctx_ ? codec_ctx_->width : 0; }
     int getHeight() const { return codec_ctx_ ? codec_ctx_->height : 0; }
+    // [T29] 源真实帧率(来自流元数据 avg_frame_rate); 拿不到返回 0
+    double getFps() const override;
 
 private:
     AVFormatContext* fmt_ctx_ = nullptr;

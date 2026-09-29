@@ -1,0 +1,122 @@
+# ============================================================
+# 局域网 RTSP 运行配置 (T28)
+# ------------------------------------------------------------
+# 用法(在 build/ 目录下, 建议用**绝对路径**, 免得被 POST_BUILD 的 config/ 覆盖绕晕):
+#     ./CVInfer-Gate --config /home/JMP/CVInfer-Gate/config/config.rtsp.yaml
+#
+# 只需改下面 video.source_path 一行, 换成你的摄像头地址。
+# 与 config/config.yaml 完全独立, 互不影响(file 基线随时可用 `./CVInfer-Gate` 跑回来)。
+#
+# 先用 ffprobe 确认地址/鉴权(比启动整个程序快得多):
+#     ffprobe -rtsp_transport tcp -i "rtsp://..." -select_streams v -show_streams
+#
+# [T31] 本机 mediamtx 工作流(推 -> 拉), 顺序别搞反:
+#   1) 起 mediamtx(默认 rtspAddress 为 :8554; 若绑成 127.0.0.1:8554 则公网推流进不来)
+#   2) 推一路进来(<mp4> 换成素材; 用 -c copy 几乎不耗 CPU, 别转码去抢推理的核):
+#        ffmpeg -re -stream_loop -1 -i <mp4> -c copy -f rtsp rtsp://127.0.0.1:8554/live
+#   3) 验证能拉: ffprobe -rtsp_transport tcp -i rtsp://127.0.0.1:8554/live
+#   4) 最后才跑本程序(上一步通了再跑, 否则只会看到“视频源打开失败”降级)
+#   ⚠ mediamtx 对“当前没有推流”的 path 一律返回 404 Not Found —— 那是“没人推”的信号,
+#     不是路径拼错的信号。推流路径必须与下面 source_path **完全一致**:
+#     推 /live 却拉 /live/stream 会永远 404。推流成功后 mediamtx 日志会出现 "is publishing to path ...".
+# ============================================================
+
+log:
+  level: info
+  file: ""                # 空 = 仅输出到控制台
+
+# ============================================================
+# 视频源: 局域网 RTSP
+# ------------------------------------------------------------
+# ⚠ 两个键**都要**改:
+#     source_type: rtsp  -> 走 RtspVideoSource(FFmpeg 直连, 已强制 tcp + 5s stimeout)
+#     只改 source_path 而 source_type 留 "file" -> 走 FileVideoSource(cv::VideoCapture,
+#     默认 UDP、无超时): 多半也能连上, 但容易丢包/卡死, 且不打印分辨率日志。
+#
+# ⚠ RTSP 是**实时流**, 抽帧请用 frame_interval, 不要用 target_fps 限速:
+#     target_fps: 0 + frame_interval: 3  => 全速读流、每 3 帧推理 1 帧(不累积延迟)  ← 推荐
+#     target_fps: 10                     => 解码线程被 sleep 限速, 没读走的帧堆在
+#                                           TCP 缓冲里, 延迟越积越大(画面越来越"过去时")
+#
+# ⚠ 结果视频不会自动结束(RTSP 没有"读完"这个概念), MJPG 约 1~3MB/s;
+#   长时间跑留意磁盘:  ls -l output.avi
+#   只想验证链路就限时跑:  timeout 60 ./CVInfer-Gate --config .../config.rtsp.yaml
+#
+# ⚠ 已知限制(R-5): RtspVideoSource **没有断流重连**。摄像头断电/拔网线后
+#   decode 线程会退出 -> 流水线静默停止(程序不退出, gRPC 仍可用);
+#   若它正阻塞在 av_read_frame, Ctrl+C 后可能卡在 pipeline.stop() -
+#   等几秒无反应就 `kill` 掉进程重跑。
+# ============================================================
+video:
+  source_type: rtsp
+  source_path: "rtsp://127.0.0.1:8554/live"   # ← 改成你的地址
+  target_fps: 0            # RTSP 必须 0(见上)
+  frame_interval: 3        # 每 3 帧取 1 帧推理; 想全帧推理就设 1
+  queue:
+    max_size: 24
+    policy: drop_oldest
+
+pipeline:
+  worker_threads: 2
+
+# ---- ⚠ 请与本机 config/config.yaml 保持一致(不一致只会连库失败并降级写 CSV) ----
+database:
+  host: tcp://127.0.0.1:3306
+  user: root
+  password: "12345678jmp"      # ← TODO: 改成 config/config.yaml 里的密码
+  dbname: cv_infer
+  pool_size: 4
+  batch_size: 20
+  flush_interval_ms: 1000
+  max_retries: 10
+  fallback_path: db_fallback.csv
+  reconnect_interval_ms: 30000
+  reconnect_after_writes: 100
+
+grpc:
+  port: 50051
+  timeout_ms: 5000
+  max_message_size_mb: 16
+  worker_threads: 0
+  keepalive_time_ms: 20000
+
+# ---- Phase B: 本仓库没有 role=classifier 的模型, 开了也会退化成单模型 ----
+cascade:
+  enabled: false
+
+# ============================================================
+# Phase C: 想在 RTSP 上验复核, 把 enabled 改 true 并起 mock:
+#   python3 scripts/mock_review_server.py --port 50052 --mode auto
+# ============================================================
+review:
+  enabled: false
+  endpoint: "127.0.0.1:50052"
+  timeout_ms: 1000
+  queue_size: 64
+  worker_threads: 2
+  trigger:
+    labels: ["person"]
+    min_conf: 0.50
+    max_conf: 1.00
+  roi_padding: 0.10
+  prompt: "判断该人员是否未佩戴安全帽"
+  alert_type: "安全帽缺失"
+  alert_on_failure: true
+
+# ---- Phase D: 想在 RTSP 上验融合, 把 fusion.enabled 改 true 即可(stub 雷达) ----
+sensors:
+  - kind: radar
+    name: radar_front
+    backend: stub
+    rate_hz: 10
+    labels: ["person"]
+
+fusion:
+  enabled: false
+  level: decision
+  time_tolerance_ms: 100   # RTSP + frame_interval:3 时帧间隔约 120ms, 窗口太窄会经常对不上
+  match_iou: 0.30
+  sensor_weight: 0.35
+  emit_sensor_only: false
+  adopt_sensor_label: false
+  buffer_capacity: 256

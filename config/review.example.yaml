@@ -1,0 +1,39 @@
+# ============================================================
+# 大模型异步复核配置示例 (T20-T22) —— 本文件不会被程序自动加载!
+# ------------------------------------------------------------
+# 程序只读取 config/config.yaml。请把下面的 review: 段
+# 合并到 config/config.yaml 顶层(与 video:/database:/grpc:/cascade: 同级)。
+#
+# 语义:
+#   命中触发条件的目标(告警候选)被裁剪 ROI -> 异步送复核服务 ->
+#   **复核确认后才 writeAlert 告警**; 复核否决则不告警;
+#   复核不可用(超时/失败)默认不告警(可用 alert_on_failure 改为兜底告警)。
+#
+# 关键约束:
+#   - 全程异步: 画框/写视频/检测入库不受影响, 流水线绝不阻塞。
+#   - 有界队列 + DropOldest: 复核积压时丢弃最旧任务, submit() 永不阻塞。
+#   - 每次调用带 deadline = timeout_ms。
+#
+# 复核服务(server 端)需实现 proto/review.proto 的 review.ReviewService:
+#   rpc Review(ReviewRequest) returns (ReviewResponse)
+#   本仓库只提供客户端实现(GrpcLlmReviewer)。
+# ============================================================
+
+review:
+  enabled: false                 # 置 true 才启用大模型异步复核
+  endpoint: "llm:50052"          # 复核服务 gRPC 地址(host:port)
+  timeout_ms: 3000               # 单次复核超时(deadline)
+  queue_size: 128                # 有界队列容量(满则丢最旧)
+  worker_threads: 2              # 复核并发线程数
+
+  # ---- 触发条件(告警候选) ----
+  trigger:
+    labels: ["person"]           # 只复核这些类别(留空/省略 = 所有类别)
+    min_conf: 0.50               # 触发下界(含)
+    max_conf: 1.00               # 触发上界(不含)
+
+  # ---- 复核细节 / 策略 ----
+  roi_padding: 0.10              # ROI 相对目标宽高外扩 10% 再裁剪
+  prompt: "判断该人员是否未佩戴安全帽"   # 透传给复核服务的业务提示(可空)
+  alert_type: "安全帽缺失"        # 确认后写入的告警类型
+  alert_on_failure: false        # 复核不可用(超时/失败)时是否仍告警

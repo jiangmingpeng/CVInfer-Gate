@@ -1,13 +1,31 @@
-#include <iostream>
+#include <chrono>
+#include <cstdlib>
 #include <fstream>
+#include <iostream>
+#include <string>
+#include <vector>
+
 #include <opencv2/opencv.hpp>
 #include <grpcpp/grpcpp.h>
+#include <grpc/grpc.h>   // GRPC_ARG_* keepalive 常量
+
 #include "inference.grpc.pb.h"
 
 int main(int argc, char** argv) {
-    // 1. 连接服务端
-    std::string server_address("106.15.88.152:50051");
-    auto channel = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
+    // 0. 参数: [server_addr] [timeout_ms]   (T8: 地址 / 超时可配)
+    const std::string server_address = (argc > 1) ? argv[1] : "127.0.0.1:50051";
+    const int timeout_ms = (argc > 2) ? std::atoi(argv[2]) : 5000;
+    const int max_msg_mb = 16;
+
+    // 1. 连接服务端 (T8: 消息大小上限 + keepalive, 与服务端保持一致)
+    grpc::ChannelArguments args;
+    args.SetMaxReceiveMessageSize(max_msg_mb * 1024 * 1024);
+    args.SetMaxSendMessageSize(max_msg_mb * 1024 * 1024);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 20000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 10000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
+    auto channel = grpc::CreateCustomChannel(
+        server_address, grpc::InsecureChannelCredentials(), args);
     auto stub = inference::DetectionService::NewStub(channel);
 
     // // 2. 读取一张本地图片（用之前生成的 output.jpg 测试即可）
@@ -40,9 +58,13 @@ int main(int argc, char** argv) {
 
     inference::DetectResponse response;
     grpc::ClientContext context;
+    // T8: 客户端 deadline, 超过 timeout_ms 直接返回 DEADLINE_EXCEEDED
+    context.set_deadline(std::chrono::system_clock::now() +
+                         std::chrono::milliseconds(timeout_ms));
 
     // 5. 发送请求
-    std::cout << "向服务端发送图片，大小: " << img_buffer.size() << " 字节..." << std::endl;
+    std::cout << "向 " << server_address << " 发送图片, 大小: "
+              << img_buffer.size() << " 字节, 超时: " << timeout_ms << " ms..." << std::endl;
     grpc::Status status = stub->Detect(&context, request, &response);
 
     // 6. 处理响应
@@ -59,6 +81,9 @@ int main(int argc, char** argv) {
     } else {
         std::cerr << "RPC 调用失败: " << status.error_code() 
                   << " - " << status.error_message() << std::endl;
+        if (status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
+            std::cerr << "（请求超时, 可增大第 2 个参数 timeout_ms, 或检查服务端负载）" << std::endl;
+        }
     }
 
     return 0;

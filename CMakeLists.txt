@@ -61,11 +61,14 @@ endif()
 
 # 2. 指定 proto 文件路径
 set(PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/inference.proto)
+set(REVIEW_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/review.proto)   # [T20] 复核服务契约
 
 # 3. 手动生成 C++ 代码（完全绕过 find_package(gRPC)）
 set(GRPC_GENERATED_SRCS
     ${CMAKE_CURRENT_BINARY_DIR}/inference.pb.cc
     ${CMAKE_CURRENT_BINARY_DIR}/inference.grpc.pb.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/review.pb.cc        # [T20]
+    ${CMAKE_CURRENT_BINARY_DIR}/review.grpc.pb.cc   # [T20]
 )
 
 add_custom_command(
@@ -75,8 +78,8 @@ add_custom_command(
          --cpp_out=${CMAKE_CURRENT_BINARY_DIR}
          -I ${CMAKE_CURRENT_SOURCE_DIR}/proto
          --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN}
-         ${PROTO_FILE}
-    DEPENDS ${PROTO_FILE}
+         ${PROTO_FILE} ${REVIEW_PROTO_FILE}
+    DEPENDS ${PROTO_FILE} ${REVIEW_PROTO_FILE}
     COMMENT "正在生成 gRPC C++ 代码..."
 )
 
@@ -132,6 +135,33 @@ target_link_libraries(grpc_client PRIVATE
     protobuf::libprotobuf
     PkgConfig::GRPC
     grpc++ grpc gpr pthread
+)
+
+# ============================================================
+# [T27] 阶段自检程序 (Phase A~D)
+# ------------------------------------------------------------
+# 用"测试内注入的假实现"驱动每个阶段的接缝, 因此**不需要**模型/传感器/复核服务/数据库,
+# 也不依赖 config/config.yaml; 也不链接 OpenVINO / gRPC / MySQL, 只编译用到的 5 个 .cpp。
+# 运行: ./phase_selftest
+# ============================================================
+add_executable(phase_selftest
+    tests/phase_selftest.cpp
+    src/inference/CascadeEngine.cpp          # Phase B
+    src/review/ReviewScheduler.cpp           # Phase C
+    src/fusion/SensorFusion.cpp              # Phase D
+    src/pipeline/MultiSensorPipeline.cpp     # Phase D
+    src/sensor/ReplaySensorSource.cpp        # Phase D (stub 传感器)
+    src/utils/Logger.cpp                     # 日志
+)
+
+target_include_directories(phase_selftest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(phase_selftest PRIVATE
+    ${OpenCV_LIBS}
+    yaml-cpp
+    pthread
 )
 
 

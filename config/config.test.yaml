@@ -1,0 +1,108 @@
+# ============================================================
+# CVInfer-Gate 测试运行配置 (T27 引入, 2026-xx 重建)
+# ------------------------------------------------------------
+# 用途: 把 Phase B(级联) / Phase C(复核) / Phase D(融合) 逐段打开,
+#       在**不动**被安全策略锁定的 config/config.yaml 的前提下跑真实链路。
+#
+# 用法(在 build/ 目录下, 建议用绝对路径, 免得被 CMake POST_BUILD 的
+#      config/ 覆盖绕晕):
+#     ./CVInfer-Gate --config /home/jmp/CVInfer-Gate/config/config.test.yaml \
+#                    --model-config /home/jmp/CVInfer-Gate/config/model_config.yaml
+#
+# 本配置的默认开关(= 与 PROJECT_NOTES §14.7 那次端到端实测一致):
+#     cascade.enabled = false   ← 本仓库没有 role=classifier 模型, 开了会退化成单模型
+#     review.enabled  = true    ← 需要先起复核 mock, 否则只看到 unavailable=N
+#     fusion.enabled  = true    ← 传感器只用 stub(不依赖任何外部文件)
+#
+# 想逐段验证就**只改一个开关**:
+#     P1-1 只开复核: review.enabled=true, sensors 清空 + fusion.enabled=false
+#     P1-2 只开融合: review.enabled=false, fusion.enabled=true
+#     P1-3 组合(C+D): 本文件默认即此, 见 PROJECT_NOTES §15 验收清单
+#
+# 前置(复核 mock, 否则 review 全部走 unavailable 兜底):
+#     python3 scripts/mock_review_server.py --port 50052 --mode auto
+#
+# ⚠️ 时间基: 程序按**当前工作目录**解析相对路径 ⇒ 从 build/ 跑时,
+#    video.source_path 的 test.mp4 指的是 build/test.mp4。
+# ============================================================
+
+log:
+  level: info
+  file: ""                # 空 = 仅输出到控制台
+
+video:
+  source_type: file
+  source_path: test.mp4   # 相对 build/ (从 build/ 启动程序)
+  target_fps: 10          # 文件源限速解码 ⇒ 每帧都推理, 不积累延迟
+  frame_interval: 1       # 想要更高吞吐就只改这个(见 PROJECT_NOTES §16.1)
+  queue:
+    max_size: 24
+    policy: drop_oldest
+
+pipeline:
+  worker_threads: 2       # 约束: worker_threads <= models[].pool_size
+
+database:
+  host: tcp://127.0.0.1:3306
+  user: root
+  password: "12345678jmp"   # ← 与 docker/docker-compose.yml 的 MYSQL_ROOT_PASSWORD 一致
+  dbname: cv_infer
+  pool_size: 4
+  batch_size: 20
+  flush_interval_ms: 1000
+  max_retries: 10
+  fallback_path: db_fallback.csv      # 相对 build/ (库不可用时的降级落盘)
+  reconnect_interval_ms: 30000
+  reconnect_after_writes: 100
+
+grpc:
+  port: 50051
+  timeout_ms: 5000
+  max_message_size_mb: 16
+  worker_threads: 0
+  keepalive_time_ms: 20000
+
+# ---- Phase B: 本仓库没有 role=classifier 的模型(见 config/model_config.yaml 注释),
+#      打开也只会退化成单模型, 故保持 false。要验级联需先准备分类器模型。----
+cascade:
+  enabled: false
+
+# ---- Phase C: 大模型异步复核(本仓库=客户端, 服务端需另行部署)----
+# 只对**灰区/候选**目标送审; 复核**确认才告警**; 不可用时按 alert_on_failure 兜底。
+review:
+  enabled: true
+  endpoint: "127.0.0.1:50052"     # scripts/mock_review_server.py 的监听地址
+  timeout_ms: 3000
+  queue_size: 64
+  worker_threads: 2
+  trigger:
+    labels: ["person"]
+    min_conf: 0.50
+    max_conf: 1.00
+  roi_padding: 0.10
+  prompt: "判断该人员是否未佩戴安全帽"
+  alert_type: "安全帽缺失"
+  alert_on_failure: false          # 拿不到结论(超时/不可用)时默认**不**告警
+
+# ---- Phase D: 多模态决策级融合 ----
+# ⚠️ 视频**不写在这里**(由上面的 video: 段描述), 这里只列雷达/红外。
+#    只用 stub ⇒ 不需要任何硬件, 且是**确定性**的(自检与端到端结果可复现)。
+#    红外(带框)需要 IoU 相交, 而本测试视频里 person 框近乎满画面下半部,
+#    stub 红外的框在画面上方 ⇒ IoU=0、关联不上(见 PROJECT_NOTES §14.5);
+#    想验"带框关联"请改用 backend: file + scripts/sensor_replay_demo.txt。
+sensors:
+  - kind: radar
+    name: radar_front
+    backend: stub
+    rate_hz: 10
+    labels: ["person"]
+
+fusion:
+  enabled: true
+  level: decision                  # 校验层只允许 decision
+  time_tolerance_ms: 50            # 文件源帧间隔较大, 窗口可适当放宽
+  match_iou: 0.30
+  sensor_weight: 0.35
+  emit_sensor_only: false          # 雷达无框 ⇒ 即便 true 也不会凭空造框
+  adopt_sensor_label: false
+  buffer_capacity: 256

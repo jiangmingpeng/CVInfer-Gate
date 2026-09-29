@@ -1,4 +1,3 @@
-```text
 # 编译产物
 build/
 *.o
@@ -23,3 +22,13 @@ config/config.yaml
 __pycache__/
 *.pyc
 web_gateway/*.log
+
+# ============================================================
+# [迁移 WSL / T32] 补齐漏网之鱼
+# 之前这几项都没被忽略: mediamtx 的日志会随运行一直长, 容易误提交。
+# ============================================================
+mediamtx.log
+mediamtx                 # mediamtx 可执行文件(二进制, 不入库)
+recordings/              # mediamtx 录制产物(若开启 record)
+db_fallback.csv          # 库不可用时的降级落盘(运行时产物)
+web_gateway/.env         # 本地环境变量(含地址/口令, 不入库)

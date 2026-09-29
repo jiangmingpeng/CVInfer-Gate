@@ -1,5 +1,6 @@
 #include "video/RtspVideoSource.h"
 #include <iostream>
+#include <libavutil/error.h>
 
 RtspVideoSource::~RtspVideoSource() { close(); }
 
@@ -10,8 +11,21 @@ bool RtspVideoSource::open(const std::string& source_path) {
     av_dict_set(&opts, "stimeout", "5000000", 0);   // 5秒超时（微秒）
     av_dict_set(&opts, "max_delay", "500000", 0);   // 最大延迟 500ms
 
-    if (avformat_open_input(&fmt_ctx_, source_path.c_str(), nullptr, &opts) != 0) {
-        std::cerr << "[RtspVideoSource] 无法打开 RTSP 流: " << source_path << std::endl;
+    // [T31] 保留错误码: 原代码用 `!= 0` 丢掉了 rc, 只留下 FFmpeg 自己那行
+    //   "[rtsp @ ...] method DESCRIBE failed: 404 Not Found", 看不懂到底出了什么事。
+    const int rc = avformat_open_input(&fmt_ctx_, source_path.c_str(), nullptr, &opts);
+    if (rc < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(rc, errbuf, sizeof(errbuf));
+        std::cerr << "[RtspVideoSource] 打开失败: " << source_path
+                  << "  (" << errbuf << ")\n"
+                  << "  自查(按顺序):\n"
+                  << "    1) 推流端是否在线? mediamtx 对“没有发布者”的路径一律返回 404 Not Found:\n"
+                  << "       看 mediamtx 日志是否出现该 path 的 publishing, 或 ss -tnp | grep 8554 看有无已建立连接\n"
+                  << "    2) 流是否真的可拉? ffprobe -rtsp_transport tcp -i \"" << source_path << "\"\n"
+                  << "    3) mediamtx 是否只绑定了回环? ss -tlnp | grep 8554 (127.0.0.1:8554 -> 公网推流进不来; 应为 0.0.0.0:*:8554)\n"
+                  << "    4) 路径名/端口是否与推流端一致(如推的是 /live 而拉的是 /live/stream)"
+                  << std::endl;
         av_dict_free(&opts);
         return false;
     }
@@ -73,6 +87,19 @@ bool RtspVideoSource::read(cv::Mat& frame) {
         av_packet_unref(packet_);
     }
     return false; // 流断开
+}
+
+// [T29] 源真实帧率: 从流元数据 avg_frame_rate 取(拿不到退回 r_frame_rate;
+//   都不行返回 0 -> 调用方回退默认值)。RTSP 的 avg_frame_rate 常为 0/0,
+//   此时 r_frame_rate 一般是 25/1 或 30/1 这类可用值。
+double RtspVideoSource::getFps() const {
+    if (!fmt_ctx_ || video_stream_index_ < 0) return 0.0;
+    const AVStream* st = fmt_ctx_->streams[video_stream_index_];
+    if (!st) return 0.0;
+    const AVRational r = (st->avg_frame_rate.num > 0) ? st->avg_frame_rate : st->r_frame_rate;
+    if (r.num <= 0 || r.den <= 0) return 0.0;
+    const double fps = av_q2d(r);
+    return (fps > 0.0 && fps <= 240.0) ? fps : 0.0;
 }
 
 void RtspVideoSource::close() {
