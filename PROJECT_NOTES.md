@@ -1570,3 +1570,95 @@ T35 的三条证据（§20.14.3）已把 FP32 钉在 **~33 fps**；再调线程/
    机器上只有一套 OpenVINO ⇒ **排除“库/插件版本错配”**（这是最初的头号假设，被证伪）；
 4. `models/yolov8n.xml` 头部：IR **v11** + `f32` + `1x3x640x640` ⇒ 模型正常，排除模型损坏；
 5. `gdb -batch -ex run -ex bt --args ./CVInfer-Gate` 给出决定性栈（自底向上
+
+---
+
+### 20.16 [T43] 可观测性与告警外发：把“闭环”的最后一段补上
+
+#### 20.16.1 缺口（为什么是这三件）
+
+到 T42 为止，项目的“可信度”都是**对内的**：日志、退出统计、`phase_selftest`、129 项测试。对外的还有两个洞：
+
+1. **告警只写 MySQL**（`alerts` 表）。检测再准、去重再好（[T39]/[T40]）——**没有人会知道**。安防的价值在于“有人采取行动”，写库只是存证。
+2. **运行状态只能“翻日志”**：没有指标端点（接不了 Prometheus/Grafana）、没有健康探针（编排只能看“进程在不在”）、日志文件只涨不轮转。
+
+三个子项放同一轮，是因为它们共享同一条判断：**“能被看见”是运维属性，不是业务逻辑** —— 因此必须“默认关、关掉即对存量零影响”，否则就是拿稳定性换功能。
+
+> ⚠️ 顺带告知：本文件最末尾的 §20.7 正文**被截断**在 `gdb` 栈那一段（原稿到此中断）。该修复的落地处就在代码里：
+> `config/config.example.yaml` 的 `device: CPU`（而不是 `AUTO`）+ `OpenVINOEngine::init()` 对设备可用性的探测。与本节无关，一并说明。
+
+#### 20.16.2 设计决策（每条都有代价）
+
+| 决策 | 理由 | 代价 |
+|---|---|---|
+| 告警推送用**有界队列 + 独立线程**（满则丢最旧） | 与帧队列同策略（[T29]）：绝不因下游卡顿反压推理 | 极端情况下会丢告警（有 `dropped` 计数可见） |
+| **重试 + 指数退避**（上限 5s） | webhook 抖动是常态，一次失败就放弃等于白做 | 下游真挂了时日志会反复刷 WARN（故意的） |
+| 停机**排空但有预算**（`drain_timeout_ms`）；退避被打断则不干等、仍立即再试 | 既要“尽量送出去”，又要退出不被拖成分钟级 | 超预算的那条会被放弃（计入退出统计） |
+| 传输层 `Transport` 可注入 | 单测不碰网络（与 [T38] 的接缝哲学一致） | 多一层间接（只一个 `std::function`） |
+| 指标**手写注册表**，不引 prometheus-cpp | 已有 4 个重型依赖（OV/OpenCV/gRPC/FFmpeg），不再加；需求也小 | 只支持 counter/gauge/labelled/拉式采集器 4 种形态 |
+| 指标端点用**极简 HTTP/1.1**（手写） | 同上；Prometheus 抓取只要 GET | 无 keep-alive/TLS/鉴权（文档写明只该在受信网络） |
+| 探针用**独立进程 + 真调 gRPC `Health`** | “进程在” ≠ “gRPC 在服务”；也不能用主进程的 `/metrics` 探自己 | 每次探活起一个进程（~100ms，不加载模型） |
+| 日志轮转按**字节预算**判定 | 时间维度要额外定时器/线程；字节在每次写日志的点上就能精确判定 | 文件模式多一次 `filesystem::file_size` 调用 |
+
+#### 20.16.3 实跑数据（`config/config.ops.yaml` + `scripts/alert_receiver.py`）
+
+```text
+# 1) 健康探针（服务端开 token）
+[health-check] OK addr=127.0.0.1:50051 version=1.0.0 uptime_ms=21569 detector=yolov8_detector    -> EXIT=0
+[health-check] 不健康: 未授权(检查 GRPC_AUTH_TOKEN) ... code=16                                   -> EXIT=4  (无 token)
+[health-check] 不健康: 未授权(检查 GRPC_AUTH_TOKEN) ... code=16                                   -> EXIT=4  (错 token)
+
+# 2) gRPC 侧计数（“有人在试 token”一眼可见）
+cvinfer_grpc_requests_total{method="Health",code="OK"} 1
+cvinfer_grpc_requests_total{method="Health",code="UNAUTHENTICATED"} 2
+cvinfer_grpc_requests_total{method="Detect",code="OK"} 1     # grpc_client 返回「检测到目标数量: 2」
+
+# 3) 告警真的出去了（伪下游逐条收到）
+[receiver] #5 安全帽缺失 | 复核不可用(unavailable), 按兜底策略告警, frame=1115 | ... | total_received=5
+[INFO] 告警推送统计: pushed=5 sent=5 failed=0 dropped=0 retried=0
+
+# 4) 死端口（下游不可用）：失败不致命，主链路照常跑完
+[WARN] [告警推送] 失败(连接失败: 127.0.0.1:8877): 安全帽缺失      # 18.261 -> 18.862 = 200+400ms 退避
+[INFO] 告警推送统计: pushed=3 sent=0 failed=3 dropped=0 retried=6 last_error=连接失败: 127.0.0.1:8877
+
+# 5) 退出后 /metrics 立即拒连（curl 退出码 7）；退出日志另有“日志轮转次数: 0”
+```
+
+同一刻的流水线侧（证明推不动下游不影响主链路）：`decoded=1332 dropped=1184 processed=148 emitted=148`、
+`告警去重统计: allowed=5 suppressed=78 tracked=5`、`目标跟踪统计: frames=140 spawned=39 retired=31 active=8 matched=539 longest_dwell=8841ms`、
+`复核统计: submitted=5 unavailable=5 confirmed=0`（无复核服务 ⇒ 兜底告警 ⇒ 正好把推送链路跑满）。
+
+#### 20.16.4 踩坑（都是“实跑才发现”的那种）
+
+1. **配置校验把常见的合法写法当成错误**：原规则是“`alert.push.header_name` 非空 ⇒ `header_value` 也必须非空”。
+   但“名字先填好、值等环境变量注入”（`header_value: "${ALERT_TOKEN:-}"`）是**常规写法** —— 服务端跑得好好的，
+   探针却 `[ConfigParser] 配置校验失败` 退出 255（因为探针那侧没设那个变量）。
+   现改为**值非空才要求名字**（反方向才是真写错），且只在**名字与值都给全**时才真的发这个头。
+2. **跨语言契约不能被“我以为”蒙过去**：JSON 字段是 `alert_type`，演示接收端却按 `type` 取 ⇒ 打出 `None`。
+   根因不是 C++ 错，而是**契约没被钉住**。修法：接收端兼容两种键名 + 把字段名写进 `AlertNotifier.h` 头部注释（载荷契约）
+   + 用一条断言把 `"alert_type":"安全帽缺失"` 钉在单测里。
+3. **探针必须与主进程同源配置**：`--health-check` 读的是同一份 yaml（含 `${GRPC_AUTH_TOKEN}` 展开），少一个环境变量就会得出 4（未授权）——
+   看着像“服务挂了”，实为“两份环境不一致”。compose 的 healthcheck 因此**不额外传 `--config`**（让两者走同一套解析）。
+4. **“轮转次数: 0”是正确的，不伪造现场**：短跑日志量不足 1MB，端到端里它本来就不该触发；
+   轮转交给 5 条单测钉（0=不轮转 / 超阈值产生 `.1` / `keep_files` 上限 / `=0` 不留归档 / 续写把**已有大小**算进预算），
+   而不是把 `log_max_size_mb` 改成 1KB 去“造”一个现场。
+5. **启动日志成了探针的可观测红利**：`--health-check` 顺带打印 `version/uptime/detector`，
+   一眼分辨“服务在”与“加载了哪个模型/活了多久”，比只看端口活着有用得多。
+
+#### 20.16.5 文件清单
+
+- 新增：`src/utils/Metrics.{h,cpp}`、`src/utils/HttpClient.{h,cpp}`、`src/service/MetricsServer.h`、`src/service/HealthCheck.cpp`、
+  `src/alert/AlertNotifier.{h,cpp}`、`scripts/alert_receiver.py`、`docker/prometheus.example.yml`、`config/config.ops.yaml`
+- 修改：`main.cpp`（接线 + `--health-check` + 退出统计）、`ConfigParser`（`metrics`/`alert.push`/轮转 + 校验）、`Logger`（轮转 + 自建目录）、
+  `DetectionServiceImpl`（version/uptime/指标）、`SensorFusion`（样本计数器）、`ReviewScheduler`（指标）、`TargetTracker`（活跃轨迹拉式指标）、
+  `docker/docker-compose.yml`（healthcheck/expose/extra_hosts/环境变量）、`CMakeLists.txt`（新文件 + 拷 `test.mp4`）
+- 测试：`tests/unit/test_metrics.cpp`、`test_metrics_server.cpp`、`test_alert_notifier.cpp`、`test_logger_rotation.cpp`（共 24 例，全部纳入 ctest）
+
+#### 20.16.6 仍未做（不要误以为已做）
+
+- **Grafana 面板**（只给了 Prometheus 抓取配置与关键指标清单）
+- 告警**落盘重发**（队列在内存，`kill -9` 时未发出的通知会丢 —— 账在 DB，可由库侧补偿）
+- webhook 的 **TLS/签名**（当前明文 http；公网请走内网转发/侧车）
+- 指标端点**鉴权**（与社区惯例一致保持裸奔，靠网络隔离）
+- 日志轮转的**时间维度**（只有按大小，没有“每天一个文件”）
+- 本文件 §20.7 的完整补全

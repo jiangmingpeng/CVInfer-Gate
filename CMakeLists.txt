@@ -157,6 +157,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${MYSQLCPPCONN_INCLUDE_DIR}
 )
 
+# [T43] 版本号注入代码(Health RPC / --health-check / cvinfer_build_info 都用它)
+target_compile_definitions(${PROJECT_NAME} PRIVATE CV_GATE_VERSION="${PROJECT_VERSION}")
+
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ${OpenCV_LIBS}
     openvino::runtime
@@ -174,6 +177,17 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_CURRENT_SOURCE_DIR}/models $<TARGET_FILE_DIR:${PROJECT_NAME}>/models
 )
+
+# 视频文件模式(source_type=file)与诊断工具 grpc_client 默认都读**构建目录**下的 test.mp4
+#   (config/*.yaml 的注释里也是这么写的) => 构建时拷一份, 免得"文档说能跑, 实际报读不到视频"。
+# copy_if_different: 源文件不改就不会重复拷贝; 源不存在则跳过(不让构建失败)。
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test.mp4)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_CURRENT_SOURCE_DIR}/test.mp4
+                $<TARGET_FILE_DIR:${PROJECT_NAME}>/test.mp4
+        COMMENT "拷贝 test.mp4 到构建目录(file 模式 / grpc_client 默认路径)")
+endif()
 
 # ============================================================
 # [T38] 单元测试 (gtest + ctest) —— "立可信度"
@@ -221,8 +235,19 @@ if(CV_BUILD_TESTS)
             tests/unit/test_sensor_fusion.cpp
             tests/unit/test_config_parser.cpp
             tests/unit/test_yolo_post_processor.cpp
+            tests/unit/test_auth_guard.cpp
+            # [T43] 运维面: 指标 / 日志轮转 / 告警推送
+            tests/unit/test_metrics.cpp
+            tests/unit/test_metrics_server.cpp
+            tests/unit/test_logger_rotation.cpp
+            tests/unit/test_alert_notifier.cpp
             src/fusion/SensorFusion.cpp
             src/utils/ConfigParser.cpp
+            src/utils/Logger.cpp           # [T43] 轮转
+            src/utils/Metrics.cpp          # [T43]
+            src/utils/HttpClient.cpp       # [T43] 告警推送传输层
+            src/service/MetricsServer.cpp  # [T43] /metrics 端点
+            src/alert/AlertNotifier.cpp    # [T43] 告警推送
             src/inference/YoloPostProcessor.cpp
         )
         target_include_directories(cv_unit_tests PRIVATE

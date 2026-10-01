@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <csignal>
@@ -33,9 +34,18 @@
 #include "database/DBWriter.h"
 #include "service/DetectionServiceImpl.h"
 #include "service/GrpcServerSetup.h"
+#include "service/MetricsServer.h"
 #include "utils/RoiUtils.h"
 #include "utils/AlertGate.h"
+#include "utils/Metrics.h"
 #include "tracking/TargetTracker.h"
+#include "alert/AlertNotifier.h"
+#include "inference.grpc.pb.h"   // [T43] --health-check 探针要用的 Health RPC 存根
+
+// [T43] 版本号由 CMake 注入(project(... VERSION x.y.z)); 脱离 CMake 单独编译时兜底 "dev"
+#ifndef CV_GATE_VERSION
+#define CV_GATE_VERSION "dev"
+#endif
 
 // ============================================================
 // CVInfer-Gate 主程序 (T7: 装配收口)
@@ -63,9 +73,13 @@
 //      多模态决策级融合: 雷达/红外采样经 poller 存进有界时间缓冲, 每帧按
 //      fusion.time_tolerance_ms 时间对齐 + 目标关联 + 加权置信度融合。
 //      视频仍是主模态(画框/落库/告警的框都来自视觉), 融合只调置信度/补测距;
-//  11) T39: 告警去重(alert.dedup): 告警判定按帧执行, 而"安全帽缺失"描述的是**目标
+//   11) T39: 告警去重(alert.dedup): 告警判定按帧执行, 而"安全帽缺失"描述的是**目标
 //      状态** => 同一静止目标会被连续帧反复告警。新增 AlertGate(标签 + 框重叠 +
 //      冷却窗), 在**告警链路上**去重(送审处 / 写告警处), 画框与落库不受影响。
+//  12) T43: 运维收口 —— 把"能跑"补成"好运维":
+//      (a) 告警可推 webhook(alert.push): 有界队列 + 重试退避, 不阻塞流水线;
+//      (b) /metrics 指标端点(metrics.enabled) + 日志文件轮转(app.log_max_size_mb);
+//      (c) gRPC Health RPC + `--health-check` 探针, 供容器 healthcheck / systemd 判活。
 // ============================================================
 
 namespace {
@@ -83,6 +97,12 @@ bool isReviewCandidate(const DetectionResult& det, const ReviewConfig& rc) {
 std::int64_t nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// [T43] epoch 毫秒: 只用于"对外"的时间戳(uptime 基准、告警 webhook 的 ts_ms)
+std::int64_t epochMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 // [T27] 配置路径可注入: `--config <path>` / `CVINFER_CONFIG`(优先级: 命令行 > 环境变量 > 默认)
@@ -107,6 +127,9 @@ void printUsage(const char* argv0) {
     std::cout << "用法: " << argv0 << " [选项]\n"
               << "  --config <path>        系统配置(默认 config/config.yaml, 或环境变量 CVINFER_CONFIG)\n"
               << "  --model-config <path>  模型配置(默认 config/model_config.yaml, 或 CVINFER_MODEL_CONFIG)\n"
+              << "  --health-check[=addr]  [T43] 只做一次健康探针后退出(不加载模型/不连库)\n"
+              << "                         默认 127.0.0.1:<grpc.port>, 可用 CVINFER_HEALTH_ADDR 覆盖;\n"
+              << "                         退出码 0=serving 1=失败 2=连不上 3=超时 4=未授权\n"
               << "  --help                 显示本帮助\n";
 }
 
@@ -132,6 +155,67 @@ int main(int argc, char** argv) {
     if (!config_parser.loadModelConfig(model_cfg_path)) return -1;
 
     const auto& app_cfg = config_parser.getAppConfig();
+    const std::int64_t start_ms = epochMs();   // [T43] 进程启动时刻(uptime 基准)
+
+    // ---- [T43] --health-check: 一次性健康探针 ----
+    //   存在意义: 容器 healthcheck / systemd / 负载均衡需要一个"进程真的在服务"的判据。
+    //   刻意**不加载模型、不连数据库**(探针必须秒级返回), 只问 gRPC 的 Health RPC;
+    //   鉴权口径与 Detect 一致 => 开了鉴权就带上 GRPC_AUTH_TOKEN。
+    //   退出码: 0=serving 1=失败 2=连不上 3=超时 4=未授权
+    {
+        bool health_check = false;
+        std::string health_addr;
+        for (int i = 1; i < argc; ++i) {
+            const std::string a = argv[i];
+            if (a == "--health-check") {
+                health_check = true;
+            } else if (a.rfind("--health-check=", 0) == 0) {
+                health_check = true;
+                health_addr = a.substr(15);   // "--health-check=" 长度 15
+            }
+        }
+        if (health_check) {
+            if (health_addr.empty()) {
+                if (const char* e = std::getenv("CVINFER_HEALTH_ADDR")) { if (*e) health_addr = e; }
+            }
+            if (health_addr.empty()) health_addr = "127.0.0.1:" + std::to_string(app_cfg.grpc.port);
+
+            auto channel = grpc::CreateChannel(health_addr, grpc::InsecureChannelCredentials());
+            auto stub = inference::DetectionService::NewStub(channel);
+            grpc::ClientContext ctx;
+            const int timeout = app_cfg.grpc.timeout_ms > 0 ? app_cfg.grpc.timeout_ms : 5000;
+            ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(timeout));
+            if (!app_cfg.grpc.auth_token.empty()) {
+                ctx.AddMetadata("authorization", "Bearer " + app_cfg.grpc.auth_token);
+            }
+            inference::HealthRequest req;
+            inference::HealthResponse resp;
+            const grpc::Status st = stub->Health(&ctx, req, &resp);
+            if (st.ok() && resp.serving()) {
+                std::cout << "[health-check] OK addr=" << health_addr
+                          << " version=" << resp.version()
+                          << " uptime_ms=" << resp.uptime_ms()
+                          << " " << resp.detail() << std::endl;
+                return 0;
+            }
+            int code = 1;
+            std::string why = "失败";
+            switch (st.error_code()) {
+                case grpc::StatusCode::UNAVAILABLE:       code = 2; why = "连不上(服务未启动?)"; break;
+                case grpc::StatusCode::DEADLINE_EXCEEDED: code = 3; why = "超时"; break;
+                case grpc::StatusCode::UNAUTHENTICATED:   code = 4; why = "未授权(检查 GRPC_AUTH_TOKEN)"; break;
+                default: break;
+            }
+            if (st.ok() && !resp.serving()) why = "进程在跑但未就绪(serving=false)";
+            std::cout << "[health-check] 不健康: " << why << " addr=" << health_addr;
+            if (!st.ok()) {
+                std::cout << " code=" << static_cast<int>(st.error_code())
+                          << " (" << st.error_message() << ")";
+            }
+            std::cout << std::endl;
+            return code;
+        }
+    }
 
     // ---- T2: 初始化分级日志 ----
     Logger::instance().init(app_cfg.log);
@@ -158,6 +242,43 @@ int main(int argc, char** argv) {
     if (!db_writer.init(app_cfg)) {
         CVLOG_ERROR << "数据库初始化异常! 将以【无落库】模式启动, 请检查 config.yaml。";
     }
+
+    // ---- [T43] 告警推送 (webhook) ----
+    //   定位: 推送是"通知", 落库才是"账"。推送失败/队列满只计数 + 告警, 绝不影响落库与推理。
+    alert::AlertNotifier alert_notifier;
+    if (app_cfg.alert.push.enabled) {
+        if (!alert_notifier.init(app_cfg.alert.push)) {
+            CVLOG_WARN << "告警推送初始化失败(url=" << app_cfg.alert.push.url
+                       << "), 降级为仅落库。";
+        } else {
+            CVLOG_INFO << "告警推送: 已启用 -> " << app_cfg.alert.push.url
+                       << " (timeout=" << app_cfg.alert.push.timeout_ms << "ms, retries="
+                       << app_cfg.alert.push.max_retries << ", queue="
+                       << app_cfg.alert.push.max_queue << ")";
+        }
+    } else {
+        CVLOG_INFO << "告警推送: 已禁用(仅落库; 需要时在 config 里开 alert.push.enabled)";
+    }
+
+    // [T43] 统一告警入口: "落库 + 推送 + 计数"三件事只在这一处发生
+    //   (此前 writeAlert 散在 sink 与复核回调里 => 新增通知渠道就得改多处, 漏一处就是静默丢通知)
+    std::atomic<std::uint64_t> alerts_raised{0};
+    std::atomic<std::uint64_t> det_total{0};     // 检测框总数(供 /metrics "拉"取)
+    auto raise_alert = [&db_writer, &alert_notifier, &alerts_raised](
+                           const std::string& type, const std::string& desc,
+                           std::uint64_t frame_seq = 0, const std::string& label = "",
+                           float confidence = 0.0f, int track_id = -1) {
+        alerts_raised.fetch_add(1, std::memory_order_relaxed);
+        db_writer.writeAlert(type, desc);   // 账: 先落库(异步入队)
+        alert::Alert a;                     // 通知: 尽力而为
+        a.type = type;
+        a.description = desc;
+        a.frame_seq = frame_seq;
+        a.label = label;
+        a.confidence = confidence;
+        a.track_id = track_id;              // ts_ms 留给 AlertNotifier 盖戳(发送时刻)
+        alert_notifier.push(a);
+    };
 
     // 1. 根据配置选择视频源
     std::unique_ptr<IVideoSource> video_source;
@@ -237,7 +358,7 @@ int main(int argc, char** argv) {
                        << "), 告警回退为本地规则。";
         } else {
             // 结果回调(在复核 worker 线程执行): 只做"写告警"(异步入队, 轻量)
-            auto on_outcome = [&db_writer, &app_cfg](const ReviewOutcome& out) {
+            auto on_outcome = [&raise_alert, &app_cfg](const ReviewOutcome& out) {
                 if (!out.alert) return;
                 std::string desc;
                 if (out.status == ReviewStatus::Ok) {
@@ -249,7 +370,8 @@ int main(int argc, char** argv) {
                            "), 按兜底策略告警";
                 }
                 desc += ", frame=" + std::to_string(out.frame_seq);
-                db_writer.writeAlert(app_cfg.review.alert_type, desc);
+                raise_alert(app_cfg.review.alert_type, desc, out.frame_seq, out.label,
+                            out.confidence, -1);
             };
 
             review_scheduler = std::make_unique<ReviewScheduler>();
@@ -416,6 +538,7 @@ int main(int argc, char** argv) {
             if (dets.empty()) return;
 
             // (2) 检测入库: 保持现状(原始记录立即落库, 不被复核/融合阻塞)
+            det_total.fetch_add(dets.size(), std::memory_order_relaxed);
             db_writer.writeDetections(dets);
 
             // (3) 告警:
@@ -446,9 +569,10 @@ int main(int argc, char** argv) {
                         // ROI 无效无法送审: 按兜底策略处理(需要告警时同样过闸门)
                         if (!app_cfg.review.alert_on_failure) continue;
                         if (!alert_gate.allow(det.label, det.track_id, det.box, nowMs())) continue;
-                        db_writer.writeAlert(app_cfg.review.alert_type,
-                                             "ROI 无效, 按兜底策略告警, frame=" +
-                                                 std::to_string(frame_seq));
+                        raise_alert(app_cfg.review.alert_type,
+                                    "ROI 无效, 按兜底策略告警, frame=" +
+                                        std::to_string(frame_seq),
+                                    frame_seq, det.label, det.confidence, det.track_id);
                         continue;
                     }
                     if (!alert_gate.allow(det.label, det.track_id, det.box, nowMs())) {
@@ -463,16 +587,17 @@ int main(int argc, char** argv) {
                                     << " frame=" << frame_seq;
                         continue;
                     }
-                    db_writer.writeAlert(
-                        "安全帽缺失",
-                        "检测到未佩戴安全帽的人员, 置信度: " +
-                            std::to_string(det.confidence));
+                    raise_alert("安全帽缺失",
+                                "检测到未佩戴安全帽的人员, 置信度: " +
+                                    std::to_string(det.confidence),
+                                frame_seq, det.label, det.confidence, det.track_id);
                 }
             }
         });
             
     // 6. 启动 gRPC 服务 (独立线程, 与流水线并行; 旧版是视频跑完才启动)
-    DetectionServiceImpl service(*detector);
+    // [T42] 鉴权: token 取自 grpc.auth_token(建议写 "${GRPC_AUTH_TOKEN:-}"; 空 = 不鉴权)
+    DetectionServiceImpl service(*detector, app_cfg.grpc.auth_token, CV_GATE_VERSION, start_ms);
     // T8: 按 GrpcConfig 配置消息大小/线程/keepalive 并启动服务
     std::string server_address;
     std::unique_ptr<grpc::Server> server =
@@ -483,6 +608,86 @@ int main(int argc, char** argv) {
         return -1;
     }
     CVLOG_INFO << "gRPC 服务已启动, 监听: " << server_address;
+
+    // ---- [T43] 指标端点 (/metrics + /healthz) ----
+    //   口径: 帧级数据"拉"(直接读各处已有的 Stats 原子量, 不在热路径上加锁);
+    //         离散事件"推"(gRPC 计数在 service 内部自带)。
+    //   enabled=false 时不监听任何端口(零行为变化)。
+    metrics::HttpServer metrics_server;
+    if (app_cfg.metrics.enabled) {
+        auto& reg = metrics::Registry::instance();
+        const std::string ver_label = std::string("version=\"") + CV_GATE_VERSION + "\"";
+        reg.declare("cvinfer_build_info", metrics::Type::Gauge, "构建信息(恒为 1)", ver_label);
+        reg.setGauge("cvinfer_build_info", ver_label, 1.0);
+
+        reg.addCollector("cvinfer_uptime_seconds", metrics::Type::Gauge, "进程已运行时长(秒)",
+                         [start_ms] { return static_cast<double>(epochMs() - start_ms) / 1000.0; });
+        reg.addCollector("cvinfer_frames_decoded_total", metrics::Type::Counter,
+                         "已解码帧数(抽帧前)",
+                         [&pipeline] { return static_cast<double>(pipeline.stats().decoded); });
+        reg.addCollector("cvinfer_frames_dropped_total", metrics::Type::Counter,
+                         "因背压丢弃的帧数(队列满)",
+                         [&pipeline] { return static_cast<double>(pipeline.stats().dropped); });
+        reg.addCollector("cvinfer_frames_processed_total", metrics::Type::Counter,
+                         "已完成推理的帧数",
+                         [&pipeline] { return static_cast<double>(pipeline.stats().processed); });
+        reg.addCollector("cvinfer_frames_emitted_total", metrics::Type::Counter,
+                         "已交给 sink 的帧数",
+                         [&pipeline] { return static_cast<double>(pipeline.stats().emitted); });
+        reg.addCollector("cvinfer_detections_total", metrics::Type::Counter,
+                         "产生的检测框总数",
+                         [&det_total] { return static_cast<double>(det_total.load()); });
+        reg.addCollector("cvinfer_alerts_raised_total", metrics::Type::Counter,
+                         "产生的告警条数(不管是否推送成功)",
+                         [&alerts_raised] { return static_cast<double>(alerts_raised.load()); });
+        reg.addCollector("cvinfer_alerts_suppressed_total", metrics::Type::Counter,
+                         "被去重闸门抑制的重复告警数",
+                         [&alert_gate] { return static_cast<double>(alert_gate.suppressed()); });
+        reg.addCollector("cvinfer_db_healthy", metrics::Type::Gauge,
+                         "数据库健康(1=正常写库, 0=降级到本地 CSV)",
+                         [&db_writer] { return db_writer.dbHealthy() ? 1.0 : 0.0; });
+        reg.addCollector("cvinfer_db_reconnects_total", metrics::Type::Counter,
+                         "数据库不可用->恢复的累计次数",
+                         [&db_writer] { return static_cast<double>(db_writer.dbReconnects()); });
+        reg.addCollector("cvinfer_alert_push_sent_total", metrics::Type::Counter,
+                         "webhook 推送成功数",
+                         [&alert_notifier] { return static_cast<double>(alert_notifier.stats().sent); });
+        reg.addCollector("cvinfer_alert_push_failed_total", metrics::Type::Counter,
+                         "webhook 推送最终失败数(重试耗尽)",
+                         [&alert_notifier] { return static_cast<double>(alert_notifier.stats().failed); });
+        reg.addCollector("cvinfer_alert_push_dropped_total", metrics::Type::Counter,
+                         "webhook 推送因队列满而丢弃的告警数",
+                         [&alert_notifier] { return static_cast<double>(alert_notifier.stats().dropped); });
+        if (review_scheduler) {
+            reg.addCollector("cvinfer_review_submitted_total", metrics::Type::Counter,
+                             "送大模型复核的任务数",
+                             [&review_scheduler] { return static_cast<double>(review_scheduler->stats().submitted); });
+            reg.addCollector("cvinfer_review_reviewed_total", metrics::Type::Counter,
+                             "已完成复核的任务数",
+                             [&review_scheduler] { return static_cast<double>(review_scheduler->stats().reviewed); });
+            reg.addCollector("cvinfer_review_confirmed_total", metrics::Type::Counter,
+                             "复核确认(告警)数",
+                             [&review_scheduler] { return static_cast<double>(review_scheduler->stats().confirmed); });
+            reg.addCollector("cvinfer_review_unavailable_total", metrics::Type::Counter,
+                             "复核服务不可用次数(超时/连接失败)",
+                             [&review_scheduler] { return static_cast<double>(review_scheduler->stats().unavailable); });
+        }
+        if (tracker) {
+            reg.addCollector("cvinfer_tracks_active", metrics::Type::Gauge, "当前活跃轨迹数",
+                             [&tracker] { return static_cast<double>(tracker->stats().active); });
+        }
+
+        metrics::HttpServer::Config mcfg;
+        mcfg.enabled = true;
+        mcfg.bind = app_cfg.metrics.bind;
+        mcfg.port = app_cfg.metrics.port;
+        if (!metrics_server.start(mcfg, [] { return metrics::Registry::instance().render(); })) {
+            CVLOG_WARN << "指标端点启动失败(端口 " << app_cfg.metrics.port
+                       << " 被占用?), 继续运行(仅无 /metrics)。";
+        }
+    } else {
+        CVLOG_INFO << "指标端点: 已禁用(metrics.enabled=false)";
+    }
 
     lifecycle.registerChild();
     std::thread grpc_thread([&server, &lifecycle] {
@@ -501,10 +706,13 @@ int main(int argc, char** argv) {
     CVLOG_INFO << "服务就绪, 按 Ctrl+C 退出。";
     lifecycle.waitUntilShutdown();
     
-    // 9. 优雅关闭 (顺序: gRPC -> 流水线 -> 数据库)
+    // 9. 优雅关闭 (顺序: gRPC -> 指标 -> 流水线 -> 告警推送 -> 数据库)
     CVLOG_INFO << "正在关闭服务...";
     if (server) server->Shutdown();
     if (grpc_thread.joinable()) grpc_thread.join();
+
+    // [T43] 指标端点必须最先停: 之后的析构会让 collector 们持有的对象逐个消失, 不能再被抓取
+    metrics_server.stop();
 
     pipeline.stop();
     const VideoPipeline::Stats st = pipeline.stats();
@@ -561,6 +769,17 @@ int main(int argc, char** argv) {
                    << " longest_dwell=" << tracker->longestDwellMs() << "ms";
     }
 
+    // [T43] 告警推送: 排空队列(有超时)后再关库;
+    //   顺序很关键 —— 复核回调也会 raise_alert, 故本行晚于 review_scheduler->stop()。
+    {
+        const auto ps = alert_notifier.stats();
+        alert_notifier.stop();
+        CVLOG_INFO << "告警推送统计: pushed=" << ps.pushed << " sent=" << ps.sent
+                   << " failed=" << ps.failed << " dropped=" << ps.dropped
+                   << " retried=" << ps.retried
+                   << (ps.failed > 0 ? (" last_error=" + ps.last_error) : std::string());
+    }
+
     db_writer.flush();
     db_writer.stop();
 
@@ -568,6 +787,7 @@ int main(int argc, char** argv) {
     video_source->close();
     // [T31] 只有真的写过结果视频才宣告(降级运行时不误导)
     if (wrote_video) CVLOG_INFO << "结果视频已保存至 output.avi";
+    CVLOG_INFO << "日志轮转次数: " << Logger::instance().rotations();
     CVLOG_INFO << "已安全退出。";
     signal_watcher.stop();
 

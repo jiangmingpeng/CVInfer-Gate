@@ -16,6 +16,7 @@ CVInfer-Gate 是一个面向安防/工地场景（如安全帽检测）的高性
 - **数据持久化**：集成 MySQL Connector/C++，实现检测记录与异常告警的异步落库
 - **告警去重（[T39]）**：同标签 + 框重叠（IoU）+ 冷却窗内只告警一次，抑制「同一目标连续帧重复告警」；参数见 `alert.dedup`，默认开启、可一键关闭
 - **目标跟踪（[T40]）**：关联式跟踪（IoU + 质心兼底、滑行/退休）给出跨帧稳定的 `track_id`（画面上直接标 `#12`）；告警去重**以身份为准**，并为停留/徘徊行为分析铺路
+- **告警外发 + 指标 + 探针（[T43]）**：告警除落库外可 **webhook 推送**（有界队列/重试退避/不阻塞流水线）；`/metrics` 暴露 20 组指标供 Prometheus 抓取；`--health-check` 一条命令探活（给容器 healthcheck / 编排用）；日志文件支持**按大小轮转**。三项均默认关闭 ⇒ 对存量配置零行为变化
 - **微服务与网络通信**：基于 gRPC + Protobuf 提供远程调用接口
 - **容器化部署**：提供完整的 Dockerfile 与 docker-compose.yml，一键拉起 MySQL、C++ 网关与 Python Web 网关
 - **Web 交互演示**：提供极简 Flask 网关，支持浏览器上传图片并实时返回带框结果
@@ -75,9 +76,13 @@ CVInfer-Gate/
 │   ├── sensor/       # 多模态传感器统一抽象 (视频/雷达/红外)
 │   ├── fusion/       # 决策级融合 (时间对齐 + 目标关联 + 置信度融合)
 │   ├── tracking/     # [T40] 目标跟踪 (IoU+质心兜底关联, 给目标分配 track_id)
-│   └── utils/        # 线程安全队列、配置解析、告警去重(AlertGate)
+│   ├── alert/        # [T43] 告警外发 (webhook: 有界队列 + 重试退避, 传输层可注入)
+│   ├── service/      # gRPC 服务 + [T43] /metrics 指标端点 (MetricsServer)
+│   └── utils/        # 线程安全队列、配置解析、告警去重(AlertGate)、日志([T43]轮转)、
+│                     # [T43] 指标注册表(Metrics) 与极简 HTTP 客户端(HttpClient)
 ├── web_gateway/      # Python Flask BFF 网关
-├── scripts/          # 建表脚本 schema.sql / 复核 mock / 传感器回放示例
+├── scripts/          # 建表脚本 schema.sql / 复核 mock / 传感器回放示例 / [T43] 告警接收端(alert_receiver.py)
+├── docker/           # Dockerfile 与 Compose 编排 (+ [T43] prometheus.example.yml 抓取配置)
 ├── vlm_review/       # [T37] 真 VLM 复核服务端(gRPC; OpenAI兼容/本地transformers/mock)
 ├── docker/           # Dockerfile 与 Compose 编排
 ├── tests/            # gRPC 客户端 + Phase A~D 阶段自检 (phase_selftest)
@@ -99,6 +104,9 @@ clone 即可用（[决策 a] 目标 = “clone 就能跑”）。
 cp config/config.example.yaml config/config.yaml
 export DB_PASSWORD=<你的 MySQL 口令>   # docker 跑时与 docker/.env 的 MYSQL_ROOT_PASSWORD 一致
 export VLM_TOKEN=<复核 token>          # [T41] 可选；设了则必须等于服务端 VLM_AUTH_TOKEN
+export GRPC_AUTH_TOKEN=<主服务 token>  # [T42] 可选；服务端/网关/grpc_client 必须一致
+export ALERT_PUSH_URL=<webhook 地址>    # [T43] 可选；如 http://127.0.0.1:8899/alert
+export ALERT_TOKEN=<webhook token>      # [T43] 可选；与接收端校验的 x-alert-token 一致
 ```
 （`ConfigParser::expandEnv` 会展开 yaml 里的 `${VAR}`，所以口令不必写回文件。）
 
@@ -165,6 +173,24 @@ python3 -m vlm_review.server --backend openai \
 cd build && ./CVInfer-Gate --config config/config.test.yaml
 ```
 
+想一次看全 **[T43] 告警外发 + 指标 + 探针 + 日志轮转**（`config/config.ops.yaml`，不依赖 MySQL/复核服务）：
+
+```bash
+# 0) 伪下游：收 webhook 的一行一条日志（另一个终端）
+python3 scripts/alert_receiver.py --port 8899 --token demotoken
+
+# 1) 主程序（file 模式跑 test.mp4；库不可用会降级写 CSV，复核不可用走兜底告警）
+cd build && ALERT_TOKEN=demotoken ./CVInfer-Gate --config config/config.ops.yaml
+
+# 2) 指标 / 探针 / 指标含义
+curl -s http://127.0.0.1:9100/metrics | head -40
+GRPC_AUTH_TOKEN=<同 config>  ./CVInfer-Gate --config config/config.ops.yaml --health-check; echo $?  # 0=健康
+#   退出码: 0 健康 / 2 连不上 / 3 超时 / 4 未授权 / 5 不健康
+
+# 3) 优雅退出：看"告警推送统计/日志轮转次数/各阶段统计"
+kill -TERM <pid>
+```
+
 | 想看的阶段 | 看哪里 |
 |---|---|
 | A 抽象层 | 启动日志 `模型配置加载成功: ... (模型数=N)` / `使用检测器: xxx` |
@@ -183,7 +209,7 @@ cd build && ./CVInfer-Gate --config config/config.test.yaml
 |---|---|---|
 | 架构重构 T12–T36 | 🟢 可信 | 11 个架构级 BUG 全修（线程安全/启动时序/优雅关闭/背压/落库）+ **[T36] 数据库降级 / RTSP 断流重连**（见下）|
 | Phase A~D 四层抽象 | 🟢 可信 | `phase_selftest` 50/50，零外部依赖、秒级 |
-| 单元测试 / CI | 🟢 **[T38+T39+T40] 新增** | `ctest` = `cv_unit_tests`(gtest 94 例) + `phase_selftest`，共 95 项全绿；覆盖 NMS / 多模态融合 / 配置校验 / 线程安全队列 / ROI / 告警去重 / 目标跟踪；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过） |
+| 单元测试 / CI | 🟢 **[T38+T39+T40+T42+T43] 新增** | `ctest` = `cv_unit_tests`(gtest 128 例) + `phase_selftest`，共 129 项全绿；覆盖 NMS / 多模态融合 / 配置校验 / 线程安全队列 / ROI / 告警去重 / 目标跟踪 / **鉴权语义** / **[T43] 指标注册表+告警推送(重试/丢弃/排空)+日志轮转**；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过） |
 | MySQL 落库 | 🟢 可信 | 表已建，程序正常写入（**不再产生 `db_fallback.csv`**）；**[T36] 库不可用不再退出**：降级写 CSV + 后台自动重连并回传 |
 | Phase B 级联 | 🟡 能级联 / 精度未回归 | **本仓库已带 `role=classifier` 模型**（`models/helmet_cls.xml` + `helmet_labels.txt`，`model_config.yaml` 已注册 `helmet_classifier`，`config/config.test.yaml` 默认开启级联）；⚠️ 目前只有「能跑通级联」的冒烟，**未做过精度回归**（改 `accept_label`/`accept_conf` 无人能自动报警） |
 | Phase C 异步复核 | 🟡 两端已就位 / 真 VLM 未实测 | **[T37] 服务端已实现**（`vlm_review/`：OpenAI 兼容 / 本地 transformers / mock 三后端，含 Health 探活 + 延迟观测；调用方鉴权见 [T41]）；`scripts/mock_review_server.py` 保留为规则 mock。⚠️ “真 VLM 结果好不好”取决于你本地上游模型，需自行实测 |
@@ -191,10 +217,12 @@ cd build && ./CVInfer-Gate --config config/config.test.yaml
 | `web_gateway` (Flask BFF) | 🟡 未联调 | 需先 `cp web_gateway/env.example web_gateway/.env` |
 | RTSP 接入 | 🟢 已补强 | 连通已验证；**[T36] 断流指数退避重连 + `close()` 可中断**（`interrupt_callback` 直接打断 `av_read_frame`），重连对上层透明 |
 | 性能 | 🟢 已定档 | 30.2 ± 0.7 FPS（量化上限 ~33）；瓶颈是推理 FLOP，**不在流水线** |
+| 可观测性 / 告警外发 | 🟢 **[T43] 新增** | `/metrics` 20 组指标（Prometheus 文本格式，实测 5 条真告警全部投递到 webhook、死端口场景 `failed=3 retried=6` 且不影响主链路）+ `--health-check` 探针（实测 0/4 退出码）+ 日志文件按大小轮转（5 条单测）；均默认关闭 |
 
 **已知限制（剩余）**：
 1. 结果视频无大小上限；RTSP 重连后若分辨率变化，sink 端 `VideoWriter` 不会自动重建（换流请重启进程）。
 2. **告警去重现在是「身份优先」的**（[T39]+[T40]）：默认启用跟踪 ⇒ 同一 `track_id` 即使框移开也只告警一次（快速移动目标不再重复）。但**无外观(re-ID)特征**，遮挡/交叉后可能换 id（ID switch），那之后仍可能重新告警一次；`tracking.enabled=false` 则退回纯几何去重（即 [T39] 行为）。另外 `track_id` **未落库**（`detections` 表无该列，需 schema 迁移），gRPC 响应也没带它。
+3. **告警外发/指标是 [T43] 才有的**，且各带边界：`/metrics` **无鉴权**（只应暴露在受信网络）、webhook 只支持**明文 http**、推送队列**不落盘**（`kill -9` 时未发出的通知会丢，账在 DB）—— 详见下面 [T43] 的「已知边界」。
 
 **[T41] 修复：复核链路鉴权「只有一半」**：
 - 问题：C++ 侧 `GrpcLlmReviewer` 早就按 `review.auth_token` 发 `authorization: Bearer <token>`，但**服务端 `vlm_review/server.py` 从来不校验**（grep 到的 `Authorization` 只是它作为客户端去调上游 API 用的）⇒ token 是装饰品，**任何能连上 50052 的人都能白嫖你的 VLM**（算力/额度）。文档里"含鉴权"的说法也是错的（指的其实是上游 api_key），本轮一并改正。
@@ -207,7 +235,39 @@ cd build && ./CVInfer-Gate --config config/config.test.yaml
   ./build/review_client 127.0.0.1:50052                            # 期望退出码 5(UNAUTHENTICATED)
   REVIEW_AUTH_TOKEN=s3cr3t ./build/review_client 127.0.0.1:50052    # 期望退出码 0
   ```
-- 仍未做：**主服务自己的 gRPC（对外 50051）仍无鉴权**；TLS（当前是明文共享密钥，内网够用、公网不行）；`scripts/mock_review_server.py` 不校验 token（开发 mock，忽略即可）。
+- 仍未做（[T41] 当时）：~~主服务自己的 gRPC（对外 50051）仍无鉴权~~ ⇒ **[T42] 已补（见下）**；TLS（当前是明文共享密钥，内网够用、公网不行）；`scripts/mock_review_server.py` 不校验 token（开发 mock，忽略即可）。
+
+**[T43] 新增：可观测性与告警外发（"能被看见"的最后一段）**：
+- 问题：闭环缺两段 —— ①告警只写 `alerts` 表，**没有人会知道**（去重做得再好也一样）；②运行状态只能翻日志：无指标端点、无健康探针、日志文件只涨不轮转（长时间跑等于慢慢撑爆磁盘）。
+- 做法（三件套 + 一件顺带，**默认全关 ⇒ 对存量配置零行为变化**）：
+  1. **告警外发** `src/alert/AlertNotifier.{h,cpp}`：`alerts` 表之外的 webhook。**有界队列 + 独立线程** ⇒ 推送绝不阻塞流水线（满则丢最旧，与帧队列同策略）；失败**重试 + 指数退避**（上限 5s）；停机**排空但有预算**（`drain_timeout_ms`），退避期被打断就不再干等、仍立刻再试（由预算兜底）。传输层（`Transport`）可注入 ⇒ 单测不碰网络。
+  2. **指标** `src/utils/Metrics.{h,cpp}` + `src/service/MetricsServer.{h,cpp}`：手写注册表（counter/gauge/带标签/**拉式采集器**）+ 极简 HTTP/1.1 端点（`/metrics` Prometheus 文本格式、`/healthz`）——**不引入 prometheus-cpp 依赖**，与项目“不轻易加依赖”的口径一致。
+  3. **探针** `--health-check`：单进程模式，调 gRPC `Health`（不加载模型/不连库，秒级）后退出：`0=健康 / 2=连不上 / 3=超时 / 4=未授权 / 5=不健康`。容器 healthcheck 用它（"./CVInfer-Gate --health-check"）。
+  4. 顺带：**日志按大小轮转**（`app.log_max_size_mb` / `app.log_keep_files`，默认 `0=不轮转` ⇒ 行为不变；目录不存在会自建，不再“静默丢掉文件日志”）。
+- 配置（`config/config.example.yaml` 已带注释，开关默认关；另有开箱即用的 `config/config.ops.yaml`）：
+  `metrics.{enabled,bind,port}`、`alert.push.{enabled,url,timeout_ms,max_retries,retry_backoff_ms,max_queue,drain_timeout_ms,header_name,header_value}`、`app.log_max_size_mb`、`app.log_keep_files`。
+- webhook 载荷（**下游集成契约**，已用单测钉住）：`POST <url>`、`Content-Type: application/json`，
+  `{"source":"cvinfer-gate","alert_type":"安全帽缺失","description":"...","frame_seq":1039,"label":"person","confidence":0.8700,"track_id":3,"ts_ms":1730000000000}`；**2xx = 送达**，其它（含 4xx/5xx —— 有响应 ≠ 送到）按失败重试。
+- 验证（**真跑**：`config/config.ops.yaml` + `scripts/alert_receiver.py` 当伪下游）：
+  `/metrics` 输出 20 组指标（`build_info{version}`、`uptime_seconds`、`frames_{decoded,processed,dropped,emitted}`、`detections`、`db_healthy`/`db_reconnects`、`grpc_requests_total{method,code}`、`alerts_{raised,suppressed}`、`alert_push_{sent,failed,dropped}`、`review_*`、`tracks_active`）；探针实测 `OK/EXIT=0`、`无 token/EXIT=4`、`错 token/EXIT=4`，服务端侧对应 `grpc_requests_total{method="Health",code="OK"}=1` 与 `{code="UNAUTHENTICATED"}=2`（“有人在试 token”一眼可见）；`grpc_client` 正常出 2 个目标且 `{method="Detect",code="OK"}=1`；**5 条告警全部投递**（`pushed=5 sent=5 failed=0 dropped=0`，伪下游逐条收到）；把 URL 指向死端口后 `sent=0 failed=3 retried=6 last_error=连接失败: 127.0.0.1:8877`，而**流水线照常跑完并正常出视频/落库**（失败不致命）；退出后 `/metrics` 立即拒连（`curl` 退出码 7）。
+- 轮转行为由 5 条单测钉住（`max_size_mb=0` 不轮转 / 超阈值产生 `.1` / `keep_files` 上限 / `=0` 不留归档 / 续写已有文件时把**已有大小**算进预算）—— 实测那次短跑日志不足 1MB，所以退出时 `日志轮转次数: 0` 是**正确**结果（“没触发”就不假装触发）。
+- 一处**实跑才发现**的问题（已修）：配置校验原为“`header_name` 非空 ⇒ `header_value` 也必须非空”，但“名字先填好、值等环境变量注入”（`header_value: "${ALERT_TOKEN:-}"`）是很常见的合法用法 ⇒ 探针会直接 `配置校验失败` 退出 255。现改为**值非空才要求名字**（反方向才是真写错），且只在**名字与值都给全**时才真的发这个头。
+- 已知边界：①`/metrics` **无鉴权**（与社区惯例一致）⇒ 只该暴露在受信网络：容器里用 `expose`（不发布到宿主机），裸机建议 `bind: 127.0.0.1`；②webhook 只支持 **http://**（无 TLS ⇒ 公网请走内网转发/侧车）；③推送队列**不落盘** ⇒ `kill -9` 时未发出的通知会丢（**账在 DB**，通知可由库侧补偿）；④`--health-check` 必须走**与主进程相同的配置解析**（尤其 `GRPC_AUTH_TOKEN` / `CVINFER_CONFIG`），否则会因“两份环境不一致”误判（compose 的 healthcheck 已按此写）；⑤**Grafana 面板未做**（只给了 `docker/prometheus.example.yml` 抓取配置 + 关键指标清单）。
+
+**[T42] 新增：主服务（50051）鉴权**：
+- 问题：复核链路（50052）[T41] 补齐后，**对外的 50051 仍是裸的** —— 任何能连到端口的人都能白嫖推理算力，也能靠连通性/响应快慢探测服务是否在线。
+- 做法：`src/service/AuthGuard.h`（header-only，语义**逐条对齐** T41 的 Python 拦截器，两个服务端不飘）：token 为空 = **完全不校验**（零破坏）；比对**整串** `"Bearer " + token`（大小写敏感、无尾空格容错 ⇒ `bearer x` / `Bearer x ` / `Bearer xx`(前缀攻击) 全拒）；只看 metadata 里**第一个** `authorization`（不挑“能过的那个”）；定长比较防前缀时序泄漏；拒绝码 `UNAUTHENTICATED`(16)。
+- 配置/接线：`grpc.auth_token`（建议 `"${GRPC_AUTH_TOKEN:-}"`，走 `ConfigParser::expandEnv` ⇒ 口令不进 git）；`DetectionServiceImpl::Detect` **第一行**校验（在任何业务动作之前），拒绝时按 `context->peer()` 记 WARN（日志突增 = 有人在试 token）；启动时显式打印 `[鉴权] 主服务(50051): 开启/关闭`（“以为开了其实没开”是排查噩梦）。
+- 客户端同步（否则一开鉴权就断）：`grpc_client` 读 `GRPC_AUTH_TOKEN` + 退出码 `5 = UNAUTHENTICATED`；`web_gateway/app.py` 读同一个变量并给 `stub.Detect(..., metadata=...)` 带上 Bearer；`docker-compose.yml` 把变量透进容器。
+- 验证（**真实端到端**，服务端开 token 跑起来，三种调用各来一次）：
+  ```bash
+  cd build && GRPC_AUTH_TOKEN=s3cr3t ./CVInfer-Gate --config config/config.test.yaml &
+  cd .. && ./build/grpc_client 127.0.0.1:50051                    # 期望 code 16(UNAUTHENTICATED) + 退出码 5
+  GRPC_AUTH_TOKEN=wrong  ./build/grpc_client 127.0.0.1:50051      # 期望同上(错 token 与没带等价)
+  GRPC_AUTH_TOKEN=s3cr3t ./build/grpc_client 127.0.0.1:50051      # 期望「检测成功」+ 退出码 0
+  ```
+  实测：前两条 `RPC 调用失败: 16 - 缺少或错误的 authorization metadata`、退出码 5 ✓；第三条 `检测成功 / 检测到目标数量: 1 (bed 0.62)`、退出码 0 ✓；服务端侧正好 2 条 `[鉴权] 拒绝 ipv4:127.0.0.1:xxxxx 的 Detect` ✓。**不设 token 重启后**：`auth=off`、同一客户端调用照旧成功、0 条拒绝 ⇒ 零破坏 ✓。
+- 已知边界：①**不是** gRPC 拦截器，而是“每个方法入口一行”—— 结构上不可能出现 handler 类型不匹配（C++ 同步服务直接 `return Status`），代价是**新增 RPC 要手动加这一行**；②明文共享密钥（无 TLS）⇒ 只解决“谁都能调”，不解决窃听/重放，公网必须上 TLS 或反向代理；③ token 建议纯 ASCII 且不含空格（其它语言的客户端可能发不出非 ASCII metadata）。
 
 **[T40] 新增：目标跟踪（track_id）**：
 - 问题：全链没有 `track_id` —— 告警去重只能靠"框重叠"（快速移动目标照样重复），"停留/徘徊"这类**行为分析**更没有立足点。
@@ -236,5 +296,5 @@ cd build && ./CVInfer-Gate --config config/config.test.yaml
 - **INT8 量化**（唯一剩下的性能杠杆）：预计 1.5~2.5×（本机 AVX-VNNI）；阿里云 SPR/Xeon 带 AMX 收益更大 —— 但这是**拿精度换速度**，必须与 FP32 做同视频一致率对比
 - **OpenVINO 异步推理（Async Infer）**：⚠️ 本项目的实测结论是**它不会提速**（推理侧已饱和，加并发只是多烧 CPU），见 PROJECT_NOTES §20.13/§20.14
 - 支持 RTMP/WebRTC 实时视频流推流，实现网页端实时监控
-- 引入 Prometheus + Grafana 监控推理延迟与系统资源
+- ~~引入 Prometheus + Grafana 监控推理延迟与系统资源~~ ⇒ **[T43] 已补上 Prometheus 那一半**：`/metrics` 端点（默认关闭）+ `docker/prometheus.example.yml`（抓取配置 + 关键指标清单）+ 容器 healthcheck 用 `--health-check`；**Grafana 面板仍未做**
 

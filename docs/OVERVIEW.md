@@ -14,7 +14,7 @@
 
 | 编号 | 是什么 | 例子 |
 |---|---|---|
-| **T1–T41** | **开发任务序号**（按时间顺序做的第几件事）| T34 = 优雅关闭，T35 = 性能收官，T36 = 降级/重连，T37 = 真 VLM 复核端，T38 = 单测与 CI，T39 = 告警去重，T40 = 目标跟踪，T41 = 复核鉴权对称补齐 |
+| **T1–T43** | **开发任务序号**（按时间顺序做的第几件事）| T34 = 优雅关闭，T35 = 性能收官，T36 = 降级/重连，T37 = 真 VLM 复核端，T38 = 单测与 CI，T39 = 告警去重，T40 = 目标跟踪，T41 = 复核鉴权对称补齐，T42 = 主服务(50051)鉴权，T43 = 可观测性与告警外发（metrics / 探针 / 日志轮转）|
 | **Phase A/B/C/D** | **四个功能阶段**（横切能力，不是流水线步骤）| A 模型抽象、B 级联、C 复核、D 融合 |
 | **P1-1 / P2-2** | **验收/待办编号**（某次验收清单里的条目）| 见 `PROJECT_NOTES` §14 一带 |
 | **R-5 / R-9 / R-13** | **已知风险编号**（Risk）| R-5 = RTSP 断流不重连（[T36] 已修）|
@@ -27,7 +27,7 @@
 ```
 轴① 运行时数据流   —— 一条流水线，帧怎么流（§2）
 轴② 四层抽象      —— Phase A–D，挂在流水线上的可插拔层（§4）
-轴③ 开发里程碑    —— T1~T41，记录"什么时候做了什么、修了什么坑"（见 PROJECT_NOTES）
+轴③ 开发里程碑    —— T1~T42，记录"什么时候做了什么、修了什么坑"（见 PROJECT_NOTES）
 ```
 
 ---
@@ -84,6 +84,8 @@
 | review worker | `review.worker_threads` | Phase C 异步调度 |
 | signal watcher | 1 | `sigaction` + self-pipe 优雅关闭（T34）|
 | 传感器采样 | 每传感器 1 | Phase D 按 `rate_hz` 采样 |
+| metrics HTTP | 1 | [T43] 拉式采集 `/metrics` / `/healthz`（默认关）|
+| alert push | 1 | [T43] 告警 webhook 外发：有界队列 + 重试退避（默认关）|
 
 **背压设计（关键正确点）**：队列**有界**（`max_size`）+ `drop_oldest` ⇒ 处理不过来时**丢旧帧**而不是无限堆积。
 这是它能在有限算力下"压住实时线、不让延迟越积越大"的原因。
@@ -98,11 +100,14 @@ src/
 ├── pipeline/   流水线调度 + 有界队列（背压 / 抽帧）
 ├── inference/  OpenVINOEngine(引擎池) + YoloDetector(模型工厂) + YoloPostProcessor(NMS)
 ├── database/   DBWriter: 异步批量写 + 降级 CSV + 恢复后回传
-├── service/    gRPC 服务实现
+├── alert/      [T43] 告警外发: webhook（有界队列 / 重试退避 / 传输层可注入）
+├── service/    gRPC 服务实现 + [T42] 鉴权拦截器 + [T43] /metrics 端点 + --health-check 探针
 ├── review/     Phase C: gRPC 客户端 + 异步调度（客户端在本仓库；服务端见 vlm_review/）
 ├── sensor/     Phase D: 传感器统一抽象（视频 / 雷达 / 红外）
 ├── fusion/     Phase D: 时间对齐 + 目标关联 + 加权置信度融合
-└── utils/      线程安全队列、配置解析、LifecycleCoordinator(信号处理)
+├── tracking/   [T40] 目标跟踪（IoU+质心兜底关联，输出 track_id）
+└── utils/      线程安全队列、配置解析、LifecycleCoordinator(信号处理)、AlertGate(去重)、
+               [T43] Logger(轮转) / Metrics(注册表) / HttpClient
 ```
 
 **两个配置文件（唯一需要记住的配置入口）**：
@@ -119,6 +124,7 @@ src/
 | `config/config.yaml` | 本地默认（file 源）|
 | `config/config.rtsp.yaml` | RTSP 实时流 |
 | `config/config.test.yaml` | 打开 Phase B/C/D 跑真实链路（`cascade` / `review` / `fusion` 三段 enabled 均为 true；复核需先起 `vlm_review/` 或 `scripts/mock_review_server.py`）|
+| `config/config.ops.yaml` | **[T43] 运维向**：file 源 + `metrics` 端点开启 + `alert.push` 指向 `scripts/alert_receiver.py`；不依赖 MySQL / 复核服务，用于验证可观测性与告警外发 |
 
 ---
 
@@ -147,7 +153,8 @@ src/
 | Phase D 融合(stub) | 🟢 **可信** | 端到端 `matched=66` |
 | MySQL 落库 | 🟢 **可信** | 表已建，正常写入，不再产生 `db_fallback.csv` |
 | 自检 | 🟢 50/50 | `phase_selftest`，零外部依赖、秒级 |
-| 单元测试 / CI | 🟢 **[T38+T39+T40] 新增** | `ctest` = `cv_unit_tests`(gtest 94 例) + `phase_selftest`，共 95 项全绿；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过）|
+| 单元测试 / CI | 🟢 **[T38+T39+T40+T42+T43] 新增** | `ctest` = `cv_unit_tests`(gtest 128 例) + `phase_selftest`，共 129 项全绿；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过）|
+| 可观测性 / 告警外发 | 🟢 **[T43] 新增** | `/metrics` 20 组指标（Prometheus 文本格式）+ `--health-check`（退出码 0/2/3/4/5）+ 告警 webhook 外发（实测 5/5 投递；死端口 `failed=3 retried=6` 不影响主链路）+ 日志按大小轮转；均默认关闭 |
 | 性能 | 🟢 **已定档** | 30.2 ± 0.7 fps；FP32 天花板 ~33 fps（12 组配置验证）|
 | Phase B 级联 | 🟡 **能跑通 / 精度未回归** | `helmet_classifier` 已注册并启用；缺的是精度回归 |
 | Phase C 复核 | 🟡 **两端已就位** | [T37] `vlm_review/` 已提供；真 VLM 结论未实测 |
@@ -176,11 +183,11 @@ src/
 | 功能完整度 | 🟡 85% | 四层都在，B 有真分类器、C 两端齐全，[T39] 去重 + [T40] 目标跟踪（`track_id`）；**仍缺行为规则（停留/徘徊）与轨迹预测** |
 | 文档 | 🟢 90% | 少见的好（含实测数据与踩坑记录）|
 | 性能工程 | 🟢 80% | 已量化到天花板，知道"该停" |
-| **测试自动化** | 🟡 57% ⬆️[T38+T39+T40] | 已补 gtest 单测(NMS/融合/配置/队列/ROI/告警去重/目标跟踪，94 例) + ctest + GitHub Actions；**主干仍无自动化** |
-| **可观测性** | 🔴 25% | printf 日志，**无 metrics / tracing / health** |
+| **测试自动化** | 🟡 60% ⬆️[T38+T39+T40+T42+T43] | 已补 gtest 单测(NMS/融合/配置/队列/ROI/告警去重/目标跟踪/鉴权语义/**[T43] 指标+告警推送重试丢弃+日志轮转**，128 例) + ctest + GitHub Actions；**主干（流水线 / 落库 / gRPC 服务）仍靠人工验收** |
+| **可观测性** | 🟡 65% ⬆️[T43] | 结构化日志 + 落盘 + **[T43] 按大小轮转**；**[T43] `/metrics`（20 组指标）+ `--health-check` 探针 + 告警 webhook 外发（有界队列/重试退避/统计）**；仍缺：tracing / Grafana 面板 / 指标端点鉴权 |
 | **容错健壮性** | 🟢 70% ⬆️[T36] | DB 降级+自动回连、RTSP 断流重连、复核不可用兜底；剩余：结果视频无大小上限 |
-| **部署运维** | 🟡 50% | 有 compose + CI，**无 secrets / 主服务健康探针 / 资源限制 / 日志收集** |
-| **安全** | 🔴 35% ⬆️[T41] | 明文密码入库、**主服务 50051 仍无鉴权**；复核链路（50052）鉴权已补齐（[T41]：服务端拦截器 + 客户端 `REVIEW_AUTH_TOKEN` 对称）|
+| **部署运维** | 🟡 60% ⬆️[T43] | 有 compose + CI + **[T43] 容器 healthcheck（`--health-check`）+ Prometheus 抓取示例**；仍缺：secrets 集中管理 / 资源限制 / 日志收集（ELK/Loki） |
+| **安全** | 🟡 50% ⬆️[T41]+[T42] | 鉴权两端齐了（50052 [T41] 拦截器；**50051 [T42] `grpc.auth_token`**，服务端/网关/`grpc_client` 三方对称）；明文口令已出库（`${VAR}` 展开 + 脱敏模板）。仍缺：**TLS**（当前明文共享密钥，内网够用/公网不行）、**旧 commit 历史里的口令 ⇒ 必须轮换**、密钥集中管理 |
 | **数据生命周期** | 🔴 20% | `detections` 无限增长，无归档/保留策略 |
 | **可扩展性** | 🟡 40% | 单机单进程，无水平扩展 |
 
@@ -189,15 +196,15 @@ src/
 | 如果目标是… | 完成度 | 还差什么 |
 |---|---|---|
 | **课程设计 / 毕设 / 作品集 / 答辩** | 🟢 ~95% | **基本超额**，补一页结果对比即可 |
-| **公司内部小工具上线** | 🟡 ~80% | ✅ 解开 DB 硬耦合(T36) ✅ RTSP 重连(T36) ✅ 接真实 VLM(T37) ✅ 单测+CI(T38) ✅ 去重+目标跟踪(T39/T40)；还差：日志落文件 + 进程守护、Health/metrics、**行为规则（停留/徘徊）** |
-| **对外商业产品** | 🟡 ~52% | 上面全部 + 鉴权（复核链路 ✅[T41]；主服务仍缺）/TLS/密钥管理 + 监控告警 + 压测 + 数据保留策略（CI/CD ✅ T38 已起步）|
+| **公司内部小工具上线** | 🟡 ~85% | ✅ 解开 DB 硬耦合(T36) ✅ RTSP 重连(T36) ✅ 接真实 VLM(T37) ✅ 单测+CI(T38) ✅ 去重+目标跟踪(T39/T40) ✅ 告警外发 + Health/metrics + 日志落盘&轮转(T43)；还差：进程守护（systemd/restart 策略）、**行为规则（停留/徘徊）**、Grafana 面板 |
+| **对外商业产品** | 🟡 ~56% | 上面全部 + 鉴权 ✅（50051 [T42] / 50052 [T41]）/TLS/密钥管理 + 监控告警 + 压测 + 数据保留策略（CI/CD ✅ T38 已起步） |
 
 **四条分水岭**（本项目正好全卡在上面）：
 
 1. **测试**：真项目有单测 + CI 每次提交自动跑；本项目 [T38] 已补单测+CI，但**主干（流水线 / 落库 / gRPC 服务）仍靠人工验收**；
 2. **失败处理**：真项目假设"外部依赖一定会挂"、处处降级；本项目 [T36] 已做到（DB 降级+回连、RTSP 重连、复核不可用兜底），**剩余是真密钥管理与可观测性**；
-3. **可观测**：真项目能回答"线上延迟多少、错在哪一环"；本项目靠 printf；
-4. **密钥/配置**：真项目密钥进 vault/环境变量；本项目**明文密码躺在 YAML 里**（注：配置已支持 `${VAR:-默认}` 展开，但模板里的默认值仍是明文）。
+3. **可观测**：真项目能回答"线上延迟多少、错在哪一环"；本项目 [T43] 已从"靠 printf"前进一步（`/metrics` + 探针 + 告警统计），但**仍无 tracing / Grafana 面板 / 指标鉴权**；
+4. **密钥/配置**：真项目密钥进 vault/环境变量；本项目已把口令全部改成 `${VAR:-}` 展开（模板里**不含真口令**），但**旧 commit 历史里仍有明文 ⇒ 必须轮换**（见 README [T41]/[T42]）。
 
 ---
 
@@ -205,7 +212,7 @@ src/
 
 > **一个"骨架已经是生产级、血肉还差工程化"的单机 AI 推理网关。**
 > 架构设计（分层抽象 + 可插拔四层 + 有界队列背压）**超出多数同类个人项目**；
-> 而**可观测性 / 部署运维 / 安全**这三块尚未补齐（容错 [T36] 已补齐、测试自动化 [T38] 已起步） —— 这正是它与"真项目"的全部距离。
+> 而**部署运维 / 安全**这两块尚未补齐（容错 [T36] 已补齐、测试自动化 [T38] 已起步、可观测性与告警外发 [T43] 已起步） —— 这正是它与"真项目"的主要距离。
 > 性能这条线**已走到头**（FP32 天花板 ~33 fps），唯一剩下的性能杠杆是 **INT8**（换模型，非调代码）。
 
 ---
@@ -220,5 +227,6 @@ src/
 | `docker/docker-compose.yml` | 一键拉起 MySQL + C++ 网关 + Python Web 网关 |
 | `scripts/schema.sql` | 数据库表结构（与 `docker/init_db.sql` 等价）|
 | `vlm_review/` | Phase C 复核服务端（OpenAI 兼容 / 本地 transformers / mock 三后端）|
-| `tests/unit/` | [T38] gtest 单元测试：NMS / 多模态融合 / 配置校验 / 线程安全队列 / ROI / 告警去重（[T39]）/ 目标跟踪（[T40]） |
+| `config/config.ops.yaml` + `scripts/alert_receiver.py` + `docker/prometheus.example.yml` | [T43] 可观测性三件套：开箱即跑的运维配置 / 伪下游接收端 / Prometheus 抓取配置 |
+| `tests/unit/` | [T38] gtest 单元测试：NMS / 多模态融合 / 配置校验 / 线程安全队列 / ROI / 告警去重（[T39]）/ 目标跟踪（[T40]）/ 鉴权语义（[T42]） |
 | `.github/workflows/ci.yml` | [T38] CI：编译 + `ctest`（push / PR；纯文档改动跳过，同分支旧跑自动取消）|

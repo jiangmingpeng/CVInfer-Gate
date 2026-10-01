@@ -17,7 +17,10 @@
 
 app:
   log_level: "info"       # trace|debug|info|warn|error
-  log_file: ""            # 空 = 仅输出到控制台
+  log_file: ""            # 空 = 仅输出到控制台; 建议 "logs/cvinfer.log"
+  # ---- [T43] 日志文件轮转(仅当 log_file 非空且 log_max_size_mb > 0 时生效) ----
+  log_max_size_mb: 0      # 0 = 不轮转(一直追加); 建议 10 或 64
+  log_keep_files: 3       # 保留的归档数(app.log.1 ... app.log.N); 0 = 只留当前文件
 
 sensors:
   - kind: radar
@@ -88,6 +91,18 @@ alert:
     iou: 0.30           # 判"同一目标"的框重叠阈值
     cooldown_ms: 5000   # 冷却窗(按最近一次命中刷新)
     max_entries: 256    # 记忆上限(有界)
+  # ---- [T43] 告警推送(webhook): 告警不再只躺在库里, 而是"有人知道" ----
+  #   enabled=false 时只落库(与改造前完全一致)。推送失败/队列满**不影响**落库与推理。
+  push:
+    enabled: false
+    url: "${ALERT_PUSH_URL:-http://127.0.0.1:8899/alert}"  # 只支持 http://(无 TLS)
+    timeout_ms: 3000        # 单次请求超时(连接+收发)
+    max_retries: 2          # 失败重试次数(不含首次)
+    retry_backoff_ms: 200    # 退避基数(第 n 次等待 base*2^(n-1), 上限 5s)
+    max_queue: 256          # 有界队列(满则丢最旧, 与帧队列同策略)
+    drain_timeout_ms: 5000  # 退出时最多再等多久把队列发完
+    header_name: ""         # 可选自定义头(如 "x-alert-token")
+    header_value: ""        # 其值(建议 "${ALERT_TOKEN:-}", 口令不进 git)
 
 grpc:
   port: 50051
@@ -95,3 +110,15 @@ grpc:
   max_message_size_mb: 16 # 收发消息上限 (T8; 默认 4MB 会挡住大图)
   worker_threads: 0       # 同步服务线程配额 (T8; 0 = gRPC 默认)
   keepalive_time_ms: 20000 # HTTP/2 keepalive (T8)
+  # [T42] 主服务鉴权: 非空 => 每个 RPC 都要 authorization: Bearer <token>;
+  #   空 = 不鉴权(等价改动前)。token 走环境变量 => 别把真 token 写在这里。
+  auth_token: "${GRPC_AUTH_TOKEN:-}"
+
+# ---- [T43] 指标端点(Prometheus 抓取) ----
+# enabled=false 时不监听任何端口(零行为变化)。端点**无鉴权**, 只应暴露在受信网络:
+#   * 容器内用 bind 0.0.0.0 + compose 的 expose(不发布到宿主机), Prometheus 走容器网络;
+#   * 裸机建议 bind 127.0.0.1, 或防火墙只放行抓取端。
+metrics:
+  enabled: false
+  bind: "0.0.0.0"     # 裸机跑请改成 127.0.0.1
+  port: 9100          # 避开 50051(gRPC) / 50052(复核) / 3306(MySQL)

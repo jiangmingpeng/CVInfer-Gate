@@ -18,6 +18,9 @@
 struct LogConfig {
     std::string level = "info";     // trace|debug|info|warn|error
     std::string file;               // 空 = 仅输出到控制台
+    // [T43] 文件轮转(仅在 file 非空且 max_size_mb > 0 时生效)
+    int max_size_mb = 0;            // 0 = 不轮转(一直追加); >0 = 单文件超过即轮转
+    int keep_files = 3;             // 保留的历史文件数(app.log.1 ... app.log.N); 0 = 不保留历史
 };
 
 // 帧队列防爆配置  [新增]
@@ -63,6 +66,10 @@ struct GrpcConfig {
     int max_message_size_mb = 16;        // [新增] 单条消息上限
     int worker_threads = 0;              // [新增] 0 = gRPC 默认
     int keepalive_time_ms = 20000;       // [新增] keepalive 时间
+    // [T42] 非空 => 主服务每个 RPC 都要求 authorization: Bearer <token>
+    //       (空 = 不鉴权, 与改动前完全一致)。建议写 auth_token: "${GRPC_AUTH_TOKEN:-}"
+    //       让口令走环境变量, 不进 git。
+    std::string auth_token;
 };
 
 // 级联配置  [新增/T16-T19]
@@ -159,8 +166,36 @@ struct AlertDedupConfig {
     int max_entries = 256;    // 记忆条目上限(有界, 防长时间运行无界增长)
 };
 
+// [T43] 指标端点(Prometheus 抓取)
+// ------------------------------------------------------------
+// enabled=false 时**不监听任何端口**(零行为变化)。端点无鉴权, 只应暴露在受信网络:
+//   * 容器内 bind 0.0.0.0 + compose 用 expose(不发布到宿主机), Prometheus 走容器网络抓取;
+//   * 裸机建议 bind 127.0.0.1, 或防火墙只放行抓取端。
+struct MetricsConfig {
+    bool enabled = false;
+    std::string bind = "0.0.0.0";
+    int port = 9100;      // 避开 50051(gRPC) / 50052(复核) / 3306(MySQL)
+};
+
+// [T43] 告警推送(webhook)
+// ------------------------------------------------------------
+// 缺口补全: 告警此前**只写 MySQL** —— 检测再准、去重再好, 没人会知道。
+// enabled=false ⇒ 只落库(与改造前完全一致)。传输层只支持 http://(见 utils/HttpClient.h 的边界)。
+struct AlertPushConfig {
+    bool enabled = false;
+    std::string url;               // 如 http://127.0.0.1:8899/alert
+    int timeout_ms = 3000;         // 单次请求超时(连接+收发)
+    int max_retries = 2;           // 失败重试次数(不含首次)
+    int retry_backoff_ms = 200;    // 退避基数(第 n 次等待 base*2^(n-1), 上限 5s)
+    std::size_t max_queue = 256;   // 有界队列(满则丢最旧, 与帧队列同策略)
+    int drain_timeout_ms = 5000;   // 退出时最多再等多久把队列发完
+    std::string header_name;       // 可选自定义头(如 "x-alert-token")
+    std::string header_value;      // 其值(建议 ${ALERT_TOKEN:-} 走环境变量, 不进 git)
+};
+
 struct AlertConfig {
     AlertDedupConfig dedup;
+    AlertPushConfig push;   // [T43] 推送到 webhook(默认关闭 => 只落库, 行为不变)
 };
 
 // 目标跟踪配置 [T40]
@@ -192,6 +227,7 @@ struct AppConfig {
     FusionConfig fusion;                 // [新增/T25-T26] 多模态决策级融合
     AlertConfig alert;                   // [新增/T39] 告警去重
     TrackingConfig tracking;             // [新增/T40] 目标跟踪(track_id)
+    MetricsConfig metrics;               // [新增/T43] 指标端点(Prometheus)
 };
 
 // 模型推理配置

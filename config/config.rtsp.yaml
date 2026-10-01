@@ -82,6 +82,8 @@ grpc:
   max_message_size_mb: 16
   worker_threads: 0
   keepalive_time_ms: 20000
+  # [T42] 非空 => 主服务每个 RPC 都要 authorization: Bearer <token>(空 = 不鉴权)
+  auth_token: "${GRPC_AUTH_TOKEN:-}"
 
 # ---- Phase B: 本仓库没有 role=classifier 的模型, 开了也会退化成单模型 ----
 cascade:

@@ -28,7 +28,21 @@ message DetectResponse {
     repeated Detection detections = 3;
 }
 
+// [T43] 健康检查 / 自述
+message HealthRequest {}
+
+message HealthResponse {
+    bool serving = 1;      // 进程是否在正常服务
+    string version = 2;    // 版本号
+    int64 uptime_ms = 3;   // 已运行时长(ms)
+    string detail = 4;     // 附加上下文(如 "detector=yolov8_detector")
+}
+
 // 定义 gRPC 服务
 service DetectionService {
     rpc Detect (DetectRequest) returns (DetectResponse);
+    // [T43] 探针: 容器 healthcheck / systemd / k8s 的活性检查
+    //   同样**需要鉴权**(空 token = 不鉴权), 与 T42 的口径一致:
+    //   50051 不暴露任何匿名接口。
+    rpc Health (HealthRequest) returns (HealthResponse);
 }

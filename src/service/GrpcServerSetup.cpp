@@ -43,7 +43,8 @@ std::unique_ptr<grpc::Server> buildAndStartGrpcServer(const GrpcConfig& cfg,
     CVLOG_INFO << "gRPC 配置: max_msg=" << mb << "MB, worker_threads="
                << (cfg.worker_threads > 0 ? cfg.worker_threads : -1)
                << "(<=0 表示默认), keepalive=" << cfg.keepalive_time_ms
-               << "ms, rpc_timeout=" << cfg.timeout_ms << "ms";
+               << "ms, rpc_timeout=" << cfg.timeout_ms << "ms"
+               << ", auth=" << (cfg.auth_token.empty() ? "off" : "on");   // [T42]
 
     return builder.BuildAndStart();
 }

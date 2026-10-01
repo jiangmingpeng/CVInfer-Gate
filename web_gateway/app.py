@@ -37,6 +37,9 @@ GRPC_SERVER = _env_str("GRPC_SERVER", "localhost:50051")
 GRPC_TIMEOUT_MS = _env_int("GRPC_TIMEOUT_MS", 5000)
 # 收发消息上限(MB)，与 C++ 端 grpc.max_message_size_mb 对齐（默认 4MB 会挡住大图）
 GRPC_MAX_MSG_MB = _env_int("GRPC_MAX_MSG_MB", 16)
+# [T42] 主服务(50051)鉴权 token：非空则每次调用带 authorization: Bearer <token>
+# 留空 => 不带任何 metadata（要求服务端也没开鉴权，与改动前完全一致）
+GRPC_AUTH_TOKEN = _env_str("GRPC_AUTH_TOKEN", "")
 # Flask 监听地址与端口
 WEB_HOST = _env_str("WEB_HOST", "0.0.0.0")
 WEB_PORT = _env_int("WEB_PORT", 8080)
@@ -51,6 +54,17 @@ channel = grpc.insecure_channel(
     ],
 )
 stub = DetectionServiceStub(channel)
+
+
+def _grpc_metadata():
+    """[T42] 主服务鉴权 metadata：token 非空才带。
+
+    服务端(AuthGuard)比的是**整串** "Bearer " + token —— 大小写敏感、没有尾空格
+    容错，所以这里必须精确拼同一串（与 tests/test_grpc_client.cpp 完全一致）。
+    """
+    if not GRPC_AUTH_TOKEN:
+        return ()
+    return (("authorization", f"Bearer {GRPC_AUTH_TOKEN}"),)
 
 # 2. 一个极简的前端 HTML 页面（原生写在代码里，免去建模板文件）
 HTML_PAGE = """
@@ -84,8 +98,17 @@ def detect():
     # 4.1 构造 gRPC 请求并调用 C++
     try:
         request_grpc = DetectRequest(image_data=img_bytes)
-        response = stub.Detect(request_grpc, timeout=GRPC_TIMEOUT_MS / 1000.0)
+        response = stub.Detect(
+            request_grpc,
+            timeout=GRPC_TIMEOUT_MS / 1000.0,
+            metadata=_grpc_metadata(),   # [T42] 空 token => ()，不带 metadata
+        )
     except grpc.RpcError as e:
+        # [T42] 鉴权失败最常见的原因：网关与服务端 env 不一致(或只配了一边)
+        if e.code() == grpc.StatusCode.UNAUTHENTICATED:
+            return ("C++ 服务调用失败: 鉴权不通过 —— 网关与服务端必须用同一个 "
+                    "GRPC_AUTH_TOKEN（当前网关侧: %s）"
+                    % ("已设置" if GRPC_AUTH_TOKEN else "未设置")), 500
         return f"C++ 服务调用失败: {e.details()}", 500
     
     if not response.success:

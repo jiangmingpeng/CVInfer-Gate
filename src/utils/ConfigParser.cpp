@@ -102,6 +102,11 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
         if (config["app"]) {
             app_config_.log.level = readStr(config["app"], "log_level", app_config_.log.level);
             app_config_.log.file  = readStr(config["app"], "log_file",  app_config_.log.file);
+            // [T43] 日志文件轮转
+            app_config_.log.max_size_mb =
+                config["app"]["log_max_size_mb"].as<int>(app_config_.log.max_size_mb);
+            app_config_.log.keep_files =
+                config["app"]["log_keep_files"].as<int>(app_config_.log.keep_files);
         }
 
         // ---- video ----
@@ -155,6 +160,16 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             app_config_.grpc.max_message_size_mb = g["max_message_size_mb"].as<int>(app_config_.grpc.max_message_size_mb);
             app_config_.grpc.worker_threads      = g["worker_threads"].as<int>(app_config_.grpc.worker_threads);
             app_config_.grpc.keepalive_time_ms   = g["keepalive_time_ms"].as<int>(app_config_.grpc.keepalive_time_ms);
+            // [T42] 走 readStr => 支持 ${GRPC_AUTH_TOKEN:-} 环境变量展开(同 database.password)
+            app_config_.grpc.auth_token          = readStr(g, "auth_token", app_config_.grpc.auth_token);
+        }
+
+        // ---- metrics [T43] 指标端点(Prometheus) ----
+        if (config["metrics"]) {
+            const YAML::Node m = config["metrics"];
+            app_config_.metrics.enabled = m["enabled"].as<bool>(app_config_.metrics.enabled);
+            app_config_.metrics.bind    = readStr(m, "bind", app_config_.metrics.bind);
+            app_config_.metrics.port    = m["port"].as<int>(app_config_.metrics.port);
         }
 
         // ---- cascade [T16-T19] ----
@@ -262,6 +277,20 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
                 dc.iou         = d["iou"].as<float>(dc.iou);
                 dc.cooldown_ms = d["cooldown_ms"].as<int>(dc.cooldown_ms);
                 dc.max_entries = d["max_entries"].as<int>(dc.max_entries);
+            }
+            // [T43] 告警推送(webhook): 推送是"通知", 落库才是"账" —— 推送失败不影响落库
+            if (a["push"]) {
+                const YAML::Node p = a["push"];
+                auto& pc = app_config_.alert.push;
+                pc.enabled          = p["enabled"].as<bool>(pc.enabled);
+                pc.url              = readStr(p, "url", pc.url);
+                pc.timeout_ms       = p["timeout_ms"].as<int>(pc.timeout_ms);
+                pc.max_retries      = p["max_retries"].as<int>(pc.max_retries);
+                pc.retry_backoff_ms = p["retry_backoff_ms"].as<int>(pc.retry_backoff_ms);
+                pc.max_queue        = p["max_queue"].as<std::size_t>(pc.max_queue);
+                pc.drain_timeout_ms = p["drain_timeout_ms"].as<int>(pc.drain_timeout_ms);
+                pc.header_name      = readStr(p, "header_name", pc.header_name);
+                pc.header_value     = readStr(p, "header_value", pc.header_value);
             }
         }
 
@@ -427,6 +456,41 @@ bool ConfigParser::validate() const {
         fail("alert.dedup.cooldown_ms 不能为负");
     if (dd.max_entries < 1)
         fail("alert.dedup.max_entries 必须 >= 1");
+
+    // 日志轮转 [T43]
+    if (app_config_.log.max_size_mb < 0)
+        fail("app.log_max_size_mb 不能为负(0 = 不轮转)");
+    if (app_config_.log.keep_files < 0)
+        fail("app.log_keep_files 不能为负(0 = 只保留当前文件)");
+
+    // 指标端点 [T43]
+    if (app_config_.metrics.port <= 0 || app_config_.metrics.port > 65535)
+        fail("metrics.port 必须位于 1..65535");
+    if (app_config_.metrics.port == app_config_.grpc.port)
+        fail("metrics.port 不能与 grpc.port 相同: " + std::to_string(app_config_.grpc.port));
+    if (app_config_.metrics.enabled && app_config_.metrics.bind.empty())
+        fail("metrics.enabled=true 时 metrics.bind 不能为空(建议 127.0.0.1 或 0.0.0.0)");
+
+    // 告警推送 [T43]
+    const auto& ap = app_config_.alert.push;
+    if (ap.timeout_ms < 1)
+        fail("alert.push.timeout_ms 必须 >= 1");
+    if (ap.max_retries < 0)
+        fail("alert.push.max_retries 不能为负");
+    if (ap.retry_backoff_ms < 0)
+        fail("alert.push.retry_backoff_ms 不能为负");
+    if (ap.max_queue < 1)
+        fail("alert.push.max_queue 必须 >= 1");
+    if (ap.drain_timeout_ms < 0)
+        fail("alert.push.drain_timeout_ms 不能为负");
+    if (ap.enabled && ap.url.empty())
+        fail("alert.push.enabled=true 时 alert.push.url 不能为空");
+    if (ap.enabled && ap.url.rfind("http://", 0) != 0)
+        fail("alert.push.url 目前仅支持 http:// (无 TLS; 公网请用内网转发/侧车): " + ap.url);
+    // 自定义头: "给了名字但值暂时为空" 是常见且合法的组合(等环境变量注入) => 视为不发该头;
+    //   反过来 "给了值却没给名字" 一定是写错了(发了也白发) => 拦下。
+    if (!ap.header_value.empty() && ap.header_name.empty())
+        fail("alert.push.header_value 非空时必须同时给 header_name");
 
     // 目标跟踪 [T40]
     const auto& tc = app_config_.tracking;

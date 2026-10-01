@@ -27,7 +27,7 @@
 #         --base-url http://127.0.0.1:8000/v1 --model Qwen/Qwen2.5-VL-7B-Instruct
 #
 # ⚠️ 时间基: 程序按**当前工作目录**解析相对路径 ⇒ 从 build/ 跑时,
-#    video.source_path 的 test.mp4 指的是 build/test.mp4。
+#    video.source_path 的 ../test.mp4 指的是仓库根目录的 test.mp4(从 build/ 启动)。
 # ============================================================
 
 log:
@@ -37,7 +37,7 @@ log:
 video:
   # source_type: file
   source_type: rtsp
-  # source_path: test.mp4   # 相对 build/ (从 build/ 启动程序)
+  # source_path: ../test.mp4   # 相对 build/ (从 build/ 启动程序)
   source_path: rtsp://127.0.0.1:8554/live   # 相对 build/ (从 build/ 启动程序)
   target_fps: 10          # 文件源限速解码 ⇒ 每帧都推理, 不积累延迟
   frame_interval: 1       # 想要更高吞吐就只改这个(见 PROJECT_NOTES §16.1)
@@ -70,6 +70,8 @@ grpc:
   max_message_size_mb: 16
   worker_threads: 0
   keepalive_time_ms: 20000
+  # [T42] 非空 => 主服务每个 RPC 都要 authorization: Bearer <token>(空 = 不鉴权)
+  auth_token: "${GRPC_AUTH_TOKEN:-}"
 
 # ---- Phase B: 级联复核 (主筛 person 灰区 -> helmet_classifier 二级复核, T16-T19) ----
 # 依赖 config/model_config.yaml 中已注册的 role=classifier 模型 helmet_classifier
