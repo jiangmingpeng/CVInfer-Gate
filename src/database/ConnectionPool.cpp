@@ -10,7 +10,7 @@ ConnectionPool::~ConnectionPool() {
     close();
 }
 
-bool ConnectionPool::init(const DatabaseConfig& config) {
+bool ConnectionPool::init(const DatabaseConfig& config, int max_attempts, int retry_sleep_ms) {
     close();   // 重置旧资源
 
     {
@@ -29,7 +29,11 @@ bool ConnectionPool::init(const DatabaseConfig& config) {
     }
 
     const int n = config.pool_size < 1 ? 1 : config.pool_size;
-    const int retries = config.max_retries < 1 ? 1 : config.max_retries;
+    // [T36] 启动时可只试一次(不卡启动); 后台探测也走这里重连。
+    const int retries = (max_attempts > 0)
+                            ? max_attempts
+                            : (config.max_retries < 1 ? 1 : config.max_retries);
+    if (retry_sleep_ms < 0) retry_sleep_ms = 0;
 
     for (int i = 0; i < n; ++i) {
         std::shared_ptr<sql::Connection> conn;
@@ -42,12 +46,17 @@ bool ConnectionPool::init(const DatabaseConfig& config) {
             } catch (sql::SQLException& e) {
                 std::cerr << "[ConnectionPool] 连接 " << (i + 1) << "/" << n
                           << " 第 " << (attempt + 1) << "/" << retries
-                          << " 次失败: " << e.what() << " 等待 2 秒重试..." << std::endl;
-                std::this_thread::sleep_for(std::chrono::seconds(2));
+                          << " 次失败: " << e.what();
+                const bool will_retry = (attempt + 1) < retries && retry_sleep_ms > 0;
+                if (will_retry) std::cerr << " 等待 " << retry_sleep_ms << "ms 重试...";
+                std::cerr << std::endl;
+                if (will_retry) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(retry_sleep_ms));
+                }
             }
         }
         if (!ok) {
-            std::cerr << "[ConnectionPool] 连接池初始化失败, 已回滚。" << std::endl;
+            std::cerr << "[ConnectionPool] 连接池初始化失败 (调用方可选择降级重试)。" << std::endl;
             conns_.clear();
             return false;
         }

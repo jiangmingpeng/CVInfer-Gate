@@ -1,0 +1,99 @@
+# ============================================================
+# [T38] CI: 编译 + 单元测试 + 阶段自检
+# ------------------------------------------------------------
+# 目标(比赛/产品化口径): **每次 push/PR 自动回答"还能不能编、逻辑还对不对"**,
+# 不再依赖"人工想起来跑一次 phase_selftest"。
+#
+# 依赖安装与 docker/Dockerfile 保持同一套(ubuntu 22.04),
+# 避免"本地能编、CI 编不过"两套环境。
+#
+# 跑什么:
+#   1) cv_unit_tests    —— gtest 单元测试(纯逻辑: NMS/融合/配置/队列/ROI)
+#   2) phase_selftest   —— Phase A~D 接缝自检(原有 50 项)
+# 两者都注册进 ctest, 由 `ctest --output-on-failure` 统一驱动。
+#
+# 触发: 任意分支的 push / PR; 但**纯文档改动跳过**(paths-ignore *.md / docs/**),
+#       且同一分支连续 push 时自动取消旧跑(concurrency)。
+# ============================================================
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    # 纯文档改动不触发 CI(省 Actions 额度)。
+    # ⚠️ 若将来把 CI 设为 required check, 纯文档 PR 会一直停在 pending —— 那时再拆掉。
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+# 同一分支连续 push 时取消仍在跑的旧任务(避免排队等待与额度浪费)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: 编译 + 测试 (Ubuntu 22.04)
+    runs-on: ubuntu-22.04
+
+    env:
+      OV_VERSION: "2025.4.0"
+      OV_ROOT: /opt/intel/openvino_2025.4.0
+      OV_TARBALL: openvino_2025.4.0.tgz
+      OV_URL: https://storage.openvinotoolkit.org/repositories/openvino/packages/2025.4/linux/openvino_toolkit_ubuntu22_2025.4.0.20398.8fdad55727d_x86_64.tgz
+      # 与 docker/Dockerfile 一致: 让运行期找得到 libopenvino.so。
+      # ⚠️ 必须设: gtest_discover_tests 会在**构建期执行**测试二进制来枚举用例,
+      #    加载不到 .so 会直接让 cmake --build 失败(而不是只影响测试阶段)。
+      LD_LIBRARY_PATH: /opt/intel/openvino_2025.4.0/runtime/lib/intel64
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装系统依赖 (与 docker/Dockerfile 对齐)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libopencv-dev \
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
+            libgrpc++-dev protobuf-compiler-grpc libprotobuf-dev \
+            libmysqlcppconn-dev \
+            libyaml-cpp-dev \
+            libgtest-dev
+
+      # OpenVINO 压缩包 ~300MB: 命中缓存可省 1~2 分钟
+      - name: 缓存 OpenVINO 包
+        id: ov-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OV_TARBALL }}
+          key: openvino-${{ env.OV_VERSION }}-ubuntu22
+
+      - name: 下载 OpenVINO
+        if: steps.ov-cache.outputs.cache-hit != 'true'
+        run: curl -L "$OV_URL" --output "$OV_TARBALL"
+
+      - name: 解压 OpenVINO
+        run: |
+          tar -xf "$OV_TARBALL"
+          sudo mkdir -p /opt/intel
+          sudo mv openvino_toolkit_ubuntu22_${OV_VERSION}* "$OV_ROOT"
+
+      - name: 配置 (CMake)
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOpenVINO_DIR="$OV_ROOT/runtime/cmake" \
+            -DCV_BUILD_TESTS=ON \
+            -DCV_TESTS_REQUIRE_GTEST=ON
+
+      - name: 编译
+        run: cmake --build build -j"$(nproc)"
+
+      - name: 测试 (ctest: 单元测试 + 阶段自检)
+        run: cd build && ctest --output-on-failure

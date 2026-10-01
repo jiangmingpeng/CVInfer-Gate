@@ -19,6 +19,7 @@ message ReviewRequest {
     float  confidence = 3;   // 主模型置信度
     uint64 frame_seq  = 4;   // 帧序号(上层按此回收结果)
     string prompt     = 5;   // 业务提示(可空), 如"判断该人员是否未佩戴安全帽"
+    string roi_meta   = 6;   // [T37] 可选: ROI 像素框等元数据(仅留痕/调试, 可空)
 }
 
 message ReviewResponse {
@@ -27,8 +28,23 @@ message ReviewResponse {
     string label      = 3;   // 复核标签(如 "no_helmet")
     float  confidence = 4;   // 复核置信度
     string reason     = 5;   // 复核理由(可空, 便于留痕)
+    string model      = 6;   // [T37] 观测: 实际产出该结论的模型名(可空)
+    int64  latency_ms = 7;   // [T37] 观测: 服务端处理耗时(ms); 0 = 未上报
+}
+
+// [T37] 健康探测: 供客户端在启动时确认"复核服务是否就绪",
+//        避免把"服务不可用"误判成"复核否决"。
+//        未实现该 RPC 的服务端会返回 UNIMPLEMENTED, 客户端须容忍。
+message HealthRequest {}
+
+message HealthResponse {
+    bool   ready   = 1;   // 是否就绪(可接受复核请求)
+    string backend = 2;   // 后端类型: openai / transformers / mock ...
+    string model   = 3;   // 实际模型名(可空)
+    string detail  = 4;   // 附加信息(可空)
 }
 
 service ReviewService {
     rpc Review (ReviewRequest) returns (ReviewResponse);
+    rpc Health (HealthRequest) returns (HealthResponse);
 }

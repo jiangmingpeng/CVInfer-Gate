@@ -16,7 +16,8 @@
 # ============================================================
 
 cascade:
-  enabled: false                 # 置 true 才构建 CascadeEngine; false = 单模型直通
+  enabled: true                 # 置 true 才构建 CascadeEngine; false = 单模型直通
+  # enabled: false                 # 置 true 才构建 CascadeEngine; false = 单模型直通
   primary: yolov8_detector       # 主筛模型名(留空 = 首个 detector)
   secondary: helmet_classifier   # 二级分类器模型名(留空/找不到 = 退化为单模型)
 
@@ -28,7 +29,7 @@ cascade:
 
   # ---- 复核细节 ----
   roi_padding: 0.10              # ROI 相对目标宽高外扩 10% 再裁剪到图像边界
-  accept_label: "with_helmet"    # 视为"通过"的二级标签(留空 = 只按置信度判定)
+  accept_label: "safety_helmet"    # 视为"通过"的二级标签(留空 = 只按置信度判定)
   accept_conf: 0.50              # 通过所需的最低二级置信度
   drop_rejected: true            # 二级否决时是否丢弃该目标
   boost_on_confirm: false        # 确认时是否用二级置信度替换主置信度

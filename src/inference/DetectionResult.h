@@ -23,4 +23,11 @@ struct DetectionResult {
     float vision_confidence = -1.0f;        // 融合前的**视觉**置信度(-1 = 未融合)
     float sensor_confidence = -1.0f;        // 参与融合的传感器置信度(-1 = 无)
     float distance_m = -1.0f;               // 传感器测距(m; <0 = 未知)
+
+    // ---- [T40] 目标跟踪元数据 ----
+    // 加法字段(默认 -1 = 未跟踪), 对未启用跟踪的链路零影响。
+    // 由 tracking::TargetTracker 在 sink 阶段就地回写(与融合同位置, 融合之后)。
+    // 注: id 单调递增且永不复用 —— 复用会让告警去重把新目标误判成旧目标。
+    // 注: gRPC 响应(proto)未带该字段, 见 docs/OVERVIEW 的待办。
+    int track_id = -1;                      // 跨帧稳定目标 id(-1 = 无)
 };

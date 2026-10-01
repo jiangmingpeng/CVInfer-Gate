@@ -45,6 +45,41 @@ services:
       - ../test.mp4:/app/test.mp4 
       - ../output:/app/output  # 拿到处理后的视频
 
+  # ==========================================================
+  # [T37] Phase C 复核服务(真 VLM) —— 可选, 隔离在 profile 内
+  # ----------------------------------------------------------
+  # 默认 `docker compose up` **不会**启动它; 需要时:
+  #     docker compose --profile vlm up -d vlm-review
+  #
+  # 本容器只做 gRPC↔HTTP 适配, 上游 VLM 由 VLM_BASE_URL 指向
+  # (宿主机上的 vLLM/Ollama/云 API, 用 host.docker.internal 回访宿主机)。
+  #
+  # ⚠️ 让 C++ 网关用上它: 需把 config.yaml 的 review.endpoint 从
+  #    127.0.0.1:50052 改成容器网络内的 vlm-review:50052。
+  #    (config/ 是挂载进去的, 改宿主机文件即可, 但注意 127.0.0.1 在
+  #     容器内指向容器自身, 不会命中本服务。)
+  # ==========================================================
+  vlm-review:
+    build:
+      context: ..
+      dockerfile: vlm_review/Dockerfile
+    container_name: cv_infer_vlm_review
+    profiles: ["vlm"]
+    environment:
+      VLM_BACKEND: ${VLM_BACKEND:-openai}
+      VLM_BASE_URL: ${VLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      VLM_MODEL: ${VLM_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}
+      VLM_API_KEY: ${VLM_API_KEY:-EMPTY}
+      VLM_PORT: "50052"
+      VLM_MAX_WORKERS: "4"
+    ports:
+      - "50052:50052"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Linux 下让容器能回访宿主机
+    restart: unless-stopped
+    networks:
+      - cv-network
+
 networks:
   cv-network:
     driver: bridge

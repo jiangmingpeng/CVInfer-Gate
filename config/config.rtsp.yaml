@@ -48,7 +48,7 @@ log:
 #   等几秒无反应就 `kill` 掉进程重跑。
 # ============================================================
 video:
-  source_type: rtsp
+  source_type: "rtsp"
   source_path: "rtsp://127.0.0.1:8554/live"   # ← 改成你的地址
   target_fps: 0            # RTSP 必须 0(见上)
   frame_interval: 3        # 每 3 帧取 1 帧推理; 想全帧推理就设 1

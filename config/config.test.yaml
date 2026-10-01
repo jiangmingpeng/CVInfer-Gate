@@ -10,7 +10,7 @@
 #                    --model-config /home/jmp/CVInfer-Gate/config/model_config.yaml
 #
 # 本配置的默认开关(= 与 PROJECT_NOTES §14.7 那次端到端实测一致):
-#     cascade.enabled = false   ← 本仓库没有 role=classifier 模型, 开了会退化成单模型
+#     cascade.enabled = true    ← helmet_classifier(416x416, CPU) 已注册, 打开级联 T16-T19
 #     review.enabled  = true    ← 需要先起复核 mock, 否则只看到 unavailable=N
 #     fusion.enabled  = true    ← 传感器只用 stub(不依赖任何外部文件)
 #
@@ -19,8 +19,12 @@
 #     P1-2 只开融合: review.enabled=false, fusion.enabled=true
 #     P1-3 组合(C+D): 本文件默认即此, 见 PROJECT_NOTES §15 验收清单
 #
-# 前置(复核 mock, 否则 review 全部走 unavailable 兜底):
+# 前置(复核服务, 否则 review 全部走 unavailable 兜底), 二选一:
+#     # A. 确定性 mock(与旧行为一致, 回归用)
 #     python3 scripts/mock_review_server.py --port 50052 --mode auto
+#     # B. 真 VLM(T37; 需先把上游 VLM 起在 :8000, 如 vLLM/Ollama)
+#     python3 -m vlm_review.server --backend openai \
+#         --base-url http://127.0.0.1:8000/v1 --model Qwen/Qwen2.5-VL-7B-Instruct
 #
 # ⚠️ 时间基: 程序按**当前工作目录**解析相对路径 ⇒ 从 build/ 跑时,
 #    video.source_path 的 test.mp4 指的是 build/test.mp4。
@@ -31,8 +35,10 @@ log:
   file: ""                # 空 = 仅输出到控制台
 
 video:
-  source_type: file
-  source_path: test.mp4   # 相对 build/ (从 build/ 启动程序)
+  # source_type: file
+  source_type: rtsp
+  # source_path: test.mp4   # 相对 build/ (从 build/ 启动程序)
+  source_path: rtsp://127.0.0.1:8554/live   # 相对 build/ (从 build/ 启动程序)
   target_fps: 10          # 文件源限速解码 ⇒ 每帧都推理, 不积累延迟
   frame_interval: 1       # 想要更高吞吐就只改这个(见 PROJECT_NOTES §16.1)
   queue:
@@ -62,17 +68,30 @@ grpc:
   worker_threads: 0
   keepalive_time_ms: 20000
 
-# ---- Phase B: 本仓库没有 role=classifier 的模型(见 config/model_config.yaml 注释),
-#      打开也只会退化成单模型, 故保持 false。要验级联需先准备分类器模型。----
+# ---- Phase B: 级联复核 (主筛 person 灰区 -> helmet_classifier 二级复核, T16-T19) ----
+# 依赖 config/model_config.yaml 中已注册的 role=classifier 模型 helmet_classifier
+# (输入 416x416, device=CPU)。⚠️ secondary 必须与模型名完全一致,
+# 否则 buildCascade() 会“静默退化为单模型”, 表现为 Phase B 没跑但也不报错。
 cascade:
-  enabled: false
+  enabled: true
+  primary: yolov8_detector       # 留空 = 首个 detector
+  secondary: helmet_classifier   # 留空/找不到 = 退化为单模型
+  trigger:
+    labels: ["person"]           # 只对 person 触发复核
+    min_conf: 0.40               # 灰区下界(含)
+    max_conf: 0.90               # 灰区上界(不含)
+  roi_padding: 0.10              # ROI 外扩 10% 再裁剪
+  accept_label: "safety_helmet"  # 与 models/helmet_labels.txt 对齐(原 with_helmet 对不上)
+  accept_conf: 0.50
+  drop_rejected: true            # 二级否决 -> 丢弃该目标
+  boost_on_confirm: false
 
 # ---- Phase C: 大模型异步复核(本仓库=客户端, 服务端需另行部署)----
 # 只对**灰区/候选**目标送审; 复核**确认才告警**; 不可用时按 alert_on_failure 兜底。
 review:
   enabled: true
-  endpoint: "127.0.0.1:50052"     # scripts/mock_review_server.py 的监听地址
-  timeout_ms: 3000
+  endpoint: "127.0.0.1:50052"     # mock 或 vlm_review.server 的监听地址
+  timeout_ms: 3000                 # 真 VLM 首包可能较慢, 可适当调大(如 8000)
   queue_size: 64
   worker_threads: 2
   trigger:
@@ -83,6 +102,11 @@ review:
   prompt: "判断该人员是否未佩戴安全帽"
   alert_type: "安全帽缺失"
   alert_on_failure: false          # 拿不到结论(超时/不可用)时默认**不**告警
+  # ---- [T37] 接入真 VLM ----
+  max_message_size_mb: 16
+  keepalive_time_ms: 20000
+  auth_token: "${VLM_TOKEN:-}"     # 需鉴权的 VLM 才填; 默认空
+  health_check: true               # 启动时探测 Health: 就绪/未就绪一眼可见
 
 # ---- Phase D: 多模态决策级融合 ----
 # ⚠️ 视频**不写在这里**(由上面的 video: 段描述), 这里只列雷达/红外。

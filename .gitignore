@@ -1,8 +1,22 @@
-# 编译产物
+# 编译产物 / 生成物 (全部可由 cmake 重建 => 一律不入库)
+# CMake 全部生成物(含 build/pyproto 的 proto 桩)
 build/
+# ctest 的 Testing/Temporary/LastTest.log(从根目录跑 ctest 时产生)
+/Testing/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+# 编译数据库(内含本机绝对路径, 换机器即失效)
+compile_commands.json
+# CMake 生成的顶层 Makefile(只锚定根目录, 不误伤子目录)
+/Makefile
 *.o
 *.a
 *.so
+*.dylib
+*.dll
+*.exe
 
 # 测试视频与图片
 *.mp4
@@ -10,17 +24,59 @@ build/
 *.jpg
 *.png
 
-# 模型权重 (如果文件太大，不建议传 GitHub，只传 xml 和 bin)
+# 模型权重(大文件 => 不入库; 由导出脚本/下载重建, 见 README "模型准备")
+#   * 只忽略**真正的权重体积**; 小体积的 IR 拓扑(models/*.xml)与类别标签(*.txt)
+#     建议入库(便于复现), 所以**不**在忽略之列。
+*.bin
 *.pt
 *.onnx
+*.pth
+*.safetensors
+*.h5
+*.caffemodel
+*.tflite
+*.weights
+*.blob
+*.trt
+*.engine
+*.plan
 
-# 配置文件 
+# 密钥 / 凭据 / 本地覆盖配置(一律不入库)
+# 含明文 DB 口令(历史遗留: 口令应走环境变量, 见 OVERVIEW §5)
 config/config.yaml
+.env
+*.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+secrets*
+*credentials*
+config/*.local.yaml
+config/*.secret.yaml
+
+# ! 保底: 示例/模板配置**必须入库**。否定规则写在通配之后且优先于通配 =>
+#   将来谁加了宽泛规则(如 *.yaml), 这几行也能挡住"误伤示例配置"这个坑。
+!config/*.example.yaml
+!*.example.yaml
+!templates/*.yaml
+!.env.example
 
 
-# Python 缓存
+# Python 缓存 / 虚拟环境
 __pycache__/
-*.pyc
+*.py[cod]
+# 复核服务端(grpcio)的虚拟环境
+.venv/
+# 版本化命名, 如 .venv312/
+.venv*/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 web_gateway/*.log
 
 # ============================================================
@@ -28,7 +84,42 @@ web_gateway/*.log
 # 之前这几项都没被忽略: mediamtx 的日志会随运行一直长, 容易误提交。
 # ============================================================
 mediamtx.log
-mediamtx                 # mediamtx 可执行文件(二进制, 不入库)
-recordings/              # mediamtx 录制产物(若开启 record)
-db_fallback.csv          # 库不可用时的降级落盘(运行时产物)
-web_gateway/.env         # 本地环境变量(含地址/口令, 不入库)
+db_fallback.csv
+web_gateway/.env
+# 下面两项**原本写成了行尾注释** —— 而 .gitignore **不支持行尾注释**,
+# 整行(含 '#') 会被当成字面 pattern => 这两条规则从来没生效过(已修)。
+mediamtx
+# 注: mediamtx 目前**已被 git 跟踪**, 而忽略规则对已跟踪文件无效 =>
+#     要真正把它移出仓库需一次性执行: git rm --cached mediamtx
+recordings/
+
+# ============================================================
+# [T37] 接真 VLM 时补齐的漏网之鱼
+# ============================================================
+# Python 虚拟环境(复核服务端需要 grpcio; .venv/ 之前未被忽略)
+.venv/
+venv/
+
+# 仓库根目录的临时日志(联调/构建校验产生的 scratch 文件)
+/*.log
+*.log
+nohup.out
+# 后台服务(如 vlm_review server)的 pid 文件
+*.pid
+# 单测写的临时配置: 从仓库根直接跑 cv_unit_tests 时会落到这里
+cv_ut_*.yaml
+
+# 视频/图片补充(老规则只有 mp4/avi/jpg/png)
+*.mkv
+*.mov
+*.jpeg
+# 注: 上面几条是"不提交相机帧/测试视频"的意图; 若将来要提交文档配图,
+#     在**通配之后**加一行 !docs/*.png 之类的否定规则即可。
+
+# IDE / 系统 scratch
+.idea/
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo

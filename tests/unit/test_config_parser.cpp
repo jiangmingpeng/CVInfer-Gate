@@ -1,0 +1,564 @@
+// ============================================================
+// [T38] ConfigParser 单元测试
+// ------------------------------------------------------------
+// 为什么值得测: 配置是**唯一**能"静默把系统调成另一个东西"的输入 ——
+// 线程数、灰区阈值、融合开关、复核地址全在这里。本项目已经写了不少校验
+// (含交叉校验, 如 source_type 与 source_path 前缀是否自相矛盾), 但此前
+// **零自动化覆盖**: 误改一条校验规则, 没有任何东西会报警。
+//
+// 测试策略: 走公开入口(loadAppConfig / loadModelConfig), 用临时 YAML 文件
+// 驱动 —— 这样连"解析 + 环境变量展开 + 校验"整条链一起覆盖, 而不是只测
+// 某个 private 函数。
+//
+// 覆盖: 最小合法配置 + 默认值 / 缺文件 / 类型与前缀交叉校验 / 日志与队列
+//       枚举校验 / ${VAR} 与 ${VAR:-default} 展开 / 级联灰区颠倒 / 复核缺
+//       endpoint / 传感器各种非法组合 / 多模型新格式 / 单模型旧格式兼容 /
+//       角色与性能模式校验。
+// ============================================================
+#include <gtest/gtest.h>
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+
+#include "utils/ConfigParser.h"
+
+namespace {
+
+// 把 YAML 文本落到临时文件, 返回路径(每次用不同文件名, 避免相互覆盖)
+std::string writeTempYaml(const std::string& name, const std::string& content) {
+    const auto path = std::filesystem::temp_directory_path() / name;
+    std::ofstream ofs(path, std::ios::trunc);
+    ofs << content;
+    ofs.close();
+    return path.string();
+}
+
+// 一份"最小可用"的系统配置: 只有 video 是必填的
+const char* kMinimalAppYaml = R"(
+video:
+  source_type: file
+  source_path: /tmp/unit_test.mp4
+)";
+
+}  // namespace
+
+// ---------------------------------------------------------------- 系统配置
+
+TEST(ConfigParserApp, LoadsMinimalConfigAndKeepsDocumentedDefaults) {
+    ConfigParser p;
+    ASSERT_TRUE(p.loadAppConfig(writeTempYaml("cv_ut_min.yaml", kMinimalAppYaml)));
+
+    const AppConfig& c = p.getAppConfig();
+    EXPECT_EQ(c.video.source_type, "file");
+    EXPECT_EQ(c.video.source_path, "/tmp/unit_test.mp4");
+    // 默认值本身也是契约: 少配一项不该改变行为
+    EXPECT_EQ(c.log.level, "info");
+    EXPECT_EQ(c.pipeline.worker_threads, 2);
+    EXPECT_EQ(c.database.pool_size, 4);
+    EXPECT_EQ(c.grpc.port, 50051);
+    EXPECT_EQ(c.video.queue.max_size, 24u);
+    EXPECT_EQ(c.video.queue.policy, "drop_oldest");
+    // 四个增强层默认全关 => 与纯视觉链路行为一致
+    EXPECT_FALSE(c.cascade.enabled);
+    EXPECT_FALSE(c.review.enabled);
+    EXPECT_FALSE(c.fusion.enabled);
+    EXPECT_TRUE(c.sensors.empty());
+    // [T39] 告警去重: 默认**开启** —— 这是刻意的行为修正(关掉就退回"每帧都告警")
+    EXPECT_TRUE(c.alert.dedup.enabled);
+    EXPECT_FLOAT_EQ(c.alert.dedup.iou, 0.30f);
+    EXPECT_EQ(c.alert.dedup.cooldown_ms, 5000);
+    EXPECT_EQ(c.alert.dedup.max_entries, 256);
+    // [T40] 目标跟踪: 同样默认**开启**(关掉就退回几何去重)
+    EXPECT_TRUE(c.tracking.enabled);
+    EXPECT_FLOAT_EQ(c.tracking.iou, 0.30f);
+    EXPECT_FLOAT_EQ(c.tracking.dist_factor, 1.0f);
+    EXPECT_EQ(c.tracking.max_age_ms, 1000);
+    EXPECT_EQ(c.tracking.min_hits, 1);
+    EXPECT_EQ(c.tracking.max_tracks, 256);
+}
+
+TEST(ConfigParserApp, RejectsMissingFile) {
+    ConfigParser p;
+    EXPECT_FALSE(p.loadAppConfig("/definitely/not/here.yaml"));
+}
+
+TEST(ConfigParserApp, RejectsSourceTypePathMismatch) {
+    // 高频手误: 换了视频源却忘了改 source_type —— 校验必须拦住,
+    // 否则会静默走错源(旧版本的真实坑)
+    ConfigParser p;
+    EXPECT_FALSE(p.loadAppConfig(writeTempYaml("cv_ut_mis1.yaml", R"(
+video:
+  source_type: file
+  source_path: rtsp://127.0.0.1:8554/live
+)")));
+
+    ConfigParser q;
+    EXPECT_FALSE(q.loadAppConfig(writeTempYaml("cv_ut_mis2.yaml", R"(
+video:
+  source_type: rtsp
+  source_path: test.mp4
+)")));
+}
+
+TEST(ConfigParserApp, RejectsInvalidEnums) {
+    ConfigParser log_level;
+    EXPECT_FALSE(log_level.loadAppConfig(writeTempYaml("cv_ut_log.yaml", R"(
+app:
+  log_level: verbose
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+)")));
+
+    ConfigParser queue_policy;
+    EXPECT_FALSE(queue_policy.loadAppConfig(writeTempYaml("cv_ut_qp.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+  queue:
+    policy: drop_newest
+)")));
+}
+
+TEST(ConfigParserApp, RejectsNumericOutOfRange) {
+    ConfigParser frame_interval;
+    EXPECT_FALSE(frame_interval.loadAppConfig(writeTempYaml("cv_ut_fi.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+  frame_interval: 0
+)")));
+
+    ConfigParser workers;
+    EXPECT_FALSE(workers.loadAppConfig(writeTempYaml("cv_ut_wt.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+pipeline:
+  worker_threads: 0
+)")));
+
+    ConfigParser port;
+    EXPECT_FALSE(port.loadAppConfig(writeTempYaml("cv_ut_port.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+grpc:
+  port: 70000
+)")));
+}
+
+TEST(ConfigParserApp, ExpandsEnvVarThenFallsBackToDefault) {
+    ::setenv("CVINFER_UT_PATH", "/tmp/from_env.mp4", 1);
+    ConfigParser with_env;
+    ASSERT_TRUE(with_env.loadAppConfig(writeTempYaml("cv_ut_env1.yaml", R"(
+video:
+  source_type: file
+  source_path: ${CVINFER_UT_PATH:-/tmp/from_default.mp4}
+)")));
+    EXPECT_EQ(with_env.getAppConfig().video.source_path, "/tmp/from_env.mp4");
+
+    ::unsetenv("CVINFER_UT_PATH");
+    ConfigParser without_env;
+    ASSERT_TRUE(without_env.loadAppConfig(writeTempYaml("cv_ut_env2.yaml", R"(
+video:
+  source_type: file
+  source_path: ${CVINFER_UT_PATH:-/tmp/from_default.mp4}
+)")));
+    EXPECT_EQ(without_env.getAppConfig().video.source_path, "/tmp/from_default.mp4");
+}
+
+TEST(ConfigParserApp, KeepsLiteralWhenEnvUndefinedAndNoDefault) {
+    ::unsetenv("CVINFER_UT_UNSET");
+    ConfigParser p;
+    ASSERT_TRUE(p.loadAppConfig(writeTempYaml("cv_ut_env3.yaml", R"(
+video:
+  source_type: file
+  source_path: ${CVINFER_UT_UNSET}
+)")));
+    // 保留原样 -> 便于排查"配置没生效"类问题(而不是变成空字符串后静默通过)
+    EXPECT_EQ(p.getAppConfig().video.source_path, "${CVINFER_UT_UNSET}");
+}
+
+TEST(ConfigParserApp, RejectsCascadeWithInvertedGrayZone) {
+    ConfigParser p;
+    EXPECT_FALSE(p.loadAppConfig(writeTempYaml("cv_ut_cas.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+cascade:
+  enabled: true
+  trigger:
+    labels: ["person"]
+    min_conf: 0.9
+    max_conf: 0.1
+)")));
+}
+
+TEST(ConfigParserApp, RejectsReviewEnabledWithoutEndpoint) {
+    ConfigParser p;
+    EXPECT_FALSE(p.loadAppConfig(writeTempYaml("cv_ut_rev.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+review:
+  enabled: true
+  endpoint: ""
+)")));
+}
+
+TEST(ConfigParserApp, RejectsInvalidSensorConfigurations) {
+    // 传感器重名
+    ConfigParser dup;
+    EXPECT_FALSE(dup.loadAppConfig(writeTempYaml("cv_ut_sen1.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+sensors:
+  - kind: radar
+    name: front
+    backend: stub
+  - kind: radar
+    name: front
+    backend: stub
+)")));
+
+    // 视频不能在 sensors: 里重复声明(否则两处时间基不一致)
+    ConfigParser video_kind;
+    EXPECT_FALSE(video_kind.loadAppConfig(writeTempYaml("cv_ut_sen2.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+sensors:
+  - kind: video
+    name: cam0
+    backend: stub
+)")));
+
+    // backend=file 必须给 path
+    ConfigParser file_backend;
+    EXPECT_FALSE(file_backend.loadAppConfig(writeTempYaml("cv_ut_sen3.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+sensors:
+  - kind: infrared
+    name: ir0
+    backend: file
+)")));
+
+    // 开了融合却没配任何传感器
+    ConfigParser no_sensors;
+    EXPECT_FALSE(no_sensors.loadAppConfig(writeTempYaml("cv_ut_sen4.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+fusion:
+  enabled: true
+)")));
+}
+
+TEST(ConfigParserApp, ParsesAlertDedupOverrides) {
+    // [T39] YAML 里的 alert.dedup 必须真的被读进去(不能只是默认值恰好一致)
+    ConfigParser p;
+    ASSERT_TRUE(p.loadAppConfig(writeTempYaml("cv_ut_gate_ok.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+alert:
+  dedup:
+    enabled: false
+    iou: 0.5
+    cooldown_ms: 12000
+    max_entries: 8
+)")));
+    const AppConfig& c = p.getAppConfig();
+    EXPECT_FALSE(c.alert.dedup.enabled);
+    EXPECT_FLOAT_EQ(c.alert.dedup.iou, 0.5f);
+    EXPECT_EQ(c.alert.dedup.cooldown_ms, 12000);
+    EXPECT_EQ(c.alert.dedup.max_entries, 8);
+}
+
+TEST(ConfigParserApp, RejectsInvalidAlertDedup) {
+    // [T39] iou 越界 / cooldown 为负 / max_entries < 1 都必须被拒
+    ConfigParser bad_iou;
+    EXPECT_FALSE(bad_iou.loadAppConfig(writeTempYaml("cv_ut_gate1.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+alert:
+  dedup:
+    iou: 1.5
+)")));
+
+    ConfigParser bad_cd;
+    EXPECT_FALSE(bad_cd.loadAppConfig(writeTempYaml("cv_ut_gate2.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+alert:
+  dedup:
+    cooldown_ms: -1
+)")));
+
+    ConfigParser bad_max;
+    EXPECT_FALSE(bad_max.loadAppConfig(writeTempYaml("cv_ut_gate3.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+alert:
+  dedup:
+    max_entries: 0
+)")));
+}
+
+TEST(ConfigParserApp, ParsesTrackingOverridesAndRejectsBadValues) {
+    // [T40] YAML 里的 tracking 必须真的被读进去
+    ConfigParser p;
+    ASSERT_TRUE(p.loadAppConfig(writeTempYaml("cv_ut_trk_ok.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+tracking:
+  enabled: false
+  iou: 0.5
+  dist_factor: 0.0
+  max_age_ms: 2000
+  min_hits: 3
+  max_tracks: 16
+)")));
+    const AppConfig& c = p.getAppConfig();
+    EXPECT_FALSE(c.tracking.enabled);
+    EXPECT_FLOAT_EQ(c.tracking.iou, 0.5f);
+    EXPECT_FLOAT_EQ(c.tracking.dist_factor, 0.0f);
+    EXPECT_EQ(c.tracking.max_age_ms, 2000);
+    EXPECT_EQ(c.tracking.min_hits, 3);
+    EXPECT_EQ(c.tracking.max_tracks, 16);
+
+    ConfigParser bad_iou;
+    EXPECT_FALSE(bad_iou.loadAppConfig(writeTempYaml("cv_ut_trk1.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+tracking:
+  iou: 2.0
+)")));
+
+    ConfigParser bad_hits;
+    EXPECT_FALSE(bad_hits.loadAppConfig(writeTempYaml("cv_ut_trk2.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+tracking:
+  min_hits: 0
+)")));
+
+    ConfigParser bad_age;
+    EXPECT_FALSE(bad_age.loadAppConfig(writeTempYaml("cv_ut_trk3.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+tracking:
+  max_age_ms: -5
+)")));
+}
+
+TEST(ConfigParserApp, AcceptsFullFeatureConfig) {
+    ConfigParser p;
+    ASSERT_TRUE(p.loadAppConfig(writeTempYaml("cv_ut_full.yaml", R"(
+video:
+  source_type: rtsp
+  source_path: rtsp://127.0.0.1:8554/live
+  target_fps: 10
+  frame_interval: 2
+  queue:
+    max_size: 8
+    policy: block
+pipeline:
+  worker_threads: 2
+cascade:
+  enabled: true
+  primary: yolov8_detector
+  secondary: helmet_classifier
+  trigger:
+    labels: ["person"]
+    min_conf: 0.40
+    max_conf: 0.90
+  accept_label: safety_helmet
+  accept_conf: 0.50
+review:
+  enabled: true
+  endpoint: "127.0.0.1:50052"
+  trigger:
+    labels: ["person"]
+    min_conf: 0.50
+    max_conf: 1.00
+sensors:
+  - kind: radar
+    name: radar_front
+    backend: stub
+    rate_hz: 10
+    labels: ["person"]
+fusion:
+  enabled: true
+  level: decision
+  time_tolerance_ms: 50
+  match_iou: 0.30
+  sensor_weight: 0.35
+)")));
+
+    const AppConfig& c = p.getAppConfig();
+    EXPECT_EQ(c.video.queue.policy, "block");
+    EXPECT_EQ(c.pipeline.worker_threads, 2);
+    EXPECT_TRUE(c.cascade.enabled);
+    EXPECT_EQ(c.cascade.secondary, "helmet_classifier");
+    ASSERT_EQ(c.cascade.trigger_labels.size(), 1u);
+    EXPECT_EQ(c.cascade.trigger_labels[0], "person");
+    EXPECT_FLOAT_EQ(c.cascade.min_conf, 0.40f);
+    EXPECT_TRUE(c.review.enabled);
+    ASSERT_EQ(c.sensors.size(), 1u);
+    EXPECT_EQ(c.sensors[0].name, "radar_front");
+    EXPECT_EQ(c.sensors[0].rate_hz, 10);
+    EXPECT_TRUE(c.fusion.enabled);
+    EXPECT_FLOAT_EQ(c.fusion.sensor_weight, 0.35f);
+}
+
+// ---------------------------------------------------------------- 模型配置
+
+TEST(ConfigParserModel, LoadsMultiModelListAndTreatsFirstAsPrimary) {
+    ConfigParser p;
+    ASSERT_TRUE(p.loadModelConfig(writeTempYaml("cv_ut_models.yaml", R"(
+models:
+  - name: yolov8_detector
+    role: detector
+    xml_path: models/yolov8n.xml
+    bin_path: models/yolov8n.bin
+    labels_path: models/labels.txt
+    conf: 0.30
+    nms: 0.50
+    pool_size: 2
+    device: CPU
+    performance_mode: LATENCY
+    num_threads: 4
+  - name: helmet_classifier
+    role: classifier
+    xml_path: models/helmet_cls.xml
+    bin_path: models/helmet_cls.bin
+    labels_path: models/helmet_labels.txt
+    input_width: 416
+    input_height: 416
+)")));
+
+    const auto& all = p.getModelConfigs();
+    ASSERT_EQ(all.size(), 2u);
+
+    EXPECT_EQ(all[0].name, "yolov8_detector");
+    EXPECT_EQ(all[0].role, "detector");
+    EXPECT_FLOAT_EQ(all[0].conf_threshold, 0.30f);
+    EXPECT_FLOAT_EQ(all[0].nms_threshold, 0.50f);
+    EXPECT_EQ(all[0].pool_size, 2);
+    EXPECT_EQ(all[0].num_threads, 4);
+    EXPECT_EQ(all[0].perf_mode, "latency");   // 大写输入被规整为小写
+
+    EXPECT_EQ(all[1].role, "classifier");
+    EXPECT_EQ(all[1].input_width, 416);
+    EXPECT_EQ(all[1].input_height, 416);
+    // device 未写 -> 保留 "AUTO"(注意: 生产配置**必须**显式写 CPU, 否则 WSL+NPU 会崩)
+    EXPECT_EQ(all[1].device, "AUTO");
+
+    // 旧接口语义: getModelConfig() = 首个 = 主模型
+    EXPECT_EQ(p.getModelConfig().name, "yolov8_detector");
+}
+
+TEST(ConfigParserModel, StillAcceptsLegacySingleModelFormat) {
+    ConfigParser p;
+    ASSERT_TRUE(p.loadModelConfig(writeTempYaml("cv_ut_legacy.yaml", R"(
+model:
+  xml_path: models/yolov8n.xml
+  bin_path: models/yolov8n.bin
+  labels_path: models/labels.txt
+thresholds:
+  conf: 0.25
+  nms: 0.45
+)")));
+
+    const auto& all = p.getModelConfigs();
+    ASSERT_EQ(all.size(), 1u);                 // 单模型被规整为长度 1 的列表
+    EXPECT_EQ(all[0].name, "yolov8_detector");
+    EXPECT_EQ(all[0].role, "detector");
+    EXPECT_EQ(all[0].model_xml_path, "models/yolov8n.xml");
+    EXPECT_FLOAT_EQ(all[0].conf_threshold, 0.25f);
+    EXPECT_FLOAT_EQ(all[0].nms_threshold, 0.45f);
+    EXPECT_EQ(all[0].pool_size, 0);
+    EXPECT_EQ(all[0].input_width, 640);
+}
+
+TEST(ConfigParserModel, RejectsMissingXmlPath) {
+    ConfigParser p;
+    EXPECT_FALSE(p.loadModelConfig(writeTempYaml("cv_ut_m1.yaml", R"(
+models:
+  - name: broken
+    role: detector
+)")));
+}
+
+TEST(ConfigParserModel, RejectsDuplicateModelNames) {
+    ConfigParser p;
+    EXPECT_FALSE(p.loadModelConfig(writeTempYaml("cv_ut_m2.yaml", R"(
+models:
+  - name: same_name
+    role: detector
+    xml_path: models/a.xml
+  - name: same_name
+    role: classifier
+    xml_path: models/b.xml
+)")));
+}
+
+TEST(ConfigParserModel, RejectsInvalidRoleIncludingDeprecatedReviewer) {
+    ConfigParser bogus_role;
+    EXPECT_FALSE(bogus_role.loadModelConfig(writeTempYaml("cv_ut_m3.yaml", R"(
+models:
+  - name: seg
+    role: segmenter
+    xml_path: models/a.xml
+)")));
+
+    // role=reviewer 已废弃: 大模型复核走 config.yaml 的 review: 段, 不放 models:
+    ConfigParser reviewer;
+    EXPECT_FALSE(reviewer.loadModelConfig(writeTempYaml("cv_ut_m4.yaml", R"(
+models:
+  - name: vlm
+    role: reviewer
+    xml_path: models/a.xml
+)")));
+}
+
+TEST(ConfigParserModel, RejectsInvalidPerfModeButAcceptsEmptyOne) {
+    ConfigParser bogus;
+    EXPECT_FALSE(bogus.loadModelConfig(writeTempYaml("cv_ut_m5.yaml", R"(
+models:
+  - name: det
+    role: detector
+    xml_path: models/a.xml
+    performance_mode: turbo
+)")));
+
+    // 不写 performance_mode = 不向 OpenVINO 设任何属性(改造前行为)
+    ConfigParser empty_mode;
+    ASSERT_TRUE(empty_mode.loadModelConfig(writeTempYaml("cv_ut_m6.yaml", R"(
+models:
+  - name: det
+    role: detector
+    xml_path: models/a.xml
+)")));
+    EXPECT_TRUE(empty_mode.getModelConfig().perf_mode.empty());
+    EXPECT_EQ(empty_mode.getModelConfig().device, "AUTO");
+}
+
+TEST(ConfigParserModel, RejectsMissingFile) {
+    ConfigParser p;
+    EXPECT_FALSE(p.loadModelConfig("/definitely/not/here.yaml"));
+}

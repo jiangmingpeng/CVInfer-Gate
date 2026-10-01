@@ -68,7 +68,13 @@ FusionStats SensorFusion::fuse(std::vector<DetectionResult>& vision,
         for (const auto& t : s.targets) targets.push_back(&t);
     }
     st.targets = targets.size();
-    if (targets.empty() || vision.empty()) return st;
+    // 只在"没有任何传感器目标"时提前返回。
+    // 曾经还挂着 `|| vision.empty()`: 结果某帧视觉一个目标都没有时, 整个融合阶段直接
+    // 返回 —— 传感器证据既不计数也不产出。而"雷达/红外测到了、视觉漏检了"恰恰是
+    // 最该靠融合兜住的场景, 等于把多模态的价值静默作废。
+    // 现在空视觉帧也照常走下面的未关联逻辑: 统计口径恢复真实, 且 emit_sensor_only=true
+    // 时带框传感器目标可独立成目标(默认 false ⇒ 只统计, 不产出, 行为对存量配置零影响)。
+    if (targets.empty()) return st;
 
     std::vector<char> used(targets.size(), 0);
 

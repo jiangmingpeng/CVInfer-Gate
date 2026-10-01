@@ -18,13 +18,10 @@ DBWriter::~DBWriter() {
 bool DBWriter::init(const AppConfig& config) {
     const auto& db = config.database;
 
-    // 1. 初始化连接池
-    if (!pool_.init(db)) {
-        CVLOG_ERROR << "[DBWriter] 连接池初始化失败。";
-        return false;
-    }
+    db_cfg_ = db;   // [T36] 保存配置: 后台重连要用
 
-    // 2.  批量 / 重试 / 降级 阈值 (全部来自 DatabaseConfig, 带兜底默认)
+    // 1.  批量 / 重试 / 降级 阈值 (全部来自 DatabaseConfig, 带兜底默认)
+    //     注: [T36] 提到“连库”之前 —— 降级提示里要用到 probe_interval_ / fallback_path_
     batch_size_ = db.batch_size < 1 ? 20 : db.batch_size;
     batch_interval_ =
         std::chrono::milliseconds(db.flush_interval_ms < 1 ? 1000 : db.flush_interval_ms);
@@ -33,6 +30,20 @@ bool DBWriter::init(const AppConfig& config) {
     probe_after_calls_ = db.reconnect_after_writes < 1 ? 100 : db.reconnect_after_writes;
     fallback_path_ = db.fallback_path;
     pop_timeout_ = batch_interval_;   // 空闲时按批量间隔唤起, 保证定时冲刷
+
+    // 2. [T36] 连接池: **只做一次快速尝试**(不重试、不睡眠)。
+    //    失败**不再让调用方退出** —— 转“降级模式”, 由后台线程按
+    //    reconnect_interval_ms / reconnect_after_writes 自动重连
+    //    (见 ensurePoolAvailable)。这样“数据库没起”不再等于“程序起不来”:
+    //    演示/联调时 gRPC 与流水线照常工作, 记录先落本地 CSV。
+    if (!pool_.init(db, /*max_attempts=*/1, /*retry_sleep_ms=*/0)) {
+        db_healthy_ = false;   // 直接进入“暂停写库 + 定时探测”, 不等第一帧才发现
+        CVLOG_WARN << "[DBWriter][T36] 数据库不可用, 以【降级模式】启动: 记录先落本地 "
+                   << (fallback_path_.empty() ? "(未配置降级文件!)" : fallback_path_)
+                   << ", 每 " << probe_interval_.count() << "ms 或 "
+                   << probe_after_calls_ << " 次冲刷后自动重连; 恢复后自动回传并清理。"
+                   << " (程序不再因此退出)";
+    }
 
     // 3. 有界任务队列 (容量随 batch_size 放大, 防爆)
     const std::size_t capacity =
@@ -45,9 +56,11 @@ bool DBWriter::init(const AppConfig& config) {
     writer_thread_ = std::thread([this] { writerLoop(); });
 
     CVLOG_INFO << "[DBWriter] 初始化完成 (连接池=" << pool_.size()
+               << (db_healthy_.load() ? "" : " [降级模式]")
                << ", 队列容量=" << capacity << ", batch=" << batch_size_ << "/"
                << batch_interval_.count() << "ms, 降级文件="
                << (fallback_path_.empty() ? "(禁用)" : fallback_path_) << ")";
+    // [T36] 无论连没连上库都返回 true: 让进程能继续把 gRPC / 流水线跑起来。
     return true;
 }
 
@@ -152,6 +165,18 @@ bool DBWriter::shouldProbe() const {
     return false;
 }
 
+// [T36] 池为空(启动时数据库不可用)时, 单次重建。
+//   刻意传 (1, 0): 只试一次、不睡眠 —— 探测是“顺路做一下”, 不能把
+//   写库线程阻塞几秒; 这次不成, 下一轮(probe_interval_ms 后)再来。
+bool DBWriter::ensurePoolAvailable() {
+    if (pool_.ready()) return true;
+    const bool ok = pool_.init(db_cfg_, /*max_attempts=*/1, /*retry_sleep_ms=*/0);
+    if (ok) {
+        CVLOG_INFO << "[DBWriter][T36] 连接池已重建, 连接数=" << pool_.size();
+    }
+    return ok;
+}
+
 void DBWriter::flushBatch() {
     if (batch_.empty()) {
         last_flush_ = std::chrono::steady_clock::now();
@@ -165,7 +190,9 @@ void DBWriter::flushBatch() {
         // 到重试时机: 做一次探测性写入
         last_probe_ = std::chrono::steady_clock::now();
         probe_counter_ = 0;
-        written = tryWriteOnce();
+        // [T36] 池里一个连接都没有(启动时就没连上)时, 先单次重建池 ——
+        //   否则 acquire() 永远返回 nullptr, 永远恢复不了。
+        written = ensurePoolAvailable() && tryWriteOnce();
     } else {
         ++probe_counter_;   // 数据库不可用且未到重试时机: 直接跳过写库
     }
@@ -190,7 +217,9 @@ bool DBWriter::tryWriteOnce() {
     }
     // 由"不健康"转为"健康": 说明数据库恢复, 回传本地缓存
     if (!db_healthy_.exchange(true)) {
-        CVLOG_INFO << "[DBWriter] 数据库已恢复, 开始回传本地缓存...";
+        db_reconnects_.fetch_add(1);   // [T36] 观测
+        CVLOG_INFO << "[DBWriter] 数据库已恢复(第 " << db_reconnects_.load()
+                   << " 次), 开始回传本地缓存...";
         replayFallback();
     }
     return true;

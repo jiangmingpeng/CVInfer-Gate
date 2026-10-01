@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
@@ -41,6 +42,13 @@
 //   C) 本地降级: 当数据库不可用时, 把结构化记录追加写入本地 CSV
 //      (database.fallback_path), 保证"数据不丢"; 一旦数据库恢复,
 //      自动回传并清理本地文件。
+//
+// [T36] 修 §20.4「库不可用 ⇒ 程序直接退出」:
+//   init() **不再**因连不上库而 return false —— 改为“降级模式启动”
+//   (队列/后台线程照常起, 记录先落 CSV), 并由后台线程按
+//   reconnect_interval_ms 周期性重建连接池, 恢复后自动回传。
+//   配套: 启动只做 1 次快速连库尝试(不再卡启动 ~20 秒); 池空时用
+//   ensurePoolAvailable() 单次重建(不重试/不睡眠, 留给下一轮探测)。
 // ============================================================
 class DBWriter {
 public:
@@ -59,6 +67,11 @@ public:
 
     void flush();   // 阻塞直到队列排空 (尽力而为)
     void stop();    // 关闭队列 + join 后台线程 + 关闭连接池
+
+    // [T36] 观测: true=正常写库; false=降级中(记录在本地 CSV)
+    bool dbHealthy() const { return db_healthy_.load(); }
+    // [T36] 观测: 数据库“不可用 -> 恢复”的累计次数
+    std::uint64_t dbReconnects() const { return db_reconnects_.load(); }
 
 private:
     struct Task {
@@ -91,10 +104,13 @@ private:
     bool writeBatch(sql::Connection* conn);              // 批量插入(事务)
     void markUnhealthy(const std::string& reason);       // 转不健康(仅告警一次)
     bool shouldProbe() const;                            // 是否到重试时机
+    // [T36] 池为空(启动时就没连上)时, 单次重建连接池; 已连上则直接 true
+    bool ensurePoolAvailable();
     void spillToFallback(const std::vector<Row>& rows);  // 本地降级(CSV 追加)
     void replayFallback();                               // 恢复后回传本地缓存
 
     ConnectionPool pool_;
+    DatabaseConfig db_cfg_;                              // [T36] 保存 DB 配置(后台重连要用)
     std::unique_ptr<ThreadSafeQueue<Task>> queue_;
     std::thread writer_thread_;
     std::atomic<bool> running_{false};
@@ -106,6 +122,7 @@ private:
 
     // ---- 数据库健康状态缓存 ----
     std::atomic<bool> db_healthy_{true};                 // 乐观初值: 首次失败才告警
+    std::atomic<std::uint64_t> db_reconnects_{0};        // [T36] 恢复次数(观测)
     std::chrono::steady_clock::time_point last_flush_{};
     std::chrono::steady_clock::time_point last_probe_{};
     int probe_counter_ = 0;                              // 暂停后累计的冲刷次数

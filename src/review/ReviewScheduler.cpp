@@ -78,6 +78,8 @@ void ReviewScheduler::workerLoop() {
                 out.label      = res.label;
                 out.confidence = res.confidence;
                 out.reason     = res.reason;
+                out.model      = res.model;              // [T37]
+                out.latency_ms = res.latency_ms;         // [T37]
                 if (res.confirmed) ++confirmed_; else ++rejected_;
                 out.alert = res.confirmed;              // 确认才告警
                 break;

@@ -4,11 +4,11 @@
 # 说明:
 #   1) 本文件是"多模型"格式示例; 旧的单模型格式 (model: + thresholds:)
 #      仍然完全兼容, ConfigParser 会自动识别并规整为长度 1 的模型列表。
-#   2) 使用方式: 将本文件重命名为 model_config.yaml, 或按需合并其内容。
-#      (与 config/config.yaml 一样, 运行时读取路径为 config/model_config.yaml)
+#   2) 本文件**就是**运行期读取的 config/model_config.yaml（与 config/config.yaml 并列接入）；
+#      如需回到“单模型”路径，改用 model: + thresholds: 格式即可（见下方兼容说明）。
 #   3) 角色 role:
 #        detector   -> 目标检测 (当前实现: YoloDetector)
-#        classifier -> 分类/行为识别 (T17 预留)
+#        classifier -> 分类/行为识别 (BehaviorClassifier)
 #        reviewer   -> 交 review 层(复用 gRPC)处理, 不走模型工厂
 # ============================================================
 
@@ -23,103 +23,31 @@ models:
     input_height: 640
     conf: 0.25                 # 也可写作 thresholds: { conf: 0.25, nms: 0.45 }
     nms: 0.45
-    pool_size: 2               # 引擎池大小; 省略或 0 = 按 pipeline.worker_threads 兜底
-                               #   约束: **worker_threads 必须 <= pool_size**
-                               #   ⚠️ [T34 实测] 引擎/worker 数 **不改变吞吐**(1~8 引擎都是 ~30~33fps),
-                               #      它只是“请求的容器” ⇒ 取最小可用值, 省内存/启动时间
-                               #      (每多一个引擎 = 多一个 ov::Core + 多编译一次模型)
-                               #   约束: **worker_threads 必须 <= pool_size**(借不到引擎的 worker 会白等)
-                               #   ⚠️ 实测更正: 引擎数 2->4 对吞吐 **零收益**(引擎/worker 不增加并发度,
-                               #      真正决定并发度的是下面 T30 的 num_threads) ⇒ 取**最小够用值**
-                               #      (pool_size=2 已满足 worker_threads=2; 多开的引擎只会多占内存+多编译一遍模型)。
+    pool_size: 2               # 引擎池大小; 0 = 按 pipeline.worker_threads 兜底
+                               #   约束: worker_threads 必须 <= pool_size(借不到引擎的 worker 会白等)
+                               #   引擎数只影响内存/启动时间, 不影响吞吐 ⇒ 取最小够用值(详见 PROJECT_NOTES §20.13)
     acquire_timeout_ms: 2000   # 借引擎超时(ms)
 
-    # ---- [T30] 推理性能旋钮(可选; 不写 = 与改造前完全一致: AUTO + 默认线程数) ----
-    # ⚠️ [T33] device 必须显式写 CPU, **不要用 AUTO**!
-    #    原因(WSL 实测 backtrace): device=AUTO 会让 AUTO 插件去枚举所有设备, 枚举到 NPU 时在
-    #      libopenvino_intel_npu_plugin.so 的 create_plugin_engine() 里 **段错误**
-    #      (不是优雅返回“设备不可用”)。
-    #    ⚠️ 更正一处早先的误判: 本机 CPU 是 i7-12650H(Alder Lake, **并未硬件 NPU**),
-    #      所以触发条件不是“有 NPU 硬件”, 而是 **WSL 里没有加速设备 + pip wheel 里带了 NPU 插件**,
-    #      AUTO 一让它去枚举插件就崩。阿里云那份 OpenVINO 没带该插件, 所以 AUTO 无事
-    #      —— 这就是“同一份代码、换了机器才崩”的原因。
-    #    本项目是纯 CPU 推理, AUTO 只会白多一次探测 + 踩雷, 直接写 CPU。
-    device: CPU               # AUTO | CPU | GPU | GPU.0 | NPU; ★纯 CPU 场景必须写 CPU(见上)
-    # [T30 实验] ⚠️ 结论(实测 3 点拟合, 误差 <1%):
-    #   **推理总并行度 = num_threads**, 与 pool_size / worker_threads 无关!
-    #      并发度 = 100%(decode) + num_threads x 100% + ~15%
-    #      吞吐   = num_threads / 每帧核·毫秒  (1 线程 54, 2 线程 80, 4 线程 122 核·毫秒)
-    #   实测: threads 1 -> 215% / 18.4fps;  2 -> 318% / 25.0fps;  4 -> 514% / 32.8fps
-    #   ⇒ 引擎数 2->4、worker 数 2->4 **完全没带来任何并发**(已验证两次)
-    #   ⇒ 各引擎的线程并非各自独立, 而是共享同一个总量池(OV CPU 插件层面)
-    #   ⇒ 所以唯一的旋钮就是 num_threads; 加引擎/加 worker 是错的方向
-    #
-    #   本次: num_threads=8 (把推理线程预算拉满 8 核)
-    #     预测: 4 个并发请求共享 8 线程预算 ⇒ 每个 ~2 线程 ⇒ 乐观 4/0.040 = ~100fps
-    #           保守(仍退化为“1 个大推理”) ⇒ 8/0.184 ≈ 43fps
-    #     观察点: 并发度应跳到 750~800%; 若仍卡在 300% 以下就是另一码事
-    # (原 T30 实验的 num_threads: 8 已删除 —— 否则与下方 T34 的 num_threads 重复,
-    #  yaml-cpp 取第一个, 会让调优静默失效)
-    # [T30 下一步(若本次仍不涨)] performance_mode: throughput
-    #   —— 让 OV 把 8 线程切成“8 个 1 线程 stream”, 配合 pool_size/worker_threads=8,
-    #      每个 stream 接一个独立请求 ⇒ 才是 OV 教科书式的最大吞吐形态。
-    #      注: 单引擎单请求时 THROUGHPUT 会把线程摊薄成 1/stream, 反而变慢, 必须配套改。
-    # ------------------------------------------------------------
-    # [T34 结论] gdb 栈快照定位到根因(2026-xx):
-    #   · OpenVINO 2026.4 的 CPU 插件用 **oneTBB**(runtime/3rdparty/tbb/libtbb.so.12) 做并行后端
-    #     ⇒ 真正的线程池是 TBB arena, 不是“每引擎线程数”
-    #   · 4 个 worker **确实在并发** 执行 infer()(栈里同时 3~4 个 worker 在 CPUStreamsExecutor::execute)
-    #     ⇒ 早前“推理被串行化”的推断是错的, 已推翻
-    #   · 但总推理 CPU 死死卡在 ~4 核(threads=4 与 8 都是 512%), 且每个线程只忙 ~46%
-    #     ⇒ OV **LATENCY(默认)模式**把 threads_per_stream 钉在“物理核数(4)”,
-    #       拒绝用那 4 个超线程兄弟(8 逻辑核 = 4 物理 x 2)
-    #   ⇒ 钥匙 = performance_mode: throughput (OV 只在该模式才允许用满逻辑核/多 stream)
-    #     配套: num_threads=8 + pool_size=8 + worker_threads=8 (8 请求 x 8 个 1 线程 stream)
-    #   ⚠️ 若 throughput 仍未把 CPU 推到 700%+, 下一个(最后一个)旋钮是显式 NUM_STREAMS:
-    #      在 OpenVINOEngine::init 的 props 里加 ov::num_streams(8) 即可(3 行代码)。
-    # ------------------------------------------------------------
-    # ----------------------------------------------------------------
-    # [T34 最终结论] **FP32 天花板 = ~33 fps**, 与线程形态无关(12 组配置实测):
-    #   并发度 / 吞吐 / 每帧成本:
-    #     4线程 x 4并发 (LATENCY)          512%  / 32.8fps / 156 核·毫秒
-    #     1线程 x 4并发                    215%  / 18.4fps
-    #     2线程 x 4并发                    318%  / 25.0fps
-    #     8线程 x 8并发 (THROUGHPUT)       626%  / 31.6fps / 212 核·毫秒
-    #   为什么 throughput 没用(而这是最后一块拼图):
-    #     THROUGHPUT 把 8 核切成 8 个 1 线程 stream ⇒ 单帧延迟 86ms -> ~230ms(慢 2.7x),
-    #     但并发路数 4 -> 8(多 2x) ⇒ 8/0.230 ≈ 4/0.086  ⇒ **净收益 0, 只是多烧 CPU**
-    #   根因(栈快照证据): OV2026.4 的 CPU 插件走 oneTBB(runtime/3rdparty/tbb/libtbb.so.12),
-    #     worker **确实在并发**(栈里同时 3~4 个 worker 在 CPUStreamsExecutor::execute);
-    #     LATENCY 模式拒用超线程(推理只占 4 个物理核) —— 但那不是瓶颈,
-    #     因为把它放开(THROUGHPUT)也换不来帧数。
-    #   ⇒ 继续调线程只会多烧 CPU, 不会多出帧 ⇒ 回到最省电的最佳配置。
-    #   ⇒ 要想再快, 只剩两条路:
-    #       ① ~~worker 端 pre/post 优化 ⇒ 预计 33 -> 38~46 fps~~
-    #          ⚠️ **[T35 已证伪]** 这件事**已经做了**(后处理改缓存友好顺序遍历 + 预处理直写输入 tensor),
-    #             worker 串行从 ~36ms/帧 降到 **5.70ms/帧**(占 CPU 24% -> 9%), 而吞吐
-    #             **纹丝不动**(31.9/31.1/26.1 fps, %CPU 514% -> 511%) ⇒ 该预测作废。
-    #             省下的核被 TBB 自旋吃掉; 瓶颈是推理自身的 FLOP, **不在流水线**。
-    #             权威记录: PROJECT_NOTES §20.14
-    #       ② INT8 量化 ⇒ 预计 1.5~2x (50~65 fps); 阿里云若带 AMX 收益更大 ===> 下一章主线
-    #
-    # ⚠️ 编号说明: 上面这整段注释写于调优过程中、自称 `[T34]`, 但 **T34 在 PROJECT_NOTES 里
-    #    已归属“优雅关闭修复”(§20.8)**; 本段讨论的调优结论对应 **§20.13(并发度 KPI)与 §20.14(T35)**。
-    #    以笔记为准, 此处保留原文仅为保留推导过程。
-    # ----------------------------------------------------------------
-    performance_mode: latency      # 显式写 latency(等价于默认值), 免得后人以为漏配了
-    num_threads: 4                 # 4 = 物理核数, 实测最优(写 8 只会多烧 CPU, 见上)
+    # ---- 推理性能旋钮(纯 CPU 场景的实测最优值) ----
+    # device: 必须显式写 CPU —— 用 AUTO 会让插件去枚举设备, 在带 NPU 插件的 WSL 环境会段错误(T33)。
+    # num_threads: 4 = 物理核数, 实测吞吐最优(再加只会多烧 CPU; 推导见 PROJECT_NOTES §20.13/§20.14)。
+    device: CPU
+    performance_mode: latency
+    num_threads: 4
 
-  # ---- 二级模型: 安全帽/行为分类器 (T17 已实现, 供级联 T16/T18 使用) ----
-  # 取消注释并准备好模型文件后, 再在 config/config.yaml 打开 cascade.enabled。
-  # 注意: labels.txt 的类别名需与 cascade.accept_label 对应(如 with_helmet)。
-  # - name: helmet_classifier
-  #   role: classifier
-  #   xml_path: models/helmet_cls.xml
-  #   bin_path: models/helmet_cls.bin
-  #   labels_path: models/helmet_labels.txt
-  #   input_width: 224
-  #   input_height: 224
-  #   conf: 0.50                 # 分类器不使用(仅检测器需要), 保留字段兼容
-  #   nms: 0.45
-  #   pool_size: 1
-  #   acquire_timeout_ms: 2000
+  # ---- 二级模型: 安全帽/行为分类器 (role=classifier, 供级联复核使用) ----
+  # 注意: labels.txt 的类别名需与运行配置里 cascade.accept_label 对应。
+  - name: helmet_classifier
+    role: classifier
+    xml_path: models/helmet_cls.xml
+    bin_path: models/helmet_cls.bin
+    labels_path: models/helmet_labels.txt
+    input_width: 416            # 模型实际输入是 416×416
+    input_height: 416
+    pool_size: 2                # 建议 >= worker_threads(否则并发复核会 Busy -> 降级)
+    acquire_timeout_ms: 2000
+    device: CPU                 # 必填(缺省 AUTO 会触发 T33 的 NPU 段错误)
+    performance_mode: latency
+    num_threads: 2              # 分类器很轻, 别和主模型抢物理核
+
+

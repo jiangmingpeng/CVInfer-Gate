@@ -30,6 +30,12 @@
 #         worker 线程发出, 不阻塞解码/推理/sink); CVInfer-Gate 退出时会打印
 #         "复核统计: submitted=.. reviewed=.. confirmed=.. rejected=.. timeout=.. unavailable=.."
 #         告警内容落在 MySQL 的 alerts 表, 库不可用时落到 build/db_fallback.csv。
+#
+# [T37] 接真 VLM: 本脚本仍是"规则 mock"。要用**真实 VLM** 复核, 请改用
+#         vlm_review/ 包(同一份 review.proto, 支持 OpenAI 兼容 / 本地 transformers):
+#             python3 -m vlm_review.server --backend openai \
+#                 --base-url http://127.0.0.1:8000/v1 --model Qwen/Qwen2.5-VL-7B-Instruct
+#         二者可互换, C++ 侧只认 review.endpoint。
 # ============================================================
 from __future__ import annotations
 
@@ -135,6 +141,14 @@ def main() -> int:
 
             return pb.ReviewResponse(ok=True, confirmed=confirmed,
                                      label=label, confidence=conf, reason=reason)
+
+        # [T37] 健康探测: 仅当 pb2 是重新生成过的(含 HealthResponse)时才暴露;
+        #       否则基类会自然返回 UNIMPLEMENTED, 客户端已作兼容(视为可达)。
+        if hasattr(pb, "HealthResponse"):
+            def Health(self, request, context):  # noqa: N802
+                return pb.HealthResponse(ready=True, backend="mock",
+                                         model="mock-vlm",
+                                         detail=f"mode={args.mode}")
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     pb_grpc.add_ReviewServiceServicer_to_server(ReviewServicer(), server)

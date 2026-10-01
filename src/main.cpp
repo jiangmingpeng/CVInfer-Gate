@@ -1,416 +1,6 @@
-// 1.
-// #include <iostream>
-// #include <opencv2/opencv.hpp>
-// #include <openvino/openvino.hpp>
-// #include <mysql_connection.h>  // C++ Connector 头文件
-// #include <cppconn/driver.h>
-
-// extern "C" {
-// #include <libavformat/avformat.h>
-// }
-
-// int main(int argc, char** argv) {
-//     std::cout << "=== CVInfer-Gate 项目启动 ===" << std::endl;
-
-//     // 1. 测试 OpenCV
-//     std::cout << "[OK] OpenCV 版本: " << CV_VERSION << std::endl;
-
-//     // 2. 测试 OpenVINO
-//     ov::Version ov_ver = ov::get_openvino_version();
-//     std::cout << "[OK] OpenVINO 版本: " << ov_ver.buildNumber << std::endl;
-
-//     // 3. 测试 FFmpeg
-//     std::cout << "[OK] FFmpeg 版本: " << av_version_info() << std::endl;
-
-//     // 4. 测试 MySQL Connector/C++
-//     try {
-//         sql::Driver* driver = get_driver_instance();
-//         std::cout << "[OK] MySQL Connector/C++ 初始化成功" << std::endl;
-//     } catch (const std::exception& e) {
-//         std::cerr << "[ERROR] MySQL 测试失败: " << e.what() << std::endl;
-//         return -1;
-//     }
-
-//     std::cout << "=== 所有核心依赖链接成功，环境测试通过！ ===" << std::endl;
-//     return 0;
-// }
-
-// 2.
-// #include <iostream>
-// #include "utils/ConfigParser.h"
-
-// int main(int argc, char** argv) {
-//     std::cout << "=== CVInfer-Gate 项目启动 ===" << std::endl;
-
-//     ConfigParser config_parser;
-
-//     // 注意：这里的路径是相对于可执行文件运行时的路径
-//     // 我们在 CMake 里配置了将 config 拷贝到构建目录
-//     if (!config_parser.loadAppConfig("config/config.yaml")) {
-//         std::cerr << "系统配置加载失败，程序退出！" << std::endl;
-//         return -1;
-//     }
-
-//     if (!config_parser.loadModelConfig("config/model_config.yaml")) {
-//         std::cerr << "模型配置加载失败，程序退出！" << std::endl;
-//         return -1;
-//     }
-
-//     // 打印读取到的配置进行验证
-//     const auto& app_cfg = config_parser.getAppConfig();
-//     const auto& model_cfg = config_parser.getModelConfig();
-
-//     std::cout << "\n--- 系统配置 ---" << std::endl;
-//     std::cout << "视频源类型: " << app_cfg.video.source_type << std::endl;
-//     std::cout << "视频源路径: " << app_cfg.video.source_path << std::endl;
-//     std::cout << "数据库地址: " << app_cfg.db_host << std::endl;
-//     std::cout << "gRPC 端口: " << app_cfg.grpc.port << std::endl;
-
-//     std::cout << "\n--- 模型配置 ---" << std::endl;
-//     std::cout << "模型 XML: " << model_cfg.model_xml_path << std::endl;
-//     std::cout << "输入尺寸: " << model_cfg.input_width << "x" << model_cfg.input_height << std::endl;
-//     std::cout << "置信度阈值: " << model_cfg.conf_threshold << std::endl;
-
-//     std::cout << "\n=== 配置模块测试通过 ===" << std::endl;
-//     return 0;
-// }
-
-
-// 3.
-
-// #include <iostream>
-// #include <chrono>
-// #include "utils/ConfigParser.h"
-// #include "video/FileVideoSource.h"
-
-// int main(int argc, char** argv) {
-//     std::cout << "=== CVInfer-Gate 项目启动 ===" << std::endl;
-
-//     ConfigParser config_parser;
-//     if (!config_parser.loadAppConfig("config/config.yaml")) return -1;
-//     if (!config_parser.loadModelConfig("config/model_config.yaml")) return -1;
-
-//     const auto& app_cfg = config_parser.getAppConfig();
-
-//     // 测试视频源
-//     FileVideoSource video_source;
-//     if (!video_source.open(app_cfg.video.source_path)) {
-//         std::cerr << "视频源打开失败，请检查 config.yaml 中的路径和文件是否存在！" << std::endl;
-//         return -1;
-//     }
-
-//     cv::Mat frame;
-//     int frame_count = 0;
-//     auto start_time = std::chrono::high_resolution_clock::now();
-
-//     std::cout << "开始读取视频帧..." << std::endl;
-//     while (video_source.read(frame)) {
-//         frame_count++;
-//         // 为了测试速度，不显示图像，只计算帧率
-//         // cv::imshow("Test", frame);
-//         // cv::waitKey(1);
-//     }
-
-//     auto end_time = std::chrono::high_resolution_clock::now();
-//     std::chrono::duration<double> elapsed = end_time - start_time;
-    
-//     std::cout << "读取完毕。共读取 " << frame_count << " 帧。" << std::endl;
-//     std::cout << "耗时: " << elapsed.count() << " 秒" << std::endl;
-//     std::cout << "解码帧率: " << frame_count / elapsed.count() << " FPS" << std::endl;
-
-//     video_source.close();
-//     return 0;
-// }
-
-
-// 4.
-// #include <iostream>
-// #include <chrono>
-// #include "utils/ConfigParser.h"
-// #include "video/FileVideoSource.h"
-// #include "inference/OpenVINOEngine.h"
-
-// int main(int argc, char** argv) {
-//     std::cout << "=== CVInfer-Gate 项目启动 ===" << std::endl;
-
-//     ConfigParser config_parser;
-//     if (!config_parser.loadAppConfig("config/config.yaml")) return -1;
-//     if (!config_parser.loadModelConfig("config/model_config.yaml")) return -1;
-
-//     const auto& app_cfg = config_parser.getAppConfig();
-//     const auto& model_cfg = config_parser.getModelConfig();
-
-//     // 1. 初始化视频源
-//     FileVideoSource video_source;
-//     if (!video_source.open(app_cfg.video.source_path)) return -1;
-
-//     // 2. 初始化推理引擎
-//     OpenVINOEngine inference_engine;
-//     if (!inference_engine.init(model_cfg)) return -1;
-
-//     // 3. 读取一帧进行推理测试
-//     cv::Mat frame;
-//     if (!video_source.read(frame)) {
-//         std::cerr << "读取视频帧失败！" << std::endl;
-//         return -1;
-//     }
-//     std::cout << "成功读取一帧，尺寸: " << frame.cols << "x" << frame.rows << std::endl;
-
-//     // 4. 执行推理
-//     std::vector<ov::Tensor> outputs;
-//     auto start_time = std::chrono::high_resolution_clock::now();
-    
-//     if (!inference_engine.infer(frame, outputs)) {
-//         std::cerr << "推理执行失败！" << std::endl;
-//         return -1;
-//     }
-
-//     auto end_time = std::chrono::high_resolution_clock::now();
-//     std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
-
-//     // 5. 打印输出张量信息
-//     std::cout << "\n--- 推理结果 ---" << std::endl;
-//     std::cout << "推理耗时: " << elapsed.count() << " ms" << std::endl;
-//     std::cout << "输出张量数量: " << outputs.size() << std::endl;
-    
-//     for (size_t i = 0; i < outputs.size(); ++i) {
-//         auto shape = outputs[i].get_shape();
-//         std::cout << "输出[" << i << "] 形状: [";
-//         for (size_t j = 0; j < shape.size(); ++j) {
-//             std::cout << shape[j] << (j == shape.size() - 1 ? "" : ", ");
-//         }
-//         std::cout << "]" << std::endl;
-//     }
-
-//     video_source.close();
-//     std::cout << "\n=== 推理引擎模块测试通过 ===" << std::endl;
-//     return 0;
-// }
-
-// 5.
-// #include <iostream>
-// #include <fstream>
-// #include <chrono>
-// #include "utils/ConfigParser.h"
-// #include "video/FileVideoSource.h"
-// #include "inference/OpenVINOEngine.h"
-// #include "inference/YoloPostProcessor.h"
-
-// // 读取标签文件
-// std::vector<std::string> loadLabels(const std::string& path) {
-//     std::vector<std::string> labels;
-//     std::ifstream infile(path);
-//     std::string line;
-//     while (std::getline(infile, line)) {
-//         if (!line.empty()) labels.push_back(line);
-//     }
-//     return labels;
-// }
-
-// int main(int argc, char** argv) {
-//     std::cout << "=== CVInfer-Gate 项目启动 ===" << std::endl;
-
-//     ConfigParser config_parser;
-//     if (!config_parser.loadAppConfig("config/config.yaml")) return -1;
-//     if (!config_parser.loadModelConfig("config/model_config.yaml")) return -1;
-
-//     const auto& app_cfg = config_parser.getAppConfig();
-//     const auto& model_cfg = config_parser.getModelConfig();
-
-//     // 加载标签
-//     std::vector<std::string> labels = loadLabels(model_cfg.labels_path);
-//     std::cout << "加载类别数量: " << labels.size() << std::endl;
-
-//     // 初始化视频源和推理引擎
-//     FileVideoSource video_source;
-//     if (!video_source.open(app_cfg.video.source_path)) return -1;
-
-//     OpenVINOEngine inference_engine;
-//     if (!inference_engine.init(model_cfg)) return -1;
-
-//     // 初始化后处理器
-//     YoloPostProcessor post_processor(model_cfg.conf_threshold, model_cfg.nms_threshold);
-
-//     // 读取一帧
-//     cv::Mat frame;
-//     if (!video_source.read(frame)) {
-//         std::cerr << "读取视频帧失败！" << std::endl;
-//         return -1;
-//     }
-
-//     // 执行推理
-//     std::vector<ov::Tensor> outputs;
-//     if (!inference_engine.infer(frame, outputs)) return -1;
-
-//     // 后处理
-//     auto start_time = std::chrono::high_resolution_clock::now();
-//     std::vector<DetectionResult> detections = post_processor.process(outputs[0], frame.size(), labels);
-//     auto end_time = std::chrono::high_resolution_clock::now();
-//     std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
-
-//     std::cout << "后处理耗时: " << elapsed.count() << " ms" << std::endl;
-//     std::cout << "最终检测到 " << detections.size() << " 个目标" << std::endl;
-
-//     // 在图像上画框
-//     for (const auto& det : detections) {
-//         cv::rectangle(frame, det.box, cv::Scalar(0, 255, 0), 2);
-//         std::string text = det.label + " " + std::to_string(static_cast<int>(det.confidence * 100)) + "%";
-//         cv::putText(frame, text, cv::Point(det.box.x, det.box.y - 5),
-//                     cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
-//         std::cout << "  - " << text << " at " << det.box << std::endl;
-//     }
-
-//     // 保存结果
-//     cv::imwrite("output.jpg", frame);
-//     std::cout << "结果已保存至 output.jpg" << std::endl;
-
-//     video_source.close();
-//     return 0;
-// }
-
-// 6.多帧视频处理
-// #include <iostream>
-// #include <fstream>
-// #include <chrono>
-// #include <thread>
-// #include "utils/ConfigParser.h"
-// #include "utils/ThreadSafeQueue.h"
-// #include "video/FileVideoSource.h"
-// #include "inference/OpenVINOEngine.h"
-// #include "inference/YoloPostProcessor.h"
-
-// // 读取标签文件
-// std::vector<std::string> loadLabels(const std::string& path) {
-//     std::vector<std::string> labels;
-//     std::ifstream infile(path);
-//     std::string line;
-//     while (std::getline(infile, line)) {
-//         if (!line.empty()) labels.push_back(line);
-//     }
-//     return labels;
-// }
-
-// int main(int argc, char** argv) {
-//     std::cout << "=== CVInfer-Gate 项目启动（多帧流水线） ===" << std::endl;
-
-//     // 1. 加载配置
-//     ConfigParser config_parser;
-//     if (!config_parser.loadAppConfig("config/config.yaml")) return -1;
-//     if (!config_parser.loadModelConfig("config/model_config.yaml")) return -1;
-
-//     const auto& app_cfg = config_parser.getAppConfig();
-//     const auto& model_cfg = config_parser.getModelConfig();
-//     std::vector<std::string> labels = loadLabels(model_cfg.labels_path);
-
-//     // 2. 初始化视频源以获取元数据（宽高、FPS）
-//     FileVideoSource video_source;
-//     if (!video_source.open(app_cfg.video.source_path)) return -1;
-
-//     // 获取原视频 FPS（为了输出视频不加速/减速，直接用cv::VideoCapture偷看一眼元数据）
-//     cv::VideoCapture meta_cap(app_cfg.video.source_path);
-//     double fps = meta_cap.get(cv::CAP_PROP_FPS);
-//     if (fps <= 0 || fps > 120) fps = 30.0; // 默认 30 FPS
-//     meta_cap.release();
-
-//     // 3. 初始化推理引擎和后处理器
-//     OpenVINOEngine inference_engine;
-//     if (!inference_engine.init(model_cfg)) return -1;
-//     YoloPostProcessor post_processor(model_cfg.conf_threshold, model_cfg.nms_threshold);
-
-//     // // 4. 初始化视频写入器（用于保存带框的结果视频）
-//     // cv::VideoWriter video_writer("output.mp4", 
-//     //                              cv::VideoWriter::fourcc('m', 'p', '4', 'v'), 
-//     //                              fps, 
-//     //                              cv::Size(1280, 720)); // 注意：这里硬编码了1280x720，若视频尺寸变动需调整
-//     // if (!video_writer.isOpened()) {
-//     //     std::cerr << "[Error] 无法初始化 VideoWriter！" << std::endl;
-//     //     return -1;
-//     // }
-//     // 4. 初始化视频写入器（动态获取视频尺寸，防止花屏）
-//     int video_width = video_source.getWidth();
-//     int video_height = video_source.getHeight();
-//     std::cout << "原视频分辨率: " << video_width << "x" << video_height << std::endl;
-
-//     // 优先尝试 H.264 (avc1)，兼容性最好；如果失败，退回到 mp4v
-//     int fourcc = cv::VideoWriter::fourcc('a', 'v', 'c', '1');
-//     cv::VideoWriter video_writer("output.mp4", fourcc, fps, cv::Size(video_width, video_height));
-    
-//     if (!video_writer.isOpened()) {
-//         std::cout << "[Warning] avc1 编码器不可用，尝试使用 mp4v..." << std::endl;
-//         fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
-//         video_writer.open("output.mp4", fourcc, fps, cv::Size(video_width, video_height));
-//     }
-
-//     if (!video_writer.isOpened()) {
-//         std::cerr << "[Error] 无法初始化 VideoWriter！请检查 OpenCV 的 FFmpeg 支持。" << std::endl;
-//         return -1;
-//     }
-
-//     // 5. 创建线程安全队列，最大缓存 10 帧（防内存膨胀）
-//     ThreadSafeQueue<cv::Mat> frame_queue(10);
-
-//     // 6. 消费者线程：负责推理、后处理、画框、写入视频
-//     std::thread consumer_thread([&]() {
-//         cv::Mat frame;
-//         int frame_count = 0;
-//         while (frame_queue.pop(frame)) {
-//             std::vector<ov::Tensor> outputs;
-//             if (!inference_engine.infer(frame, outputs)) continue;
-
-//             auto detections = post_processor.process(outputs[0], frame.size(), labels);
-
-//             // 画框
-//             for (const auto& det : detections) {
-//                 cv::rectangle(frame, det.box, cv::Scalar(0, 255, 0), 2);
-//                 std::string text = det.label + " " + std::to_string(static_cast<int>(det.confidence * 100)) + "%";
-//                 cv::putText(frame, text, cv::Point(det.box.x, det.box.y - 5),
-//                             cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
-//             }
-
-//             video_writer.write(frame);
-//             frame_count++;
-            
-//             if (frame_count % 30 == 0) {
-//                 std::cout << "[消费者] 已处理 " << frame_count << " 帧" << std::endl;
-//             }
-//         }
-//         std::cout << "[消费者] 处理完毕，共处理 " << frame_count << " 帧" << std::endl;
-//     });
-
-//     // 7. 生产者线程（主线程）：疯狂读取视频帧塞入队列
-//     std::cout << "[生产者] 开始读取视频帧..." << std::endl;
-//     cv::Mat frame;
-//     int total_frames = 0;
-//     auto start_time = std::chrono::high_resolution_clock::now();
-
-//     while (video_source.read(frame)) {
-//         frame_queue.push(frame.clone()); // 深拷贝推入队列
-//         total_frames++;
-//     }
-
-//     // 8. 通知消费者停止，并等待其退出
-//     frame_queue.stop();
-//     consumer_thread.join();
-
-//     auto end_time = std::chrono::high_resolution_clock::now();
-//     std::chrono::duration<double> elapsed = end_time - start_time;
-    
-//     std::cout << "\n--- 流水线统计 ---" << std::endl;
-//     std::cout << "总读取帧数: " << total_frames << std::endl;
-//     std::cout << "总耗时: " << elapsed.count() << " 秒" << std::endl;
-//     std::cout << "平均吞吐量: " << total_frames / elapsed.count() << " FPS" << std::endl;
-
-//     video_source.close();
-//     video_writer.release();
-//     std::cout << "结果视频已保存至 output.mp4" << std::endl;
-
-//     return 0;
-// }
-
-
-
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <csignal>
 #include <cstdlib>
 #include <fstream>
@@ -444,6 +34,8 @@
 #include "service/DetectionServiceImpl.h"
 #include "service/GrpcServerSetup.h"
 #include "utils/RoiUtils.h"
+#include "utils/AlertGate.h"
+#include "tracking/TargetTracker.h"
 
 // ============================================================
 // CVInfer-Gate 主程序 (T7: 装配收口)
@@ -471,7 +63,9 @@
 //      多模态决策级融合: 雷达/红外采样经 poller 存进有界时间缓冲, 每帧按
 //      fusion.time_tolerance_ms 时间对齐 + 目标关联 + 加权置信度融合。
 //      视频仍是主模态(画框/落库/告警的框都来自视觉), 融合只调置信度/补测距;
-//      VideoPipeline 保持不变 —— 融合是"挂在 sink 上的阶段", 与级联/复核同构。
+//  11) T39: 告警去重(alert.dedup): 告警判定按帧执行, 而"安全帽缺失"描述的是**目标
+//      状态** => 同一静止目标会被连续帧反复告警。新增 AlertGate(标签 + 框重叠 +
+//      冷却窗), 在**告警链路上**去重(送审处 / 写告警处), 画框与落库不受影响。
 // ============================================================
 
 namespace {
@@ -482,6 +76,13 @@ bool isReviewCandidate(const DetectionResult& det, const ReviewConfig& rc) {
     if (rc.trigger_labels.empty()) return true;
     return std::find(rc.trigger_labels.begin(), rc.trigger_labels.end(), det.label) !=
            rc.trigger_labels.end();
+}
+
+// [T39] 单调时钟(ms): 冷却窗必须用单调钟 —— 系统时间被回拨/校正时,
+//   steady_clock 不会跳变(否则可能永久抑制或去重失效)。
+std::int64_t nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 // [T27] 配置路径可注入: `--config <path>` / `CVINFER_CONFIG`(优先级: 命令行 > 环境变量 > 默认)
@@ -548,10 +149,14 @@ int main(int argc, char** argv) {
     }
 
     // ---- T9: 数据库 (连接池 + 异步落库) ----
+    // [T36] DBWriter::init() 已改为“连不上库也**不**失败”: 降级模式启动(记录先落
+    //   本地 CSV), 后台按 database.reconnect_interval_ms 自动重建连接池, 恢复
+    //   后回传; 启动只做 1 次快速连库尝试(不再白等 ~20s)。
+    //   故这里**不再 return -1** —— 网关必须能“无库运行”。
+    //   注: init() 现在恒返回 true, 本分支仅在极端异常时触发。
     DBWriter db_writer;
     if (!db_writer.init(app_cfg)) {
-        CVLOG_ERROR << "数据库初始化失败! 请检查 config.yaml 的数据库配置。";
-        return -1;
+        CVLOG_ERROR << "数据库初始化异常! 将以【无落库】模式启动, 请检查 config.yaml。";
     }
 
     // 1. 根据配置选择视频源
@@ -692,34 +297,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    // // 4. 初始化视频写入器（用于保存带框的结果视频）
-    // cv::VideoWriter video_writer("output.mp4", 
-    //                              cv::VideoWriter::fourcc('m', 'p', '4', 'v'), 
-    //                              fps, 
-    //                              cv::Size(1280, 720)); // 注意：这里硬编码了1280x720，若视频尺寸变动需调整
-    // if (!video_writer.isOpened()) {
-    //     std::cerr << "[Error] 无法初始化 VideoWriter！" << std::endl;
-    //     return -1;
-    // }
-    // // 4. 初始化视频写入器（动态获取视频尺寸，防止花屏）
-    // int video_width = video_source.getWidth();
-    // int video_height = video_source.getHeight();
-    // std::cout << "原视频分辨率: " << video_width << "x" << video_height << std::endl;
-
-    // // 优先尝试 H.264 (avc1)，兼容性最好；如果失败，退回到 mp4v
-    // int fourcc = cv::VideoWriter::fourcc('a', 'v', 'c', '1');
-    // cv::VideoWriter video_writer("output.mp4", fourcc, fps, cv::Size(video_width, video_height));
-    
-    // if (!video_writer.isOpened()) {
-    //     std::cout << "[Warning] avc1 编码器不可用，尝试使用 mp4v..." << std::endl;
-    //     fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
-    //     video_writer.open("output.mp4", fourcc, fps, cv::Size(video_width, video_height));
-    // }
-
-    // if (!video_writer.isOpened()) {
-    //     std::cerr << "[Error] 无法初始化 VideoWriter！请检查 OpenCV 的 FFmpeg 支持。" << std::endl;
-    //     return -1;
-    // }
     // 4. 初始化视频写入器 (AVI + MJPG; 视频不可用时降级为“不写结果视频”, gRPC 仍能启动)
     // [T28] RTSP 兼容: 某些网络流 open() 成功但拿不到分辨率(codec_ctx_->width==0),
     //   旧逻辑会把 0x0 交给 VideoWriter -> 打不开 -> 直接 return -1 退出,
@@ -750,6 +327,44 @@ int main(int argc, char** argv) {
     }
     // (!video_ok 时前面已 warn 过“视频源打开失败”, 此处不重复刷屏)
 
+    // 4.5 [T39] 告警去重闸门 (同标签 + 框重叠 + 冷却窗)
+    //   告警判定是每帧执行的, 而"安全帽缺失"描述的是目标状态 => 同一静止目标会被
+    //   连续帧反复告警。闸门只作用于**告警链路**(送审处 + 写告警处), 画框/落库不受影响。
+    //   sink 回调会在多个 worker 线程并发执行, 故 AlertGate 内部自带 mutex
+    //   (已单测: 同目标并发调用只放行一次)。
+    alert_gate::Config gate_cfg;
+    gate_cfg.enabled     = app_cfg.alert.dedup.enabled;
+    gate_cfg.iou         = app_cfg.alert.dedup.iou;
+    gate_cfg.cooldown_ms = app_cfg.alert.dedup.cooldown_ms;
+    gate_cfg.max_entries = app_cfg.alert.dedup.max_entries;
+    alert_gate::AlertGate alert_gate(gate_cfg);
+    if (gate_cfg.enabled) {
+        CVLOG_INFO << "告警去重: 已启用 (iou=" << gate_cfg.iou
+                   << ", cooldown=" << gate_cfg.cooldown_ms << "ms)";
+    } else {
+        CVLOG_INFO << "告警去重: 已禁用(每帧都可能告警)";
+    }
+
+    // 4.6 [T40] 目标跟踪: 给每个目标一个跨帧稳定的 track_id。
+    //   位置必须在 sink 内、**融合之后**: 跟踪的应是"最终参与告警的那批目标"。
+    //   安全性: sink 是单线程, 且 [T29] 的重排缓冲保证 frame_seq 单调递增 =>
+    //   有状态的跟踪器在这里被顺序调用, 天然无并发。
+    tracking::Config trk_cfg;
+    trk_cfg.enabled     = app_cfg.tracking.enabled;
+    trk_cfg.iou         = app_cfg.tracking.iou;
+    trk_cfg.dist_factor = app_cfg.tracking.dist_factor;
+    trk_cfg.max_age_ms  = app_cfg.tracking.max_age_ms;
+    trk_cfg.min_hits    = app_cfg.tracking.min_hits;
+    trk_cfg.max_tracks  = app_cfg.tracking.max_tracks;
+    std::unique_ptr<tracking::TargetTracker> tracker;
+    if (trk_cfg.enabled) {
+        tracker = std::make_unique<tracking::TargetTracker>(trk_cfg);
+        CVLOG_INFO << "目标跟踪: 已启用 (iou=" << trk_cfg.iou
+                   << ", max_age=" << trk_cfg.max_age_ms << "ms)";
+    } else {
+        CVLOG_INFO << "目标跟踪: 已禁用(告警去重将退回几何重叠判定)";
+    }
+
     // 5. T5: 构造三阶段流水线 (sink 回调负责画框/写视频/异步落库)
     VideoPipeline::Config pipe_cfg;
     pipe_cfg.target_fps = app_cfg.video.target_fps;
@@ -772,6 +387,15 @@ int main(int argc, char** argv) {
                 fusion_stage->fuse(fused_dets);
                 dets_ptr = &fused_dets;
             }
+
+            // (0.5) [T40] 目标跟踪: 就地回写 track_id(未启用时零拷贝)。
+            //   跟踪**融合之后**的最终集合 => 传感器补出的目标也能拿到 id。
+            std::vector<DetectionResult> tracked_dets;
+            if (tracker) {
+                tracked_dets = *dets_ptr;
+                tracker->update(tracked_dets, nowMs(), frame_seq);
+                dets_ptr = &tracked_dets;
+            }
             const std::vector<DetectionResult>& dets = *dets_ptr;
 
             // (1) 画框 / 写视频: 用本地(主筛+二级[+融合])结果, 实时输出, 不等复核
@@ -779,7 +403,9 @@ int main(int argc, char** argv) {
                 cv::Mat annotated = frame.clone();
                 for (const auto& det : dets) {
                     cv::rectangle(annotated, det.box, cv::Scalar(0, 255, 0), 2);
+                    // [T40] 带上 track_id: 肉眼可验证"同一个人是否只有一个 id"
                     const std::string text =
+                        (det.track_id >= 0 ? "#" + std::to_string(det.track_id) + " " : "") +
                         det.label + " " +
                         std::to_string(static_cast<int>(det.confidence * 100)) + "%";
                     cv::putText(annotated, text, cv::Point(det.box.x, det.box.y - 5),
@@ -802,6 +428,11 @@ int main(int argc, char** argv) {
                               : (det.label == "person" && det.confidence > 0.8f);
                 if (!candidate) continue;
 
+                // [T39] 去重打点:
+                //   复核路径打在**送审处** —— 同一目标只送审一次, 自然不可能重复告警,
+                //   而且省掉重复的 VLM 调用(复核回调拿不到框, 无法在那里去重);
+                //   本地规则路径打在**写告警处**。
+                //   [T40] 有 track_id 时闸门**以身份为准**(与框怎么移动无关)。
                 if (review_on) {
                     ReviewRequest job;
                     job.frame_seq = frame_seq;
@@ -811,15 +442,27 @@ int main(int argc, char** argv) {
                     job.confidence = det.confidence;
                     job.prompt = app_cfg.review.prompt;
 
-                    if (!job.roi.empty()) {
-                        review_scheduler->submit(std::move(job));
-                    } else if (app_cfg.review.alert_on_failure) {
-                        // ROI 无效无法送审: 按兜底策略处理
+                    if (job.roi.empty()) {
+                        // ROI 无效无法送审: 按兜底策略处理(需要告警时同样过闸门)
+                        if (!app_cfg.review.alert_on_failure) continue;
+                        if (!alert_gate.allow(det.label, det.track_id, det.box, nowMs())) continue;
                         db_writer.writeAlert(app_cfg.review.alert_type,
                                              "ROI 无效, 按兜底策略告警, frame=" +
                                                  std::to_string(frame_seq));
+                        continue;
                     }
+                    if (!alert_gate.allow(det.label, det.track_id, det.box, nowMs())) {
+                        CVLOG_DEBUG << "[T39] 冷却窗内同目标重复, 跳过送审: " << det.label
+                                    << " frame=" << frame_seq;
+                        continue;
+                    }
+                    review_scheduler->submit(std::move(job));
                 } else {
+                    if (!alert_gate.allow(det.label, det.track_id, det.box, nowMs())) {
+                        CVLOG_DEBUG << "[T39] 冷却窗内同目标重复, 跳过告警: " << det.label
+                                    << " frame=" << frame_seq;
+                        continue;
+                    }
                     db_writer.writeAlert(
                         "安全帽缺失",
                         "检测到未佩戴安全帽的人员, 置信度: " +
@@ -898,6 +541,24 @@ int main(int argc, char** argv) {
                    << " unmatched_sensor=" << fs.fusion.unmatched_sensor
                    << " emitted_sensor_only=" << fs.fusion.emitted_sensor_only
                    << " poll_errors=" << fs.poll_errors;
+    }
+
+    // [T39] 告警去重统计: suppressed 越大说明去重越在干活(告警刷屏被压住)
+    //   注意: 复核路径是“确认后才告警”, 故这里的 allowed 包含“已放行送审”的次数,
+    //   不等于最终告警条数(最终条数看数据库)。
+    CVLOG_INFO << "告警去重统计: allowed=" << alert_gate.allowed()
+               << " suppressed=" << alert_gate.suppressed()
+               << " tracked=" << alert_gate.tracked();
+
+    // [T40] 跟踪统计: spawned/retired 看目标进出, longest_dwell 是行为分析的雏形
+    if (tracker) {
+        const auto ts = tracker->stats();
+        CVLOG_INFO << "目标跟踪统计: frames=" << ts.frames
+                   << " spawned=" << ts.spawned
+                   << " retired=" << ts.retired
+                   << " active=" << ts.active
+                   << " matched=" << ts.matched
+                   << " longest_dwell=" << tracker->longestDwellMs() << "ms";
     }
 
     db_writer.flush();

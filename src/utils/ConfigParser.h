@@ -105,6 +105,12 @@ struct ReviewConfig {
     std::string prompt;                      // 透传给复核服务的业务提示(可空)
     std::string alert_type = "安全帽缺失";    // 确认后写入的告警类型
     bool alert_on_failure = false;           // 复核不可用(超时/失败)时是否仍告警
+
+    // ---- [T37] 接入真实 VLM 服务端所需的传输/鉴权/探活项 ----
+    int max_message_size_mb = 16;   // gRPC 收发上限(ROI JPEG 较大时需放宽; gRPC 默认 4MB 会超限)
+    int keepalive_time_ms = 20000;  // HTTP/2 keepalive(长连接保活; 0 = 不设置)
+    std::string auth_token;         // 非空则每次调用带 metadata: authorization=Bearer <token>
+    bool health_check = true;       // init() 时探测一次 Health(仅用于日志; 失败不影响运行)
 };
 
 // 非视频传感器配置  [新增/T23-T24]
@@ -136,6 +142,43 @@ struct FusionConfig {
     std::size_t buffer_capacity = 256;   // 采样时间缓冲容量(满则丢最旧)
 };
 
+// 告警去重配置  [新增/T39]
+// ------------------------------------------------------------
+// 控制"同一目标在连续帧里重复告警"的抑制。默认 enabled=true —— 这是**行为修正**:
+//   告警判定按帧执行, 而"安全帽缺失"描述的是目标状态 => 一个站着不动的人会被
+//   连续帧反复告警(告警刷屏)。
+// 语义: (标签 + 同一目标) 判为重复, 冷却窗内只放行一次;
+//   冷却窗按"最近一次命中"刷新 => 目标持续在画面里只告警一次, 消失超过
+//   cooldown_ms 后再次出现才重新告警。
+// 注: [T40] 两边都有 track_id 时**以身份为准**(同 id = 同目标, 与框怎么移动无关);
+//   没有 id 时退回几何重叠 => 快速移动目标仍可能重复(开 tracking 即解决)。
+struct AlertDedupConfig {
+    bool enabled = true;      // 是否启用去重(false = 完全等价于旧行为)
+    float iou = 0.30f;        // 判定"同一目标"的框重叠阈值 [0,1]; 0 = 退化为仅按标签
+    int cooldown_ms = 5000;   // 冷却窗(ms); 0 = 等于不去重
+    int max_entries = 256;    // 记忆条目上限(有界, 防长时间运行无界增长)
+};
+
+struct AlertConfig {
+    AlertDedupConfig dedup;
+};
+
+// 目标跟踪配置 [T40]
+// ------------------------------------------------------------
+// 语义: 关联式跟踪(IoU 贪心 + 质心距离兜底), 给每个检测一个跨帧稳定的 track_id。
+//   * 有 id 后, 告警去重**以身份为准**(与框怎么移动无关);
+//   * dwell(连续被跟踪时长)是停留/徘徊等行为分析的立足点;
+//   * 无外观特征 => 遮挡/交叉后可能换 id(ID switch);
+//   * id 单调递增且**永不复用**(复用会让去重漏报新目标)。
+struct TrackingConfig {
+    bool enabled = true;
+    float iou = 0.30f;          // 关联的框重叠阈值 [0,1]
+    float dist_factor = 1.0f;   // 质心距离兜底: <= dist_factor * 框半周长; <=0 = 关闭
+    int max_age_ms = 1000;      // 失配后轨迹保留时长(容忍遮挡/漏检)
+    int min_hits = 1;           // 连续命中多少次后才输出 id(>1 = 抑制瞬时误检)
+    int max_tracks = 256;       // 轨迹上限(有界, 防长时间运行无界增长)
+};
+
 // 系统运行配置(聚合)
 struct AppConfig {
     LogConfig log;                       // [新增]
@@ -147,6 +190,8 @@ struct AppConfig {
     ReviewConfig review;                 // [新增/T20-T22]
     std::vector<SensorConfig> sensors;   // [新增/T23-T24] 非视频传感器列表
     FusionConfig fusion;                 // [新增/T25-T26] 多模态决策级融合
+    AlertConfig alert;                   // [新增/T39] 告警去重
+    TrackingConfig tracking;             // [新增/T40] 目标跟踪(track_id)
 };
 
 // 模型推理配置

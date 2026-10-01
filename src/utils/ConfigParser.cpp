@@ -197,6 +197,11 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             rcfg.prompt           = readStr(r, "prompt", rcfg.prompt);
             rcfg.alert_type       = readStr(r, "alert_type", rcfg.alert_type);
             rcfg.alert_on_failure = r["alert_on_failure"].as<bool>(rcfg.alert_on_failure);
+            // [T37] 接入真实 VLM 服务端(传输/鉴权/探活)
+            rcfg.max_message_size_mb = r["max_message_size_mb"].as<int>(rcfg.max_message_size_mb);
+            rcfg.keepalive_time_ms   = r["keepalive_time_ms"].as<int>(rcfg.keepalive_time_ms);
+            rcfg.auth_token          = readStr(r, "auth_token", rcfg.auth_token);
+            rcfg.health_check        = r["health_check"].as<bool>(rcfg.health_check);
 
             // 触发规则(嵌套 trigger: {labels, min_conf, max_conf})
             if (r["trigger"]) {
@@ -245,6 +250,31 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             fc.emit_sensor_only   = f["emit_sensor_only"].as<bool>(fc.emit_sensor_only);
             fc.adopt_sensor_label = f["adopt_sensor_label"].as<bool>(fc.adopt_sensor_label);
             fc.buffer_capacity    = f["buffer_capacity"].as<std::size_t>(fc.buffer_capacity);
+        }
+
+        // ---- alert [T39] 告警去重 ----
+        if (config["alert"]) {
+            const YAML::Node a = config["alert"];
+            if (a["dedup"]) {
+                const YAML::Node d = a["dedup"];
+                auto& dc = app_config_.alert.dedup;
+                dc.enabled     = d["enabled"].as<bool>(dc.enabled);
+                dc.iou         = d["iou"].as<float>(dc.iou);
+                dc.cooldown_ms = d["cooldown_ms"].as<int>(dc.cooldown_ms);
+                dc.max_entries = d["max_entries"].as<int>(dc.max_entries);
+            }
+        }
+
+        // ---- tracking [T40] 目标跟踪 ----
+        if (config["tracking"]) {
+            const YAML::Node tr = config["tracking"];
+            auto& tc = app_config_.tracking;
+            tc.enabled     = tr["enabled"].as<bool>(tc.enabled);
+            tc.iou         = tr["iou"].as<float>(tc.iou);
+            tc.dist_factor = tr["dist_factor"].as<float>(tc.dist_factor);
+            tc.max_age_ms  = tr["max_age_ms"].as<int>(tc.max_age_ms);
+            tc.min_hits    = tr["min_hits"].as<int>(tc.min_hits);
+            tc.max_tracks  = tr["max_tracks"].as<int>(tc.max_tracks);
         }
 
         std::cout << "[ConfigParser] 系统配置加载成功: " << filepath << std::endl;
@@ -349,6 +379,10 @@ bool ConfigParser::validate() const {
         fail("review.roi_padding 不能为负");
     if (rv.enabled && rv.endpoint.empty())
         fail("review.enabled=true 时 review.endpoint 不能为空");
+    if (rv.max_message_size_mb < 1)
+        fail("review.max_message_size_mb 必须 >= 1");
+    if (rv.keepalive_time_ms < 0)
+        fail("review.keepalive_time_ms 不能为负");
 
     // 传感器 / 融合 [T23-T26]
     const auto& fc = app_config_.fusion;
@@ -384,6 +418,28 @@ bool ConfigParser::validate() const {
         if (fc.enabled && app_config_.sensors.empty())
             fail("fusion.enabled=true 但未配置任何 sensors:");
     }
+
+    // 告警去重 [T39]
+    const auto& dd = app_config_.alert.dedup;
+    if (dd.iou < 0.0f || dd.iou > 1.0f)
+        fail("alert.dedup.iou 必须在 0..1");
+    if (dd.cooldown_ms < 0)
+        fail("alert.dedup.cooldown_ms 不能为负");
+    if (dd.max_entries < 1)
+        fail("alert.dedup.max_entries 必须 >= 1");
+
+    // 目标跟踪 [T40]
+    const auto& tc = app_config_.tracking;
+    if (tc.iou < 0.0f || tc.iou > 1.0f)
+        fail("tracking.iou 必须在 0..1");
+    if (tc.dist_factor < 0.0f)
+        fail("tracking.dist_factor 不能为负(0 = 关闭距离兜底)");
+    if (tc.max_age_ms < 0)
+        fail("tracking.max_age_ms 不能为负");
+    if (tc.min_hits < 1)
+        fail("tracking.min_hits 必须 >= 1");
+    if (tc.max_tracks < 1)
+        fail("tracking.max_tracks 必须 >= 1");
 
     return ok;
 }

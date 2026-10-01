@@ -50,6 +50,10 @@ struct ReviewResult {
     std::string label;             // 复核标签(如 "no_helmet")
     float confidence = 0.0f;       // 复核置信度
     std::string reason;            // 复核理由(可空)
+
+    // ---- [T37] 可观测(可选): 产出该结论的模型名与服务端处理耗时 ----
+    std::string model;             // 复核服务上报的模型名(如 "Qwen2.5-VL-7B"); 空 = 未上报
+    std::int64_t latency_ms = 0;   // 服务端处理耗时(ms); 0 = 未上报
 };
 
 class IReviewService {

@@ -21,6 +21,8 @@ struct ReviewOutcome {
     std::string label;                               // 复核标签
     float confidence = 0.0f;                         // 复核置信度
     std::string reason;                              // 复核理由
+    std::string model;                               // [T37] 产出结论的模型名(可空)
+    std::int64_t latency_ms = 0;                     // [T37] 服务端处理耗时(ms; 0 = 未上报)
 };
 
 // ============================================================

@@ -1,0 +1,16 @@
+# ============================================================
+# 可选: 本地 transformers 后端(Qwen2.5-VL / Qwen2-VL)额外依赖
+# ------------------------------------------------------------
+# 仅在 --backend transformers 时需要; 走 openai 兼容后端时**不要**装这些。
+# 体量大(含 torch), 且需要能下载模型权重或使用本地权重目录。
+#   pip install -r vlm_review/requirements-local.txt
+#
+# 说明: 之后可用 Qwen/Qwen2.5-VL-7B-Instruct 或本地路径:
+#   python3 -m vlm_review.server --backend transformers --model /models/Qwen2.5-VL-7B-Instruct
+# ============================================================
+-r requirements.txt
+torch>=2.1
+transformers>=4.49
+accelerate>=0.30
+pillow>=10.0
+qwen-vl-utils>=0.0.8
