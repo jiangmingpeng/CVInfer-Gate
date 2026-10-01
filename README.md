@@ -63,7 +63,7 @@ cd CVInfer-Gate
 ```text
 CVInfer-Gate/
 ├── config/           # YAML 配置文件
-├── models/           # OpenVINO IR 模型与标签
+├── models/           # OpenVINO IR 模型与标签(**权重已入库, clone 即可用**)
 ├── proto/            # gRPC 接口定义
 ├── src/
 │   ├── video/        # 视频源抽象与实现 (File/RTSP)
@@ -74,21 +74,36 @@ CVInfer-Gate/
 │   ├── review/       # 大模型异步复核 (gRPC 客户端 + 异步调度)
 │   ├── sensor/       # 多模态传感器统一抽象 (视频/雷达/红外)
 │   ├── fusion/       # 决策级融合 (时间对齐 + 目标关联 + 置信度融合)
-│   └── utils/        # 线程安全队列、配置解析
+│   ├── tracking/     # [T40] 目标跟踪 (IoU+质心兜底关联, 给目标分配 track_id)
+│   └── utils/        # 线程安全队列、配置解析、告警去重(AlertGate)
 ├── web_gateway/      # Python Flask BFF 网关
 ├── scripts/          # 建表脚本 schema.sql / 复核 mock / 传感器回放示例
 ├── vlm_review/       # [T37] 真 VLM 复核服务端(gRPC; OpenAI兼容/本地transformers/mock)
 ├── docker/           # Dockerfile 与 Compose 编排
 ├── tests/            # gRPC 客户端 + Phase A~D 阶段自检 (phase_selftest)
-│   └── unit/         # [T38] gtest 单元测试 (纯逻辑: NMS/融合/配置/队列/ROI/告警去重)
+│   └── unit/         # [T38] gtest 单元测试 (纯逻辑: NMS/融合/配置/队列/ROI/告警去重/目标跟踪)
 ├── docs/             # 架构与一致性总览 (OVERVIEW.md)
-└── .github/workflows # [T38] CI: 编译 + ctest
+├── mediamtx          # 内置 RTSP 服务器二进制(有意入库: clone 即可跑 RTSP 演示)
+├── mediamtx.yml      # mediamtx 配置
+└── .github/workflows # [T38] CI: 编译 + ctest + [P2-5] Python 自测
 ```
 
 
-2. 准备模型与视频
-将 YOLO 的 OpenVINO 模型文件 (yolov8n.xml, yolov8n.bin) 放入 models/ 目录
-准备测试视频 `test.mp4`：**本地直接跑放 `build/`**（程序按当前工作目录解析相对路径），**docker 跑放项目根目录**（compose 已挂载 `../test.mp4`）
+2. 准备配置与测试视频（模型已随仓库入库，无需准备）
+
+**模型**：`models/` 下的 IR（`yolov8n.*` 检测 + `helmet_cls.*` 安全帽分类）与标签**已入库**，
+clone 即可用（[决策 a] 目标 = “clone 就能跑”）。
+
+**配置**：主配置不入库（避免口令进 git），从模板生成：
+```bash
+cp config/config.example.yaml config/config.yaml
+export DB_PASSWORD=<你的 MySQL 口令>   # docker 跑时与 docker/.env 的 MYSQL_ROOT_PASSWORD 一致
+export VLM_TOKEN=<复核 token>          # [T41] 可选；设了则必须等于服务端 VLM_AUTH_TOKEN
+```
+（`ConfigParser::expandEnv` 会展开 yaml 里的 `${VAR}`，所以口令不必写回文件。）
+
+**测试视频**：`test.mp4` 需自备（体积大，不入库）——
+**本地直接跑放 `build/`**（程序按当前工作目录解析相对路径），**docker 跑放项目根目录**（compose 已挂载 `../test.mp4`）。
 
 3.一键启动
 cd docker

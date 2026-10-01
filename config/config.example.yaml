@@ -1,0 +1,97 @@
+# ============================================================
+# 示例配置: clone 后 `cp config/config.example.yaml config/config.yaml` 即可跑。
+#   * 本文件**不含任何口令**: 口令走环境变量(ConfigParser::expandEnv 会展开 yaml 里的 ${VAR})。
+#   * 真口令别写回这里 —— config/config.yaml 已被 .gitignore 忽略, 不随仓库走。
+# 需要的环境变量:
+#   DB_PASSWORD  MySQL 口令(docker 跑时与 docker/.env 的 MYSQL_ROOT_PASSWORD 一致)
+#   VLM_TOKEN    [T41] 复核服务端 token(不设 = 两端都不鉴权)
+# ============================================================
+# ============================================================
+# CVInfer-Gate 运行配置 (新版分组结构)
+# ------------------------------------------------------------
+# 用法(Windows / PowerShell):
+#     copy config\config.new.yaml config\config.yaml
+# 说明: config/config.yaml 被环境安全策略锁定, 故用本文件承载新版结构。
+#       旧版三段式(video/database/grpc) 仍可解析, 未提供的键走默认值。
+# ============================================================
+
+app:
+  log_level: "info"       # trace|debug|info|warn|error
+  log_file: ""            # 空 = 仅输出到控制台
+
+sensors:
+  - kind: radar
+    name: radar_front
+    backend: stub          # 无硬件也能跑
+    rate_hz: 10
+    labels: ["person"]
+
+fusion:
+  enabled: true
+  level: decision
+  time_tolerance_ms: 50
+  match_iou: 0.30
+  sensor_weight: 0.35
+  emit_sensor_only: false
+  adopt_sensor_label: false
+  buffer_capacity: 256
+
+review:                    # Phase C：没有复核服务端也有效
+  enabled: true
+  endpoint: "127.0.0.1:50052"
+  timeout_ms: 1000
+  queue_size: 64
+  worker_threads: 2
+  trigger: { labels: ["person"], min_conf: 0.50, max_conf: 1.00 }
+  roi_padding: 0.10
+  prompt: "判断该人员是否未佩戴安全帽"
+  alert_type: "安全帽缺失"
+  alert_on_failure: true   # 无服务时走兜底告警 → 落到 db_fallback.csv
+
+
+video:
+  source_type: "rtsp"     # file | rtsp
+  # source_type: "file"     # file | rtsp
+  # source_path: "test.mp4" # 本地视频文件 / RTSP 地址 (按需修改)
+  source_path: "rtsp://127.0.0.1:8554/live" # 本地视频文件 / RTSP 地址 (按需修改)
+  # ⚠ docker 跑时: 容器内的 127.0.0.1 是容器自身，不是宿主机 => 宿主机上的 mediamtx
+  #   要写 rtsp://host.docker.internal:8554/live (compose 已配 extra_hosts);
+  #   或改 source_type: file 并用挂载进容器的 /app/test.mp4。
+  # source_path: "rtsp://127.0.0.1:8554/live" # 本地视频文件 / RTSP 地址 (按需修改)
+  target_fps: 0           # 0 = 不限速; >0 = 按目标帧率抽帧限速
+  frame_interval: 1       # 每 N 帧取 1 帧
+  queue:
+    max_size: 24          # 有界队列容量 (防内存膨胀)
+    policy: "drop_oldest" # drop_oldest | block
+
+pipeline:
+  worker_threads: 2       # 推理 worker 数 / 引擎池大小
+
+database:
+  # host: "tcp://mysql-db:3306"
+  host: "127.0.0.1"
+  user: "root"
+  password: "${DB_PASSWORD:-}"
+  dbname: "cv_infer"
+  pool_size: 4            # 连接池大小
+  batch_size: 20          # [T11] 攒够 20 条批量插入 (队列容量 = batch_size*16)
+  flush_interval_ms: 1000 # [T11] 或每隔 1 秒批量冲刷 (兼作空闲等待间隔)
+  max_retries: 10         # 初次连接最大重试次数
+  # ---- [T11] 数据库不可用时的降级与重试策略 ----
+  fallback_path: "db_fallback.csv"  # 本地 CSV 降级文件(空 = 禁用降级)
+  reconnect_interval_ms: 30000      # 不可用后每隔 30s 重试一次
+  reconnect_after_writes: 100       # 或累计 100 次冲刷后重试一次
+
+alert:
+  dedup:
+    enabled: true       # false = 完全等价于旧行为
+    iou: 0.30           # 判"同一目标"的框重叠阈值
+    cooldown_ms: 5000   # 冷却窗(按最近一次命中刷新)
+    max_entries: 256    # 记忆上限(有界)
+
+grpc:
+  port: 50051
+  timeout_ms: 5000        # 引擎借用超时 / 客户端 deadline
+  max_message_size_mb: 16 # 收发消息上限 (T8; 默认 4MB 会挡住大图)
+  worker_threads: 0       # 同步服务线程配额 (T8; 0 = gRPC 默认)
+  keepalive_time_ms: 20000 # HTTP/2 keepalive (T8)

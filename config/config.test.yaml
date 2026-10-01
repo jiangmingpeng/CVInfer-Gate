@@ -48,10 +48,13 @@ video:
 pipeline:
   worker_threads: 2       # 约束: worker_threads <= models[].pool_size
 
+# [P0-2] 口令不落明文(ConfigParser::expandEnv 会展开 ${VAR}):
+#   本地直接跑: export DB_PASSWORD=<MySQL 口令>;  docker 跑: 填 docker/.env
+#   ⚠ 历史提交里此处曾是明文口令 ⇒ 该口令视为**已泄露**, 请轮换。
 database:
   host: tcp://127.0.0.1:3306
   user: root
-  password: "12345678jmp"   # ← 与 docker/docker-compose.yml 的 MYSQL_ROOT_PASSWORD 一致
+  password: "${DB_PASSWORD:-}"
   dbname: cv_infer
   pool_size: 4
   batch_size: 20

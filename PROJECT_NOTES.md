@@ -1149,7 +1149,7 @@ timeout 60 ./CVInfer-Gate \
 | 文件 | 键 | 处置 |
 |---|---|---|
 | `config/config.yaml`（锁定） | `video.source_type` / `source_path` | 手改 `rtsp` + `.../8554/live`（原为 `file` + `/live/stream`） |
-| `config/config.rtsp.yaml` / `config.test.yaml` | `database.password` | 与本地 MySQL 对齐（compose 里是 `12345678jmp`，已一致 ✅） |
+| `config/config.rtsp.yaml` / `config.test.yaml` | `database.password` | 与本地 MySQL 对齐（compose 里是 `<已移出仓库，见 docker/.env>`，已一致 ✅） |
 | `config/config.test.yaml` | `video.source_path: test.mp4` | 需 `build/` 下存在该文件 |
 | `docker/docker-compose.yml` | `3306:3306` | 本机若装 MySQL 会端口冲突（当前未装 ⇒ 无冲突）；另注意 `../test.mp4` 不存在时 Docker 会**创建同名目录** |
 
@@ -1176,7 +1176,7 @@ timeout 60 ./CVInfer-Gate \
 
 ```bash
 cd ~/CVInfer-Gate/docker && docker compose up -d mysql-db
-docker compose exec mysql-db mysql -uroot -p12345678jmp -e "SHOW TABLES FROM cv_infer;"
+docker compose exec mysql-db mysql -uroot -p<已移出仓库，见 docker/.env> -e "SHOW TABLES FROM cv_infer;"
 ```
 
 **待完善（未做）**：让 `DBWriter::init()` 容忍连接池失败——失败时不返回 false，而是置 `db_healthy_=false` 进入降级，

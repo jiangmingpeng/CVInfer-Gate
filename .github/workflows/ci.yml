@@ -8,8 +8,9 @@
 # 避免"本地能编、CI 编不过"两套环境。
 #
 # 跑什么:
-#   1) cv_unit_tests    —— gtest 单元测试(纯逻辑: NMS/融合/配置/队列/ROI)
+#   1) cv_unit_tests    —— gtest 单元测试(纯逻辑: NMS/融合/配置/队列/ROI/告警去重/目标跟踪)
 #   2) phase_selftest   —— Phase A~D 接缝自检(原有 50 项)
+#   3) vlm_review 自测  —— [P2-5] Python 侧鉴权拦截器自测(只依赖标准库, 秒级)
 # 两者都注册进 ctest, 由 `ctest --output-on-failure` 统一驱动。
 #
 # 触发: 任意分支的 push / PR; 但**纯文档改动跳过**(paths-ignore *.md / docs/**),
@@ -97,3 +98,8 @@ jobs:
 
       - name: 测试 (ctest: 单元测试 + 阶段自检)
         run: cd build && ctest --output-on-failure
+
+      # [P2-5] Python 侧自测: 用假 grpc 模块驱动**真**拦截器逻辑, 不需要安装 grpcio。
+      # 覆盖 T41: 放行/拒绝/前缀攻击/尾空格/小写 bearer/metadata 混排/非 ASCII/流式 handler 类型。
+      - name: Python 自测 (vlm_review 鉴权拦截器)
+        run: python3 -m vlm_review.test_auth_interceptor

@@ -60,10 +60,13 @@ pipeline:
   worker_threads: 2
 
 # ---- ⚠ 请与本机 config/config.yaml 保持一致(不一致只会连库失败并降级写 CSV) ----
+# [P0-2] 口令不落明文: ${DB_PASSWORD} 由 ConfigParser::expandEnv 展开(见 ConfigParser.cpp:134)。
+#   本地直接跑: export DB_PASSWORD=<MySQL 口令>;  docker 跑: 填 docker/.env
+#   ⚠ 历史提交里此处曾是明文口令 ⇒ 该口令视为**已泄露**, 请轮换。
 database:
   host: tcp://127.0.0.1:3306
   user: root
-  password: "12345678jmp"      # ← TODO: 改成 config/config.yaml 里的密码
+  password: "${DB_PASSWORD:-}"
   dbname: cv_infer
   pool_size: 4
   batch_size: 20

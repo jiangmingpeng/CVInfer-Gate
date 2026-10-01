@@ -1,11 +1,19 @@
 
+# ============================================================
+# [P0-2] 所有口令/密钥走环境变量 —— 在本目录建 docker/.env(.gitignore 已忽略):
+#     MYSQL_ROOT_PASSWORD=<MySQL root 口令>
+#     DB_PASSWORD=<C++ 网关连库口令, 一般同上>
+#     VLM_AUTH_TOKEN=<[T41] 复核服务端/客户端共享 token; 留空 = 不鉴权>
+# 不建 .env 也能起, 但 MySQL 会因空口令初始化失败 / 网关连库失败降级写 CSV。
+# ============================================================
+
 services:
   # MySQL 数据库服务
   mysql-db:
     image: mysql:8.0
     container_name: cv_infer_mysql
     environment:
-      MYSQL_ROOT_PASSWORD: 12345678jmp
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-}
       MYSQL_DATABASE: cv_infer
     ports:
       - "3306:3306"
@@ -15,7 +23,7 @@ services:
       - cv-network
      # 新增健康检查，每 5 秒探查一次 MySQL 是否准备好
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p12345678jmp"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -35,10 +43,14 @@ services:
     #   - mysql-db
     networks:
       - cv-network
-    # # 覆盖配置文件里的数据库地址，指向 docker 网络内的 mysql 服务
-    # environment:
-    #   - DB_HOST=tcp://mysql-db:3306
-    # 注意：程序目前是读 config.yaml，如果要在 docker 里动态改，需要在代码里支持环境变量，或者挂载 config 文件
+    # [P0-2] 口令/密钥走环境变量: compose 自动读同目录 docker/.env。
+    # 之所以能生效: config/ 里的 yaml 写的是 ${VAR}, ConfigParser::expandEnv 会展开,
+    # 所以 config.yaml 用 `password: "${DB_PASSWORD:-}"`、`review.auth_token: "${VLM_TOKEN:-}"`
+    # 就能被这里的变量注入 —— 不需要改代码(旧注释说的"需要在代码里支持环境变量"已不准确)。
+    environment:
+      DB_PASSWORD: ${DB_PASSWORD:-}
+      VLM_TOKEN: ${VLM_AUTH_TOKEN:-}      # [T41] 与 vlm-review 的 VLM_AUTH_TOKEN 配对
+      DB_HOST: tcp://mysql-db:3306        # 仅当 config.yaml 的 database.host 写成 ${DB_HOST:-...} 才生效
     volumes:
       - ../config:/app/config
       - ../models:/app/models
@@ -70,6 +82,7 @@ services:
       VLM_BASE_URL: ${VLM_BASE_URL:-http://host.docker.internal:8000/v1}
       VLM_MODEL: ${VLM_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}
       VLM_API_KEY: ${VLM_API_KEY:-EMPTY}
+      VLM_AUTH_TOKEN: ${VLM_AUTH_TOKEN:-}   # [T41] 空 = 不校验; 与网关的 VLM_TOKEN 配对
       VLM_PORT: "50052"
       VLM_MAX_WORKERS: "4"
     ports:
