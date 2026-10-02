@@ -146,12 +146,12 @@
 |---|---|---|
 | `proto/inference.proto` | 47 | 主服务契约：`Detect`、`Health`（`DetectionService`） |
 | `proto/review.proto` | 50 | 复核服务契约：`Review`、`Health`（`ReviewService`） |
-| `config/config.example.yaml` | 124 | **模板**（不含口令，`${VAR}` 占位）：10 段 69 键；注意其 `video.source_type` 默认是 **rtsp** |
+| `config/config.example.yaml` | 161 | **唯一模板**（不含口令，`${VAR}` 占位）：11 段 184 键（**含 `cascade:`**）；注意其 `video.source_type` 默认是 **rtsp** |
 | `config/config.ops.yaml` | 108 | **[T43] 运维向**：file 源 + `metrics` 开 + `alert.push` 指向脚本；不依赖 MySQL/复核 |
-| `config/config.rtsp.yaml` / `config.test.yaml` | 127/137 | RTSP 实时流 / **打开 Phase B+C+D** 的真实链路 |
+| `config/config.rtsp.yaml` / `config.test.yaml` | 127/138 | RTSP 实时流 / **打开 Phase B+C+D** 的真实链路 |
 | `config/config.yaml` | 106 | 本机默认配置（**被 `.gitignore`，不在仓库**：必须自己 `cp`） |
 | `config/model_config.yaml` | 53 | **模型清单**（每项带 `role`）——Phase A 的输入 |
-| `config/{cascade,review,sensors}.example.yaml` | 35/57/60 | Phase B/C/D 的分段示例 |
+| ~~`config/{cascade,review,sensors}.example.yaml`~~ | — | 原有三个**分段模板**（35/57/60 行），2026-10-02 已合并进 `config.example.yaml` 并删除 |
 | `docker/Dockerfile` / `docker-compose.yml` | 44/127 | 4 个服务：`mysql-db`、`cv-infer-gate`（含 [T43] healthcheck）、`vlm-review`、网络 |
 | `docker/init_db.sql` / `scripts/schema.sql` | 20/45 | 表结构（两者等价） |
 | `docker/prometheus.example.yml` | 43 | **[T43] Prometheus 抓取配置** |
@@ -375,9 +375,9 @@ curl -s http://127.0.0.1:9100/metrics | head -40         # 期望: 20 组 cvinfe
 ## 9. 读代码时最容易困惑的 8 个点（都是真的）
 
 1. **`main.cpp` 794 行、没有文件头注释、`main()` 一个函数吃下全部装配** ⇒ 别顺序读；用 §4 的行号锚点跳读。
-2. **`config.example.yaml` 默认是 RTSP 源**（`source_type: "rtsp"`）⇒ 想跑本地视频必须改成 `file`（文件里第 57–58 行有注释示例）。
-3. **`config.example.yaml` 开头 9 行有历史遗留注释**（提到 `config.new.yaml`、Windows 下"config.yaml 被锁定"）⇒ **以第 2 行为准**：`cp config/config.example.yaml config/config.yaml`。
-4. **`config/config.yaml` 不在仓库里**（被 `.gitignore`）⇒ 新环境必须自己 `cp`，否则起不来。
+2. **`config.example.yaml` 默认是 RTSP 源**（`source_type: "rtsp"`）⇒ 想跑本地视频必须改成 `file`（文件里第 93–96 行有注释示例）。
+3. **`config.example.yaml` 开头是“段索引”**（11 段一览 + 三个场景配置的用途 + 环境变量清单）⇒ `cp config/config.example.yaml config/config.yaml` 即可跑：**全量模板，不必再手工合并分段**。
+4. **`config/config.yaml` 不在仓库里**（被 `.gitignore`）⇒ 新环境必须自己 `cp`，否则起不来（报 `bad file: config/config.yaml`，退出码 255）；万一**被误删**，可用 `cp build/config/config.yaml config/config.yaml` 救回（CMake POST_BUILD 留下的快照，= 上次构建时刻的版本）。
 5. **"health_check" 是两个完全不同的东西**：`review.health_check`（复核客户端 init 时探活一次，`GrpcLlmReviewer`）vs **`--health-check`（主服务探针，实现在 `main.cpp`）**。代码里**没有** `src/service/HealthCheck.cpp`。
 6. **`DetectionResult.track_id` 没有进 proto** ⇒ gRPC 响应里没有 `track_id`（只有画框/落库/去重能看到）。见 `OVERVIEW` 待办。
 7. **命名空间不统一**：`sensor::`、`tracking::`、`fusion::`、`alert::`、`http::`、`metrics::` 有命名空间；`inference/`、`pipeline/`、`database/` 是全局命名空间。
@@ -389,7 +389,7 @@ curl -s http://127.0.0.1:9100/metrics | head -40         # 期望: 20 组 cvinfe
 
 | 步 | 读什么 | 读完应能回答 |
 |---|---|---|
-| 1 | `config/config.example.yaml`（124 行）+ `config/config.ops.yaml` | 这个系统能被怎么调？哪些开关默认关？ |
+| 1 | `config/config.example.yaml`（161 行）+ `config/config.ops.yaml` | 这个系统能被怎么调？哪些开关默认关？ |
 | 2 | `proto/inference.proto` + `proto/review.proto` | 对外到底暴露了几个能力？ |
 | 3 | `src/pipeline/VideoPipeline.h`（112 行） | 一条帧从哪进、经几个线程、从哪出？ |
 | 4 | `src/utils/ThreadSafeQueue.h` + `LifecycleCoordinator.h` | 背压怎么实现？优雅关闭是谁触发的？ |

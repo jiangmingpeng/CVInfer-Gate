@@ -19,11 +19,27 @@ CVInfer-Gate 是一个 C++17 视频推理网关：**FFmpeg/OpenCV 解码 → Ope
 
 | 约束 | 说明 | 应对 |
 |---|---|---|
-| `config/config.yaml` 被锁 | **读、写均被安全策略拒绝**（Security concern） | 用模板 `config/config.new.yaml` 承载，用户手工 `copy` 覆盖 |
+| `config/config.yaml` 不在仓库 | 被 `.gitignore` 忽略（含本机口令）⇒ clone 后**必须自己 `cp`**，否则启动直接失败（`bad file: config/config.yaml`，退出 255，gRPC 也不会起） | 模板= `config/config.example.yaml`（唯一）；误删可从 `build/config/config.yaml`（CMake POST_BUILD 快照）救回；详见 §1.1 |
 | 终端为独立远程环境 | AI 侧**拿不到命令输出、也看不到副作用文件**（实测：重定向写文件后读不到） | 编译/运行一律由用户在自己的终端执行；AI 侧靠“接口交叉核对”+ 自检程序（T27）保证正确 |
 | CMake 用 `file(GLOB_RECURSE "src/*.cpp")` | **新增 `.cpp` 不会自动纳入构建** | 任何新增源文件后**必须重跑 cmake** |
 | 编辑文件用工具 | 不要用 `sed/awk` 改文件 | 用 Edit/MultiEdit 工具 |
 | 日志宏前缀 | 统一 `CVLOG_`，避免与 `<syslog.h>` 的 `LOG_INFO` 冲突 | — |
+
+### 1.1 配置文件的现状（2026-10-02 整理）
+
+> 历史背景：早期（阿里云/Windows）曾把 `config.yaml` 当作“被安全策略锁定的文件”，于是把新结构放在别的模板里（`config.new.yaml` / `model_config.new.yaml`），
+> 又为每个阶段各建一个**分段模板**（`cascade/review/sensors.example.yaml`），结果是 `config/` 里堆了 9 个文件、互相重叠，极易误删/误用。现已收拢。
+
+| 文件 | 角色 | 说明 |
+|---|---|---|
+| `config/config.example.yaml` | **唯一模板** | 全量 11 段（含 `cascade:`）、184 键；不含任何口令（`${VAR}` 占位）。clone 后 `cp` 它即可跑 |
+| `config/config.yaml` | **本机配置** | 被 `.gitignore`（含本机 `DB_PASSWORD`）；不存在就起不来 |
+| `config/model_config.yaml` | **模型清单** | 用 `--model-config` 单独加载（**不能**当 `--config` 传，否则报 `video.source_path 不能为空`） |
+| `config.test.yaml` / `config.ops.yaml` / `config.rtsp.yaml` | **场景配置** | Phase B+C+D / 运维三件套 / RTSP 实时流；都能直接 `--config` 跑，互不替代 |
+
+- ~~`config/config.new.yaml`、`config/model_config.new.yaml`~~：**从未存在于仓库**（历史过渡命名，勿再引用）。
+- ~~`config/{cascade,review,sensors}.example.yaml`~~：三个分段模板**已合并进 `config.example.yaml` 并删除**（内容没丢：`cascade` 段原本只有它们里有）。
+- 测试/CI **不读取** `config/` 下任何文件（`phase_selftest` 零配置依赖）⇒ 增删配置文件不会弄挂 CI，但会弄挂 README/RUNBOOK 里的命令。
 
 ---
 
@@ -327,14 +343,16 @@ YoloPostProcessor(conf, nms); process(const ov::Tensor&, const cv::Size&, const 
 ## 7. 构建与运行（**每次改完必做**）
 
 ```powershell
-# 1) 配置（config.yaml 被锁，需手工维护）
-#    - 若曾用 config.new.yaml 模板：按需重新 copy（该模板可能已被删除，见第 11 节）
-#    - 启用级联：把 config/cascade.example.yaml 的 cascade: 段合并进 config/config.yaml
-#    - 级联的二级分类器需在 config/model_config.yaml 的 models: 里以 role=classifier 注册
-#    - 启用大模型复核：把 config/review.example.yaml 的 review: 段合并进 config/config.yaml
-#      （复核服务端需实现 proto/review.proto 的 ReviewService）
-#    - 启用多模态融合：把 config/sensors.example.yaml 的 sensors: + fusion: 段合并进 config/config.yaml
-#      （sensors: 只列雷达/红外; 视频仍由 video: 段描述。无硬件时 backend=stub 可直接联调）
+# 1) 配置（本机 config/config.yaml 不入库, 需自己 cp 模板）
+cp config/config.example.yaml config/config.yaml        # 唯一全量模板(11 段, 含 cascade)
+#    - 三个场景配置可直接 --config 跑, 不必改模板:
+#        config/config.test.yaml   Phase B+C+D 全开(需 role=classifier 模型 + 复核服务端)
+#        config/config.ops.yaml    运维三件套(file 源 + metrics + 告警外发), 不依赖 MySQL/复核
+#        config/config.rtsp.yaml   RTSP 实时流(只需改 video.source_path 一行)
+#    - 级联的二级分类器须在 config/model_config.yaml 的 models: 里以 role=classifier 注册
+#      (本仓库已注册 helmet_classifier)
+#    - 复核服务端需实现 proto/review.proto 的 ReviewService(mock 见 scripts/mock_review_server.py)
+#    - ⚠ 误删 config/config.yaml 时: cp build/config/config.yaml config/config.yaml 可救回
 
 # 1.5) 初始化数据库表结构（首次部署或表缺失时执行）
 #      docker 环境已由 docker/init_db.sql 在首次初始化数据卷时自动建表；
@@ -446,16 +464,16 @@ cmake --build . --target phase_selftest -j
 - 旧版三段式 `config.yaml`（`video/database/grpc`）**仍可解析**，缺失的新键走默认值；`validate()` 不会误杀旧配置。
 - `getAppConfig()/getModelConfig()` 签名未变；`ModelConfig` 只做**加法**（新增 `name/role/pool_size/acquire_timeout_ms`，均带默认值）。
 - 旧的单模型 `model_config.yaml`（`model:` + `thresholds:`）**仍可解析**，会被规整为长度 1 的模型列表；`getModelConfigs()` 返回该列表，`getModelConfig()` 返回首个。
-- 旧的 `model_config.yaml` 无需改动即可继续跑；新格式模板见 `config/model_config.new.yaml`。
+- 旧的 `model_config.yaml` 无需改动即可继续跑；`models:` 列表格式见 `config/model_config.yaml` 自身（含 `role`/`device` 注释）。
 - 不配置 `cascade:` 段时 `enabled=false`，行为与 T15 单模型路径**完全一致**。
 - `DetectionResult` 新增字段均带默认值，且代码全部按字段名访问（无聚合初始化），故旧链路零影响。
-- 注意：`config/config.new.yaml` 当前**实际不存在**（见下）；应用层配置只加载 `config/config.yaml`，级联段请用 `config/cascade.example.yaml` 合并。
+- 应用层配置只加载 `config/config.yaml`（或 `--config` 指定的文件）；`cascade:` 段**已内置于 `config/config.example.yaml`**，不必再手工合并（旧的 `config/cascade.example.yaml` 已删除，见 §1.1）。
 - `ThreadSafeQueue` 旧用法 `q(10); q.push(x); q.pop(y); q.stop();` 仍可用。
 - `Detect` RPC 的 proto（`proto/inference.proto`）**未改动**；新增的 `proto/review.proto` 是**独立服务**（本仓库为客户端），不影响既有 `Detect`。
 - 不配置 `review:` 段时 `enabled=false`，告警沿用原版本地规则，行为与 T19 一致；启用后**只改告警**链路。
 - `VideoPipeline::ResultCallback` 由 `(frame, detections)` 变为 `(frame_seq, frame, detections)`（增参，属**破坏性签名变更**，但仓库内唯一调用点是 `main.cpp`，已同步）。
 - 复核结论与 ROI 始终带 `frame_seq`，异步结果按帧回收；`ReviewScheduler::submit` 非阻塞（有界 DropOldest）。
-- `config/review.example.yaml` 是**模板**，程序不会自动加载；需手工合并进 `config/config.yaml`。
+- `review:` 段**已内置于 `config/config.example.yaml`**（含 [T37] 的 `max_message_size_mb/keepalive_time_ms/auth_token/health_check`）；旧的 `config/review.example.yaml` 已删除。
 - `models:` 中 `role: reviewer` 现直接报错（复核不走本地模型）；原有以 `reviewer` 注册的配置需迁移到 `review:` 段。
 - `ModelRole::Reviewer` 枚举值保留但当前未使用（供未来本地 VLM 复核预留）。
 - **不配置 `sensors:`/`fusion:`** 时 `fusion.enabled=false` → `MultiSensorPipeline` 根本不创建，sink 里 `fusion_stage==nullptr`，**零拷贝直通**，行为与 T22 完全一致。
@@ -463,7 +481,7 @@ cmake --build . --target phase_selftest -j
 - `DetectionResult` 新增字段仍为**加法且带默认值**，无聚合初始化，旧链路零影响。
 - `sensors[].kind=video` 在校验层**直接报错**（视频必须由 `video:` 段描述），避免两套时间基并存。
 - `fusion.level` 目前只允许 `decision`（校验层拒绝其它值），因为特征级融合需改推理链路。
-- `config/sensors.example.yaml` 是**模板**，程序不会自动加载；需手工合并进 `config/config.yaml`。
+- `sensors:`/`fusion:` 段**已内置于 `config/config.example.yaml`**；旧的 `config/sensors.example.yaml` 已删除。
 - 雷达/红外的回放文件格式：`[timestamp_ms,]label,confidence[,distance_m[,x,y,w,h]]`（`#` 注释/空行忽略；多目标写成同一时间戳的多行）。
 
 ---
@@ -505,7 +523,7 @@ cmake --build . --target phase_selftest -j
 > **对原计划的偏差（重要）**：
 > ① `CascadeEngine` 落在 **`inference/`**（原写 `pipeline/`）—— 它实现 `IDetector`、组合模型，与流水线线程/队列无关，放 `inference/` 更贴切。
 > ② `IClassifier::classify` 由 `Classification classify(roi)` 改为 **`DetectStatus classify(roi, out)`**（与 `IDetector::detect` 对称），以便级联区分 Busy/Failed 并降级。
-> ③ 级联配置段解析进 **`AppConfig::cascade`**；因 `config/config.new.yaml` 实际不存在，模板改为 **`config/cascade.example.yaml`**（需手工合并进 `config/config.yaml`）。
+> ③ 级联配置段解析进 **`AppConfig::cascade`**。命名经历过两步过渡（`config/config.new.yaml` → `config/cascade.example.yaml`，两个文件都不存在了）；现 `cascade:` 段**已内置于 `config/config.example.yaml`**。
 > ④ `DetectionResult` 新增 `reviewed/sub_class_id/sub_confidence/sub_label`，供 Phase C 告警/入库使用。
 
 ### Phase B 遗留 / Phase C 衔接点
@@ -561,7 +579,7 @@ cmake --build . --target phase_selftest -j
 - **T26** `pipeline/MultiSensorPipeline.*`：每路非视频传感器一个 **poller 线程** → 有界时间缓冲（满则 **丢最旧**，永不阻塞）；
   `fuse()` 由 **sink 线程**调用：一次内存快照 → 纯计算融合（锁只在快照的短临界区）；`stop()` 先 `close()` 再 `join`（幂等）。
   接入方式：**不改 `VideoPipeline`**，在 `main` 的 sink 回调**最前置**叠加 `fuse()` —— 与“级联实现 `IDetector`”“复核实现 `IReviewService`”同一种“挂在既有抽象上”的思路。
-- 配置：`sensors:`（列表）+ `fusion:`（`FusionConfig`）解析与校验；模板 `config/sensors.example.yaml`；
+- 配置：`sensors:`（列表）+ `fusion:`（`FusionConfig`）解析与校验；两段**已内置于 `config/config.example.yaml`**；
   退出时打印“融合统计: frames/samples/dropped/aligned/targets/matched/unmatched_sensor/emitted_sensor_only/poll_errors”。
 
 > **对原计划的偏差（重要）**：
@@ -588,11 +606,11 @@ cmake --build . --target phase_selftest -j
 - 帧序（R-1）在引入异步复核后更需注意：复核按 `frame_seq` 关联；如需严格有序，sink 侧加小缓冲重排。
 - 新增 `.cpp` 后**必须重跑 cmake**（GLOB）。
 
-### 配置演进（进 `config/config.new.yaml`；`config.yaml` 被锁）
+### 配置演进（现 = 全量模板 `config/config.example.yaml`；下为各段语义速查）
 ```yaml
 # models: [ {name, role, xml_path, bin_path, labels_path, input_width, input_height,
 #            conf, nms, pool_size, acquire_timeout_ms}, ... ]   # T12–T15 已支持; role=classifier 于 T17 落地
-cascade:                          # T16–T19 (已实现; 模板见 config/cascade.example.yaml)
+cascade:                          # T16–T19 (已实现; 已内置于 config/config.example.yaml)
   enabled: false
   primary: yolov8_detector
   secondary: helmet_classifier
@@ -602,7 +620,7 @@ cascade:                          # T16–T19 (已实现; 模板见 config/casca
   accept_conf: 0.50
   drop_rejected: true
   boost_on_confirm: false
-review:                           # T20–T22 (已实现; 模板见 config/review.example.yaml)
+review:                           # T20–T22 (已实现; 已内置于 config/config.example.yaml)
   enabled: false
   endpoint: "llm:50052"
   timeout_ms: 3000
@@ -613,11 +631,11 @@ review:                           # T20–T22 (已实现; 模板见 config/revie
   prompt: "判断该人员是否未佩戴安全帽"
   alert_type: "安全帽缺失"
   alert_on_failure: false
-sensors:                          # T23–T24 (已实现; 模板见 config/sensors.example.yaml)
+sensors:                          # T23–T24 (已实现; 已内置于 config/config.example.yaml)
   - { kind: radar,    name: radar_front, backend: stub, rate_hz: 10, labels: ["person"] }
   - { kind: infrared, name: ir_1,        backend: file, path: config/ir_targets.txt }
   # 注意: 视频**不**写在这里(由 video: 段描述, 并自动作为融合时间基的挂点)
-fusion:                           # T25–T26 (已实现; 模板见 config/sensors.example.yaml)
+fusion:                           # T25–T26 (已实现; 已内置于 config/config.example.yaml)
   enabled: false
   level: decision                 # 仅支持 decision
   time_tolerance_ms: 50
@@ -1319,346 +1337,4 @@ swap=4GB
 | 调优前 | 4 | 5.56 s | 109 | **19.6 fps** | ~240 fps |
 | 放开后 | 8 | 2.85 s | 90 | **31.6 fps** | ~215 fps |
 
-- ⚠️ **结论修正**：首发那次（窗口 2.85s）算得 31.6 fps，**但那是短窗口 + 含预热的偏乐观值**。
-  随后 3 次 `timeout -s TERM 5` 测得 processed = **143 / 141 / 140**（±1%，极稳），
-  按窗口 4.7~5.3s 折算 ⇒ **约 28~30.5 fps** ⇒ **正确的说法是“基本压在 30fps 线上”，不是舒适达标**
-  （待用确切时间戳复核，见下）；
-- 提升 **1.61x**（非线性 2x：内存带宽 + HT 效率使然）；
-- 单帧推理 **102ms -> 63ms**；按 WSL 报的拓扑（4 核 x 2 线程）推测 OV 默认 `num_threads`=4，
-  2 引擎 x 4 线程 = 8 ⇒ **正好填满 vCPU，配置自适配，无需手调**；
-- **丢帧问题实质上解决了**：文件源仍丢 85%（解码 215fps 全速灌，属预期）；
-  但换 30fps 摄像头时 `processed(31.6) > 源(30)` ⇒ `dropped` 应接近 0。
-
-#### ⚠️ 测量方法纠正：**不能用 `timeout 30` 做窗口**
-
-本项目的源是**有限长文件**（test.mp4 = 1332 帧，解码 215fps ⇒ 约 6.2s 读完）。文件读完后
-管线进入**排空 + 空闲**状态，`processed` 还会被排空阶段推高，而墙钟继续走 ⇒ `processed/30`
-会被严重低估（估算只有 ~9 fps，错得离谱）。**正确做法**：窗口必须**落在“解码仍在进行”期间**（≤ 约 6s），
-用日志时间戳算窗口：
-
-```
-fps = processed / (收到信号的时间戳 - 服务就绪的时间戳)
-```
-
-推荐固定用 `timeout -s TERM 5`，再跑 2~3 次取稳定值。（若需长窗口，先用
-`ffmpeg -stream_loop 9 -i test.mp4 -c copy test_long.mp4` 造一个长源。）
-
-> ⚠️ **注意：`timeout -s TERM 5` 的 5s 是从“进程启动”算起的**，所以真实工作窗口 = 5s - 启动耗时
-> （实测启动约 0.3s）⇒ 约 4.7s。**必须从日志里取两个时间戳才能算准**，不能直接拿 5 当分母。
-
-**另一个思路：直接看 `decoded`**。文件源全速解码，解码速率固定（~215-240 fps），
-所以 `decoded` 本身就是“窗口有多长”的代理量（`decoded / 解码速率 = 窗口`），
-可以拿来交叉校验时间戳算出来的窗口对不对。
-
-### 20.12 本地基线定档：**30.2 ± 0.7 fps（压线）** + 两条测量铁律
-
-基准脚本已入库：**`scripts/bench.sh`**（固定 `timeout -s TERM 5` 窗口，用日志时间戳算真实窗口）。
-3 次干净数据：
-
-| 次 | 窗口 | decoded | 解码速率 | processed | **吞吐** |
-|---|---|---|---|---|---|
-| 1 | 4.653 s | 1165 | 250.3 fps | 144 | **30.9 fps** |
-| 2 | 4.674 s | 1186 | 253.7 fps | 143 | **30.5 fps** |
-| 3 | 4.669 s | 1143 | 244.8 fps | 136 | **29.1 fps** |
-
-**基线 = 30.2 ± 0.7 fps（±2.4%）**，对比源 **29.9551 fps** ⇒ **刚刚压线：实时余量 ≈ 0**。
-
-> **铁律 1：`解码速率` 是机器的“体温计”。** 解码是单线程纯 CPU 活，速率应当恒定；它一掉
-down，就是整机被降频了。实测抓到过一次：解码 **193 fps** 那一次，吞吐同步掉到 **24.1 fps**
->（正常是 250 fps / 30.9 fps）⇒ **那次是环境问题（功耗/温度/后台负载），不是程序问题**，
-> 该次数据直接丢掉重跑，不要当基线。
->
-> **铁律 2：窗口必须从日志时间戳算**（`收到信号` − `服务就绪`，实测约 4.6s）。
-> 直接拿 `timeout` 的 5s 当分母会低估 ~8%（因为 5s 是从进程启动算的，含 ~0.3s 初始化）。
-
-**根因更正**：本机 CPU 是 **i7-12650H（Alder Lake，并未硬件 NPU）**，
-所以 T33 的触发条件不是“有 NPU 硬件”，而是 **WSL 里没有加速设备 + wheel 里带了 NPU 插件**，
-AUTO 一让插件去枚举就崩。（先前写的“本机是带 NPU 的 Core Ultra”是错的，已改。）
-
-**下一步先看一个数（30 秒，不改配置）——并发度 `%CPU`：**
-
-- **≈800%（8 核跑满）** ⇒ 纯算力瓶颈 ⇒ **只有 INT8 能带来真实收益**（Alder Lake 有 AVX-VNNI，预计 1.5~2x）
-- **≈400~500%（一半核空闲）** ⇒ 存在**串行瓶颈**（sink/锁/引擎借用）⇒ 先修串行，别急着上 INT8
-- 参考：改成 4 路并发（`pool_size:4` + `num_threads:2` + `worker_threads:4`）**预期只有 ±10%**，
-  因为总算力不变，只是换一种分配方式——**先看这个数，再决定值不值得做**。
-
-### 20.13 并发度（%CPU）才是真 KPI：514% -> 天花板约 51 fps
-
-显式写 `num_threads: 4`（2 引擎）后：**32.8 fps（+9%；三次 33.1/33.0/32.2 整段高于旧的 30.9/30.5/29.1）**，
-但 **%CPU 一动不动（514% / 514% / 512%）** —— 同样的 CPU 干了更多活 ⇒ 瓶颈**不是总算力**，
-而是**每帧的关键路径**。
-
-```
-514% / 32.8fps = 157 核·毫秒/帧   <- 处理一帧真正消耗的 CPU
-2 worker / 32.8fps = 61ms        <- 但一帧的关键路径只有 61ms
-```
-⇒ 分配给一帧的 4 个线程，实际只顶得上 ~2.6 个（其余在 barrier / 串行 pre-post 上空等）。
-
-**由此得出一条硬指标**：`8 核 / 157 核·毫秒 ≈ 51 fps` —— FP32 在本机上的**理论上限**。
-
-> ⚠️ **[T35 更正] 这个推导方向是错的**：157 核·毫秒/帧里含 ~36 的 **worker 串行**（现已降到 5.7），
-> 而把串行削掉后 fps **不动** ⇒ 真正的约束是“**推理吞吐本身 ≈ 32~33 次/秒**”，不是“总核数 ÷ 每帧 CPU”。
-> 详见 **§20.14.4**（含教训：用“总量÷单量”推上限前，必须先证明单量里没有可消除的串行部分）。
-所以后续实验的判据改成 **“把 %CPU 从 514% 推到 700~800%”**，而不是直接盯 fps。
-
-**另一条**：解码那 1 个核是在为“被丢掉的 87% 帧”干活（文件源全速解码，处理 1 帧附带解码 7.6 帧）。
-换真实 30fps 摄像头直接省下这 1 核 ⇒ **文件源基准测试整体偏悲观**。
-
-**最佳已知配置（回退点）**：`pool_size: 2` + `num_threads: 4` = **32.8 fps**。
-**下一实验**：`pool_size: 4` + `num_threads: 2` + `pipeline.worker_threads: 4`（4 路并发 x 2 线程 = 8）。
-**踩坑预防**：`worker_threads` 必须 <= `pool_size`（借不到引擎的 worker 会白等）；
-且三个旋钮**必须成组改**，改一半会更慢（会误判成“实验失败”）。`scripts/bench.sh` 已回显生效参数。
-
----
-
-### 20.14 [T35] 推理性能收官：缓存友好改造 + 分段计时 ⇒ **FP32 天花板定量化（~33 fps）**
-
-**一句话结论**：worker 侧串行开销从 ~36ms/帧 砍到 **5.70ms/帧（↓6.3×）**，而吞吐**纹丝不动**
-⇒ **瓶颈是推理自身 ~32~33 帧/秒的吞吐墙（FLOP 受限），不是流水线**。
-本机 FP32 调优**到此为止**；唯一剩下的杠杆是减少模型计算量（INT8 / 降分辨率 / 抽帧）。
-
-#### 20.14.1 改了什么（两处，行为等价）
-
-| 文件 | 改动 | 等价性依据 |
-|---|---|---|
-| `inference/YoloPostProcessor.cpp` | 后处理改**缓存友好**：旧写法 `for(i) for(c) data[(4+c)*8400+i]` = 672,000 次**跨步 33.6KB** 的访问（每次都是新 cache line，预取基本失效）；新写法 `for(c) for(i)` 先按 80 行逐列求逐框 max（每行 33.6KB 驻 L1/L2，顺序访问 + 可自动向量化），再只对**过阈的少数框**解析坐标 | 逐列取 max 与原“每个框找最大类别”等价；`>` 比较 ⇒ 平局保留较小 class id、max 初值同为 `0.0f`，行为一致 |
-| `inference/OpenVINOEngine.cpp` | 预处理**直写输入 tensor**：旧路径 `cv::dnn::blobFromImage()` 每帧**新建 4.9MB blob** 再整体拷进用户 tensor；新路径 `cv::resize`（`thread_local` 复用缓冲）+ 按 NCHW 直接写 `infer_request_.get_input_tensor()`。保留 **f32/NCHW/CV_8UC3/尺寸一致** 前置检查，不满足（如 u8 输入的量化和模型）自动回落 `blobFromImage` | 与 `blobFromImage(swapRB=true, crop=false)` 同为 **INTER_LINEAR 普通缩放 + 1/255 + BGR→RGB + HWC→CHW**；仅浮点乘的结合顺序不同（≤1 ULP）|
-
-**新增分段计时**（可直接 `grep T35`，每 100 帧打一行均值）：
-`OpenVINOEngine`（预处理/推理）+ `YoloDetector`（后处理）。这是本轮唯一的“新增可观测性”，后续调优都靠它定位。
-
-#### 20.14.2 实测（`pool_size=2` + `num_threads=4` + `worker_threads=2`，即 §20.13 的最佳已知配置）
-
-```text
-[生效] device=CPU, performance_mode=latency, num_threads=4 | 引擎数量: 2 | pool=2
-[T35] 引擎分段/帧: 预处理=2.44ms  推理=77.94ms  (累计 100 帧)
-[T35] 后处理耗时/帧: 3.26 ms  (累计 100 帧)
-```
-
-| 指标 | 优化前 | 优化后 | 变化 |
-|---|---|---|---|
-| 预处理 | ~8~15ms（估算，见下注）| **2.44ms** | ↓3~6× |
-| 后处理 | ~10~20ms（估算，见下注）| **3.26ms** | ↓3~6× |
-| **worker 串行合计** | **~36 核·毫秒/帧** | **5.70ms/帧** | **↓6.3×** |
-| 吞吐（同配置）| 32.8 fps（T30/T32，§20.13）| 31.9 / 31.1 / 26.1 fps | **无变化**（±10% 噪声内）|
-| %CPU | 514% | 511% | **无变化** |
-
-> **注（本节唯一的估算成分）**：“优化前”没有直接读数（计时器是 T35 才加的）。量级由两条独立线索交叉印证：
-> ① **代码级**：`blobFromImage` 每帧新建并拷贝 4.9MB（约数 ms~15ms）、后处理 672k 次跨步访问（约 10~20ms）；
-> ② **%CPU 归因**：§20.13 测得整机 514%（≈5.1 核），而推理最多吃 4 核 ⇒ 推理之外确有 ~1 核的离线开销（`32.8fps` 下 ≈30ms/帧）。
-> ⇒ 取 **~25~36ms/帧**；“优化后”的 5.70ms 是**直接实测**。
-> 若报告里不愿留估算，可 `git stash` 旧实现重测一次（同配置）。
-> `推理=77.94ms` 是**前 100 帧**均值（含引擎预热），稳态更低（按 fps 反推约 57ms）；结论不受影响。
-
-#### 20.14.3 结论：FP32 天花板 ≈ 33 fps，且**与线程形态无关**
-
-三条独立证据：
-1. **12 组配置扫过**（`num_threads` 1/2/4/8 × 引擎/worker 1/2/4/8 × `latency`/`throughput`）：**只要给到 ≥4 线程且 4 路 worker，所有配置都撞在 29~33 fps**；线程/并发给得过少才会明显掉下去（单线程/单 stream 最慢）—— 即“**多了没用，少了才亏**”；
-2. **把 worker 串行砍掉 30ms/帧后，fps 与 %CPU 都不动** ⇒ 关键路径不在 worker 侧（**本条是 T35 的核心增量**）；
-3. **FLOP 定量**：`8.7 GFLOP/帧 × 32/s = 278 GFLOP/s`；WSL 报 4 核 × 2 线程 ⇒ `4 物理核 × ~4.3GHz × 32 FLOP/周期 ≈ 550 GFLOP/s`
-   ⇒ **实效率 ~51%**。对一个含大量 depthwise / 小算子 / SiLU 的 CNN，这属**正常偏好**水平
-   ⇒ 说明 OV 的 CPU 后端没被浪费，**是模型本身要花这些 FLOP**。
-
-⇒ **原始 30.2 fps 已是天花板的 92%**；“流水线 / 线程 / 引擎 / worker 数”这条线**没有可挖的余量了**。
-
-#### 20.14.4 ⚠️ 对 §20.13 的一处更正（自我纠错）
-
-§20.13 写过「`8 核 / 157 核·毫秒 ≈ 51 fps` —— FP32 在本机上的**理论上限**」。**这个推导方向是错的**：
-
-- 那 157 核·毫秒/帧里含 ~36 的 **worker 串行**（现已降到 5.7）；把它削掉后 fps **不动**，
-  说明分母（每帧 CPU）不是约束 —— 推理占用的核数会**随可用余量自动膨胀**，把省下来的核吃掉；
-- 正确说法：约束是“**推理吞吐本身 ≈ 32~33 次/秒**”，而不是“总核数 ÷ 每帧 CPU”；
-- **教训**：用“总量 ÷ 单量”推上限，必须先证明“单量”里没有**可并行/可消除的串行部分**，否则会把串行开销误算成“可用算力”。
-
-#### 20.14.5 机制：省下的核去哪了 —— TBB 自旋
-
-- 优化前后 **%CPU 都是 511~514%，一核没降**；而 pre/post 实测只占 `5.7ms/帧 × 31.9fps ≈ 0.18 核`（原 ~1.08 核）
-  ⇒ 释放出的 **~0.9 核没有变成帧，而是被推理侧（TBB）吃掉**；
-- 与 §20.13 的另一观测自洽：**线程各忙 46%、栈上大量时间在 TBB wait/spin** ⇒ 推理池饱和后，多余的 CPU 用于**自旋等待**而非有效计算；
-- ⇒ 这也是“加 worker / 加引擎 / 加线程全都无效”的微观解释：**它们只是把同样的 CPU 摊得更碎，并把省下的部分烧在同步上**。
-
-#### 20.14.6 下一步：INT8（唯一剩下的杠杆）
-
-| 项 | 内容 |
-|---|---|
-| 路径 | **A（先做，最省事）** 用官方/Ultralytics 导出的 yolov8n **INT8** IR，直接换 `model_xml_path` 验证收益上限；**B** 自做 PTQ（NNCF，`nncf.quantize`，用测试视频抽 100~300 帧做校准集）|
-| 预期 | 本机 Alder Lake 有 **AVX-VNNI（无 AVX-512）** ⇒ **1.5~2.5×**（约 **50~80 fps**）；若上阿里云 SPR/Xeon 带 **AMX** ⇒ 常见 3~5× |
-| 代码 | **不用改**（换模型路径 / 加一条 `models:` 条目即可）；也可用现成级联/双模型机制把 FP32 与 INT8 配在一起跑同一段视频做 A/B |
-| 验收 | 速度：`scripts/bench.sh`（铁律 1/2 见 §20.12）；精度：**与 FP32 同视频的检测结果一致率 + 抽查画面**（无标注集时的代理指标），有标注再补 mAP。⚠️ **INT8 是拿精度换速度，`models:` 里必须同时保留 FP32 条目作退路** |
-| 时机 | **T35 的串行优化在 INT8 之后更值钱**：推理变快后，5.7ms 的串行占比会从 ~9% 升到 ~17%，不做就会把 INT8 的收益吃掉一截 |
-
-**如果继续调优（INT8），使用者能感知什么？（报告话术）**
-
-| 场景 | 使用者可见？ | 说明 |
-|---|---|---|
-| 单路 30fps 摄像头 | ❌ 几乎无感 | 30.2 fps 已 1:1 跟上源 ⇒ 提速只是余量，**画面不会更流畅** |
-| **多路复用** | ✅✅ **最直观** | “同一台机器从 1 路变 2 路” —— 现场数摄像头，谁都懂 |
-| **端到端时延** | ✅ **演示最有效** | 帧不再积压，告警从“几百 ms~秒级”压到“几十 ms”；**建议在画面上直接打时延数字**（人走过去框跟手不跟手，一眼可见）|
-| 不抽帧（`frame_interval: 1`）| ✅ 可见 | 快速移动目标不漏帧、轨迹连续（现在为保实时可能要抽帧）|
-| 精度 | ⚠️ **可能是负向** | INT8 掉点会表现为“远处小目标偶尔漏检” —— **必须用一致率/mAP 守住，否则比“没变快”更糟** |
-
-⇒ 所以 INT8 的目标**不该定成“更快”**，而应定成：**“精度不掉的前提下，一路变两路 / 时延压到 100ms 内”**。
-
-#### 20.14.7 踩坑：**配置里重复键会让调优静默失效**
-
-`model_config.yaml` 里出现过两处 `num_threads`（旧 `8` + 新加 `4`）：**yaml-cpp 取第一个** ⇒ 实际生效 8，
-整整一轮实验的结论不可用（直到 `[生效]` 行打出 `num_threads=8` 才发现）。
-⇒ **规矩：① 每轮实验先确认 `[生效]` 行；② 同一段里禁止重复键（历史值改用注释保留）。**
-
-#### 20.14.8 文件清单
-
-- **修改**：`src/inference/YoloPostProcessor.cpp`（缓存友好后处理 + `reserve`）、
-  `src/inference/OpenVINOEngine.cpp`（直写输入 tensor + 预处理/推理计时）、
-  `src/inference/YoloDetector.cpp`（后处理计时）、`config/model_config.yaml`（删重复 `num_threads`）。
-- **不改**：任何接口、配置结构、流水线、引擎池 —— 全部是**内部实现改动**。
-- **回退点**：`git checkout src/inference/`（配置保持 §20.13 的最佳已知配置：`pool=2` + `num_threads=4` + `worker_threads=2`）。
-
----
-
-### 20.15 [T35 收尾] 文档与现实对账（本项目“结尾”时的账目）
-
-写于调优收官、准备收尾时。**以下都是核对过的事实**；若与 §17.5 / §20.6 / §12 的旧文字冲突，**以本节为准**
-（旧段落保留不删，因为它们是当时的记录；但不要再按它们判断现状）。
-
-#### 20.15.1 三处状态修正
-
-| 项 | 旧记录（已过时）| 实际（已核对）|
-|---|---|---|
-| **MySQL 落库** | §17.5 “部分闭环”里有一条说 `detections` **表不存在**、一直写 `build/db_fallback.csv`（P2-2 未做）| ✅ **已闭环**：表已建，程序正常落库、**不再产生 `db_fallback.csv`**（用户本机确认）|
-| **`.gitignore`** | §20.6 说文件内容被 markdown 围栏（```text / ```）包裹 | **只有顶部那一行是真围栏（已删）**；末尾看到的那个是**读取工具的显示围栏**、文件里并没有 ⇒ 旧判断**对了一半**。现已重读验证干净（首行 `# 编译产物`，末行 `.env` 那条）|
-| **`config/config.test.yaml`** | §10 / §14 / §15 与 README 都教人用它 | ⚠️ **文件已不存在**（源码与 `build/` 都没有，照着走会踩空）⇒ 已按笔记**重建**。**注意：重建版≠原文件逐字副本**（传感器只用 `radar/stub`，不依赖外部文件；`cascade` 保持 false）；若与 §14.7 的旧统计数字有出入，**以重建版实测为准** |
-
-#### 20.15.2 项目现状（一句话）
-
-**架构完备度高，真实资源验证覆盖率低。**
-
-- 🟢 **可信**：T12–T35（11 个架构级 BUG 全修 + Phase A~D 四层抽象 + 自检 52/52 + 优雅关闭 + 性能定档）
-- 🟡 **做完了但没被真实资源验证**：Phase B 级联（**本仓库无 classifier 模型**）/ 复核（只有 Python mock，真 VLM 未接）/ `web_gateway`（未联调）/ T29（待回归，**且只能在 RTSP 实时源下验**）
-- 🔴 **已知但冻结**：§20.4 库不可用直接退出；R-13（RTSP `close()` 打不断 + `output.avi` 无上限）；R-5（断流不重连）；R-9（时间基未透传）
-
-#### 20.15.3 唯一剩下的性能杠杆：**INT8**（不是调优）
-
-T35 的三条证据（§20.14.3）已把 FP32 钉在 **~33 fps**；再调线程/引擎/worker 的收益是 **0**。
-要再快只能 **减少模型计算量**（INT8，预计 1.5~2.5×，阿里云 SPR/Xeon 带 AMX 更高）。
-⚠️ 但 **T35 的串行优化要到 INT8 之后才真正回本**：推理变快后，5.7ms 的串行占比会从 ~9% 升到 ~17%——
-所以这两件事是配套的，不是二选一。
-
-#### 20.15.4 若要继续（按性价比排序）
-
-1. **§20.4 DB 解耦**（半小时量级，解开“演示必须先起数据库”的死结）—— 本次**明确不做**（用户判断当前无大问题）；
-2. **把 🟡 跑一遍**（建表已做；剩余：T29 需先推 RTSP 流；`web_gateway` 需 `.env`；复核/融合用重建的 `config.test.yaml` + mock）；
-3. **R-13 / R-5** —— 只在真要上 RTSP 摄像头时才需要；
-4. **INT8** —— 需模型资源（官方 INT8 IR 或自做 PTQ）。
-
-#### 20.15.5 收尾时仍悬空的小事（不阻塞，但别忘了）
-
-- 根目录调试残留：`_chk.txt` / `_chk.txtgit` / `check.txt`（建议删，非必须）；
-- `docs/` 是空目录（留着占位或删掉都行）；
-- `[T35]` 的 printf 仍开着（每 100 帧一行）—— 留着有用（下次调 INT8 直接看分段耗时），生产环境算噪声；
-- 本仓库的最新状态**建议打一个 git tag/commit**（当前是“已知最优且已量化”的快照）。
-
-### 20.7 [T33] ⚠️ WSL 下 `device=AUTO` → NPU 插件段错误（已修：`device: CPU`）
-
-**现象**：启动后第一台引擎加载成功、第二台还没打印就 `Segmentation fault`。
-
-**排查过程（每步都在缩小范围，前两个假设均被证伪）**：
-
-1. `OpenVINOEngine::init()` 里所有 OV 异常都被 `catch (const std::exception&)` 兜住并打 “初始化失败”——
-   日志里**没有**这行 ⇒ 不是抛异常，是真·非法内存访问；
-2. `InferenceEnginePool::init()` 用 `make_shared` + `vector<shared_ptr>` 持有引擎，无拷贝/移动/裸指针 ⇒ 池子无罪；
-3. 环境自证：`OpenVINO_DIR` / `ldd` / `LD_LIBRARY_PATH` 三者**同源**（都是 `/opt/intel/openvino_2026.4.0`），
-   机器上只有一套 OpenVINO ⇒ **排除“库/插件版本错配”**（这是最初的头号假设，被证伪）；
-4. `models/yolov8n.xml` 头部：IR **v11** + `f32` + `1x3x640x640` ⇒ 模型正常，排除模型损坏；
-5. `gdb -batch -ex run -ex bt --args ./CVInfer-Gate` 给出决定性栈（自底向上
-
----
-
-### 20.16 [T43] 可观测性与告警外发：把“闭环”的最后一段补上
-
-#### 20.16.1 缺口（为什么是这三件）
-
-到 T42 为止，项目的“可信度”都是**对内的**：日志、退出统计、`phase_selftest`、129 项测试。对外的还有两个洞：
-
-1. **告警只写 MySQL**（`alerts` 表）。检测再准、去重再好（[T39]/[T40]）——**没有人会知道**。安防的价值在于“有人采取行动”，写库只是存证。
-2. **运行状态只能“翻日志”**：没有指标端点（接不了 Prometheus/Grafana）、没有健康探针（编排只能看“进程在不在”）、日志文件只涨不轮转。
-
-三个子项放同一轮，是因为它们共享同一条判断：**“能被看见”是运维属性，不是业务逻辑** —— 因此必须“默认关、关掉即对存量零影响”，否则就是拿稳定性换功能。
-
-> ⚠️ 顺带告知：本文件最末尾的 §20.7 正文**被截断**在 `gdb` 栈那一段（原稿到此中断）。该修复的落地处就在代码里：
-> `config/config.example.yaml` 的 `device: CPU`（而不是 `AUTO`）+ `OpenVINOEngine::init()` 对设备可用性的探测。与本节无关，一并说明。
-
-#### 20.16.2 设计决策（每条都有代价）
-
-| 决策 | 理由 | 代价 |
-|---|---|---|
-| 告警推送用**有界队列 + 独立线程**（满则丢最旧） | 与帧队列同策略（[T29]）：绝不因下游卡顿反压推理 | 极端情况下会丢告警（有 `dropped` 计数可见） |
-| **重试 + 指数退避**（上限 5s） | webhook 抖动是常态，一次失败就放弃等于白做 | 下游真挂了时日志会反复刷 WARN（故意的） |
-| 停机**排空但有预算**（`drain_timeout_ms`）；退避被打断则不干等、仍立即再试 | 既要“尽量送出去”，又要退出不被拖成分钟级 | 超预算的那条会被放弃（计入退出统计） |
-| 传输层 `Transport` 可注入 | 单测不碰网络（与 [T38] 的接缝哲学一致） | 多一层间接（只一个 `std::function`） |
-| 指标**手写注册表**，不引 prometheus-cpp | 已有 4 个重型依赖（OV/OpenCV/gRPC/FFmpeg），不再加；需求也小 | 只支持 counter/gauge/labelled/拉式采集器 4 种形态 |
-| 指标端点用**极简 HTTP/1.1**（手写） | 同上；Prometheus 抓取只要 GET | 无 keep-alive/TLS/鉴权（文档写明只该在受信网络） |
-| 探针用**独立进程 + 真调 gRPC `Health`** | “进程在” ≠ “gRPC 在服务”；也不能用主进程的 `/metrics` 探自己 | 每次探活起一个进程（~100ms，不加载模型） |
-| 日志轮转按**字节预算**判定 | 时间维度要额外定时器/线程；字节在每次写日志的点上就能精确判定 | 文件模式多一次 `filesystem::file_size` 调用 |
-
-#### 20.16.3 实跑数据（`config/config.ops.yaml` + `scripts/alert_receiver.py`）
-
-```text
-# 1) 健康探针（服务端开 token）
-[health-check] OK addr=127.0.0.1:50051 version=1.0.0 uptime_ms=21569 detector=yolov8_detector    -> EXIT=0
-[health-check] 不健康: 未授权(检查 GRPC_AUTH_TOKEN) ... code=16                                   -> EXIT=4  (无 token)
-[health-check] 不健康: 未授权(检查 GRPC_AUTH_TOKEN) ... code=16                                   -> EXIT=4  (错 token)
-
-# 2) gRPC 侧计数（“有人在试 token”一眼可见）
-cvinfer_grpc_requests_total{method="Health",code="OK"} 1
-cvinfer_grpc_requests_total{method="Health",code="UNAUTHENTICATED"} 2
-cvinfer_grpc_requests_total{method="Detect",code="OK"} 1     # grpc_client 返回「检测到目标数量: 2」
-
-# 3) 告警真的出去了（伪下游逐条收到）
-[receiver] #5 安全帽缺失 | 复核不可用(unavailable), 按兜底策略告警, frame=1115 | ... | total_received=5
-[INFO] 告警推送统计: pushed=5 sent=5 failed=0 dropped=0 retried=0
-
-# 4) 死端口（下游不可用）：失败不致命，主链路照常跑完
-[WARN] [告警推送] 失败(连接失败: 127.0.0.1:8877): 安全帽缺失      # 18.261 -> 18.862 = 200+400ms 退避
-[INFO] 告警推送统计: pushed=3 sent=0 failed=3 dropped=0 retried=6 last_error=连接失败: 127.0.0.1:8877
-
-# 5) 退出后 /metrics 立即拒连（curl 退出码 7）；退出日志另有“日志轮转次数: 0”
-```
-
-同一刻的流水线侧（证明推不动下游不影响主链路）：`decoded=1332 dropped=1184 processed=148 emitted=148`、
-`告警去重统计: allowed=5 suppressed=78 tracked=5`、`目标跟踪统计: frames=140 spawned=39 retired=31 active=8 matched=539 longest_dwell=8841ms`、
-`复核统计: submitted=5 unavailable=5 confirmed=0`（无复核服务 ⇒ 兜底告警 ⇒ 正好把推送链路跑满）。
-
-#### 20.16.4 踩坑（都是“实跑才发现”的那种）
-
-1. **配置校验把常见的合法写法当成错误**：原规则是“`alert.push.header_name` 非空 ⇒ `header_value` 也必须非空”。
-   但“名字先填好、值等环境变量注入”（`header_value: "${ALERT_TOKEN:-}"`）是**常规写法** —— 服务端跑得好好的，
-   探针却 `[ConfigParser] 配置校验失败` 退出 255（因为探针那侧没设那个变量）。
-   现改为**值非空才要求名字**（反方向才是真写错），且只在**名字与值都给全**时才真的发这个头。
-2. **跨语言契约不能被“我以为”蒙过去**：JSON 字段是 `alert_type`，演示接收端却按 `type` 取 ⇒ 打出 `None`。
-   根因不是 C++ 错，而是**契约没被钉住**。修法：接收端兼容两种键名 + 把字段名写进 `AlertNotifier.h` 头部注释（载荷契约）
-   + 用一条断言把 `"alert_type":"安全帽缺失"` 钉在单测里。
-3. **探针必须与主进程同源配置**：`--health-check` 读的是同一份 yaml（含 `${GRPC_AUTH_TOKEN}` 展开），少一个环境变量就会得出 4（未授权）——
-   看着像“服务挂了”，实为“两份环境不一致”。compose 的 healthcheck 因此**不额外传 `--config`**（让两者走同一套解析）。
-4. **“轮转次数: 0”是正确的，不伪造现场**：短跑日志量不足 1MB，端到端里它本来就不该触发；
-   轮转交给 5 条单测钉（0=不轮转 / 超阈值产生 `.1` / `keep_files` 上限 / `=0` 不留归档 / 续写把**已有大小**算进预算），
-   而不是把 `log_max_size_mb` 改成 1KB 去“造”一个现场。
-5. **启动日志成了探针的可观测红利**：`--health-check` 顺带打印 `version/uptime/detector`，
-   一眼分辨“服务在”与“加载了哪个模型/活了多久”，比只看端口活着有用得多。
-
-#### 20.16.5 文件清单
-
-- 新增：`src/utils/Metrics.{h,cpp}`、`src/utils/HttpClient.{h,cpp}`、`src/service/MetricsServer.{h,cpp}`、
-  `src/alert/AlertNotifier.{h,cpp}`、`scripts/alert_receiver.py`、`docker/prometheus.example.yml`、`config/config.ops.yaml`
-- 修改：`main.cpp`（接线 + `--health-check` + 退出统计）、`ConfigParser`（`metrics`/`alert.push`/轮转 + 校验）、`Logger`（轮转 + 自建目录）、
-  `DetectionServiceImpl`（version/uptime/指标）、`SensorFusion`（样本计数器）、`ReviewScheduler`（指标）、`TargetTracker`（活跃轨迹拉式指标）、
-  `docker/docker-compose.yml`（healthcheck/expose/extra_hosts/环境变量）、`CMakeLists.txt`（新文件 + 拷 `test.mp4`）
-- 测试：`tests/unit/test_metrics.cpp`、`test_metrics_server.cpp`、`test_alert_notifier.cpp`、`test_logger_rotation.cpp`（共 24 例，全部纳入 ctest）
-
-#### 20.16.6 仍未做（不要误以为已做）
-
-- **Grafana 面板**（只给了 Prometheus 抓取配置与关键指标清单）
-- 告警**落盘重发**（队列在内存，`kill -9` 时未发出的通知会丢 —— 账在 DB，可由库侧补偿）
-- webhook 的 **TLS/签名**（当前明文 http；公网请走内网转发/侧车）
-- 指标端点**鉴权**（与社区惯例一致保持裸奔，靠网络隔离）
-- 日志轮转的**时间维度**（只有按大小，没有“每天一个文件”）
-- 本文件 §20.7 的完整补全
+- ⚠️ **结论修正**：首发那次（�

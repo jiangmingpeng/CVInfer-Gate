@@ -53,8 +53,9 @@ pipeline:
 #   ⚠ 历史提交里此处曾是明文口令 ⇒ 该口令视为**已泄露**, 请轮换。
 database:
   host: tcp://127.0.0.1:3306
-  user: root
-  password: "${DB_PASSWORD:-}"
+  user: user
+  # user: root
+  password: "${DB_PASSWORD:-12345678jmp}"
   dbname: cv_infer
   pool_size: 4
   batch_size: 20
