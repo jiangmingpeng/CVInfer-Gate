@@ -25,7 +25,7 @@ private:
     SwsContext* sws_ctx_ = nullptr;
     
     int video_stream_index_ = -1;
-    AVFrame* frame_ = nullptr;      // 存放解码后的 YUV 帧
-    AVPacket* packet_ = nullptr;    // 存放压缩数据包
-    cv::Mat bgr_mat_;               // 存放转换后的 BGR 帧
+    AVFrame* frame_ = nullptr; // 存放解码后的 YUV 帧
+    AVPacket* packet_ = nullptr; // 存放压缩数据包
+    cv::Mat bgr_mat_; // 存放转换后的 BGR 帧
 };

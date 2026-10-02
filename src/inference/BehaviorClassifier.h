@@ -9,18 +9,15 @@
 #include "inference/InferenceEnginePool.h"
 #include "inference/ClassificationPostProcessor.h"
 
-// ============================================================
 // BehaviorClassifier (T17: 二级分类器, 实现 IClassifier)
-// ------------------------------------------------------------
 // 一个 BehaviorClassifier = 一个 InferenceEnginePool + 分类后处理 + 标签。
-//   - 输入: 单张 ROI (外扩裁剪后的目标小图)
-//   - 引擎自带预处理(blobFromImage: resize/1/255/BGR->RGB), 故此处只管后处理
-//   - classify() 内完成 [借引擎 -> infer -> argmax], 状态语义与 YoloDetector 一致:
-//       借引擎超时 -> Busy; 推理/后处理无效 -> Failed; 成功 -> Ok
+// - 输入: 单张 ROI (外扩裁剪后的目标小图)
+// - 引擎自带预处理(blobFromImage: resize/1/255/BGR->RGB), 故此处只管后处理
+// - classify() 内完成 [借引擎 -> infer -> argmax], 状态语义与 YoloDetector 一致:
+// 借引擎超时 -> Busy; 推理/后处理无效 -> Failed; 成功 -> Ok
 //
 // 用途: 作为级联(CascadeEngine)的二级模型, 对主模型的"灰区"目标做细分类
-//       (如 安全帽佩戴/行为识别)。pool_size 来自 ModelConfig::pool_size。
-// ============================================================
+// (如 安全帽佩戴/行为识别)。pool_size 来自 ModelConfig::pool_size。
 class BehaviorClassifier : public IClassifier {
 public:
     BehaviorClassifier() = default;

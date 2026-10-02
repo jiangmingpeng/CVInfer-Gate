@@ -8,22 +8,19 @@
 #include "inference/DetectionResult.h"
 #include "utils/ConfigParser.h"
 
-// ============================================================
 // IModel / IDetector / IClassifier (T12: 模型抽象层)
-// ------------------------------------------------------------
 // 背景: 原项目只有单一 InferenceEngine (IInferenceEngine 直接吐原始张量),
-//       "多模型级联 / 大模型复核" 无法表达。这里在 IInferenceEngine(裸张量)
-//       之上新增一层"模型"抽象: 一个模型 = 引擎池 + 专属后处理 + 标签。
+// "多模型级联 / 大模型复核" 无法表达。这里在 IInferenceEngine(裸张量)
+// 之上新增一层"模型"抽象: 一个模型 = 引擎池 + 专属后处理 + 标签。
 //
 // 分层:
-//   IInferenceEngine  —— 低层: init(ModelConfig) / infer(cv::Mat, vector<ov::Tensor>&)
-//   IModel            —— 中层: 角色化模型基类 (init / name / role)
-//     ├─ IDetector    —— 整图 -> 检测框 (YOLO 等)
-//     └─ IClassifier  —— ROI -> 类别   (行为/安全帽分类器等, T17 落地)
+// IInferenceEngine  —— 低层: init(ModelConfig) / infer(cv::Mat, vector<ov::Tensor>&)
+// IModel            —— 中层: 角色化模型基类 (init / name / role)
+// ├─ IDetector    —— 整图 -> 检测框 (YOLO 等)
+// └─ IClassifier  —— ROI -> 类别   (行为/安全帽分类器等, T17 落地)
 //
 // 说明: 级联(CascadeEngine, T16) 也实现 IDetector, 因此 VideoPipeline /
-//       DetectionServiceImpl 只依赖 IDetector 即可, 无需感知级联细节。
-// ============================================================
+// DetectionServiceImpl 只依赖 IDetector 即可, 无需感知级联细节。
 
 // 模型角色 (由 ModelConfig::role 字符串映射而来)
 enum class ModelRole { Detector, Classifier, Reviewer };
@@ -31,7 +28,7 @@ enum class ModelRole { Detector, Classifier, Reviewer };
 inline ModelRole modelRoleFromString(const std::string& s) {
     if (s == "classifier") return ModelRole::Classifier;
     if (s == "reviewer")   return ModelRole::Reviewer;
-    return ModelRole::Detector;   // 默认(含未知值): 检测器
+    return ModelRole::Detector; // 默认(含未知值): 检测器
 }
 
 inline const char* modelRoleToString(ModelRole r) {
@@ -45,9 +42,9 @@ inline const char* modelRoleToString(ModelRole r) {
 
 // 检测调用状态 (用于区分"引擎繁忙"与"推理失败", 同时给流水线与 gRPC 复用)
 enum class DetectStatus {
-    Ok = 0,   // 检测完成 (即使没有任何目标也是 Ok)
-    Busy,     // 引擎池繁忙/借引擎超时, 可重试
-    Failed    // 推理或后处理失败
+    Ok = 0, // 检测完成 (即使没有任何目标也是 Ok)
+    Busy, // 引擎池繁忙/借引擎超时, 可重试
+    Failed // 推理或后处理失败
 };
 
 // 分类结果 (供 IClassifier 使用)

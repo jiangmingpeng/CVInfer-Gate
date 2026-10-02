@@ -5,19 +5,19 @@
 #include <string>
 #include <vector>
 
-#include <grpc/grpc.h>   // GRPC_ARG_* keepalive 常量
+#include <grpc/grpc.h> // GRPC_ARG_* keepalive 常量
 
 #include "utils/Logger.h"
 
 namespace {
-// [T37] 探活 deadline: 取 min(timeout, 1500ms) 且至少 200ms, 避免拖慢启动。
+// 探活 deadline: 取 min(timeout, 1500ms) 且至少 200ms, 避免拖慢启动。
 std::chrono::milliseconds probeDeadline(std::chrono::milliseconds timeout) {
     std::int64_t ms = timeout.count() > 0 ? timeout.count() : 1500;
     ms = std::min<std::int64_t>(ms, 1500);
     ms = std::max<std::int64_t>(ms, 200);
     return std::chrono::milliseconds(ms);
 }
-}  // namespace
+} // namespace
 
 bool GrpcLlmReviewer::init(const ReviewConfig& cfg) {
     if (cfg.endpoint.empty()) {
@@ -28,14 +28,14 @@ bool GrpcLlmReviewer::init(const ReviewConfig& cfg) {
     timeout_ = std::chrono::milliseconds(cfg.timeout_ms > 0 ? cfg.timeout_ms : 3000);
     default_prompt_ = cfg.prompt;
 
-    // [T37] 传输/鉴权参数(带兜底默认值)
+    // 传输/鉴权参数(带兜底默认值)
     health_check_        = cfg.health_check;
     max_message_size_mb_ = cfg.max_message_size_mb > 0 ? cfg.max_message_size_mb : 16;
     keepalive_time_ms_   = cfg.keepalive_time_ms > 0 ? cfg.keepalive_time_ms : 0;
     auth_token_          = cfg.auth_token;
 
     // 注意: CreateCustomChannel 不会立即建立连接(惰性), 因此即便复核服务暂时
-    //       不可达, 这里也会成功; 真正的失败在 review() 中以 UNAVAILABLE 体现。
+    // 不可达, 这里也会成功; 真正的失败在 review() 中以 UNAVAILABLE 体现。
     grpc::ChannelArguments args;
     args.SetMaxReceiveMessageSize(max_message_size_mb_ * 1024 * 1024);
     args.SetMaxSendMessageSize(max_message_size_mb_ * 1024 * 1024);
@@ -60,7 +60,7 @@ bool GrpcLlmReviewer::init(const ReviewConfig& cfg) {
                << ", max_msg=" << max_message_size_mb_ << "MB"
                << ", auth=" << (auth_token_.empty() ? "off" : "on");
 
-    // [T37] 启动探活(仅日志, 不阻断): 让"复核服务是否就绪"在启动时一目了然。
+    // 启动探活(仅日志, 不阻断): 让"复核服务是否就绪"在启动时一目了然。
     if (health_check_) {
         std::string detail;
         if (probe(detail)) {
@@ -121,7 +121,7 @@ ReviewStatus GrpcLlmReviewer::review(const ReviewRequest& req, ReviewResult& out
     rpc_req.set_confidence(req.confidence);
     rpc_req.set_frame_seq(req.frame_seq);
     rpc_req.set_prompt(req.prompt.empty() ? default_prompt_ : req.prompt);
-    // [T37] 送审 ROI 的像素尺寸(仅留痕/调试; 服务端可忽略)
+    // 送审 ROI 的像素尺寸(仅留痕/调试; 服务端可忽略)
     rpc_req.set_roi_meta("roi=" + std::to_string(req.roi.cols) + "x" +
                          std::to_string(req.roi.rows));
 
@@ -149,7 +149,7 @@ ReviewStatus GrpcLlmReviewer::review(const ReviewRequest& req, ReviewResult& out
     out.label      = rpc_resp.label();
     out.confidence = rpc_resp.confidence();
     out.reason     = rpc_resp.reason();
-    // [T37] 可观测: 模型名取服务端上报; 耗时优先服务端上报, 否则用客户端测量值
+    // 可观测: 模型名取服务端上报; 耗时优先服务端上报, 否则用客户端测量值
     out.model      = rpc_resp.model();
     out.latency_ms = rpc_resp.latency_ms() > 0 ? rpc_resp.latency_ms() : client_ms;
 

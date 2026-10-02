@@ -9,19 +9,16 @@
 #include "inference/InferenceEnginePool.h"
 #include "inference/YoloPostProcessor.h"
 
-// ============================================================
 // YoloDetector (T13: 把"现有单模型链路"封装成 IDetector)
-// ------------------------------------------------------------
 // 一个 YoloDetector = 一个 InferenceEnginePool + 一个 YoloPostProcessor + labels。
-//   - 内部引擎池大小来自 ModelConfig::pool_size (0 时由 ModelPoolManager 兜底)
-//   - detect() 内完成 [借引擎 -> infer -> 后处理], 与旧 VideoPipeline worker /
-//     DetectionServiceImpl 的行为完全等价, 只是把这段逻辑收敛到模型内部。
+// - 内部引擎池大小来自 ModelConfig::pool_size (0 时由 ModelPoolManager 兜底)
+// - detect() 内完成 [借引擎 -> infer -> 后处理], 与旧 VideoPipeline worker /
+// DetectionServiceImpl 的行为完全等价, 只是把这段逻辑收敛到模型内部。
 //
 // 与旧版等价性:
-//   旧 worker:  借引擎失败 -> skip;  infer 失败/空 -> skip;  post -> push result
-//   新 detect:  借引擎超时 -> Busy;  infer 失败/空 -> Failed;  成功 -> Ok + detections
-//   调用方:     != Ok 即 skip  (与旧版"失败跳帧"一致)
-// ============================================================
+// 旧 worker:  借引擎失败 -> skip;  infer 失败/空 -> skip;  post -> push result
+// 新 detect:  借引擎超时 -> Busy;  infer 失败/空 -> Failed;  成功 -> Ok + detections
+// 调用方:     != Ok 即 skip  (与旧版"失败跳帧"一致)
 class YoloDetector : public IDetector {
 public:
     YoloDetector() = default;

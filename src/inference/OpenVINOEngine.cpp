@@ -7,13 +7,13 @@
 #include <string>
 
 namespace {
-// [T35] 引擎分段计时(预处理 / 推理), 每 100 帧打一行均值 —— 用于验证优化效果。
-//   推理 = infer_request_.infer() 的墙钟时间(含 OV 线程池内部工作);
-//   预处理 = blob 组装(缩放 + 转换 + HWC->CHW)。
+// 引擎分段计时(预处理 / 推理), 每 100 帧打一行均值 —— 用于验证优化效果。
+// 推理 = infer_request_.infer() 的墙钟时间(含 OV 线程池内部工作);
+// 预处理 = blob 组装(缩放 + 转换 + HWC->CHW)。
 std::atomic<std::uint64_t> g_pre_ns{0};
 std::atomic<std::uint64_t> g_infer_ns{0};
 std::atomic<std::uint64_t> g_calls{0};
-}  // namespace
+} // namespace
 
 bool OpenVINOEngine::init(const ModelConfig& config) {
     try {
@@ -23,11 +23,11 @@ bool OpenVINOEngine::init(const ModelConfig& config) {
         // 1. 读取模型
         std::shared_ptr<ov::Model> model = core_.read_model(config.model_xml_path);
         
-        // 2. [T30] 编译模型: 设备/性能模式/线程数可配置(默认与改造前一致: AUTO + OpenVINO 默认)
-        //    以字符串键名("PERFORMANCE_HINT"/"INFERENCE_NUM_THREADS")而非 ov::hint::* 对象,
-        //    以避开不同 OpenVINO 版本间的命名空间差异。
-        //    典型调优: worker_threads>1 时用 performance_mode=throughput -> OpenVINO 自动
-        //    按“总线程数≈物理核”分配内部 stream, 避免 N 个引擎各自开满核互相抢。
+        // 2. 编译模型: 设备/性能模式/线程数可配置(默认与改造前一致: AUTO + OpenVINO 默认)
+        // 以字符串键名("PERFORMANCE_HINT"/"INFERENCE_NUM_THREADS")而非 ov::hint::* 对象,
+        // 以避开不同 OpenVINO 版本间的命名空间差异。
+        // 典型调优: worker_threads>1 时用 performance_mode=throughput -> OpenVINO 自动
+        // 按“总线程数≈物理核”分配内部 stream, 避免 N 个引擎各自开满核互相抢。
         ov::AnyMap props;
         if (config.perf_mode == "latency") {
             props["PERFORMANCE_HINT"] = std::string("LATENCY");
@@ -47,7 +47,7 @@ bool OpenVINOEngine::init(const ModelConfig& config) {
 
         std::cout << "[OpenVINOEngine] 模型加载成功: " << config.model_xml_path << std::endl;
         std::cout << "[OpenVINOEngine] 输入尺寸: " << input_width_ << "x" << input_height_ << std::endl;
-        // [T30] 打印实际生效的性能设置(便于确认调优是否生效)
+        // 打印实际生效的性能设置(便于确认调优是否生效)
         std::cout << "[OpenVINOEngine] device=" << device
                   << ", performance_mode=" << (config.perf_mode.empty() ? std::string("(default)") : config.perf_mode)
                   << ", num_threads=" << (config.num_threads > 0 ? std::to_string(config.num_threads) : std::string("(default)"))
@@ -66,13 +66,13 @@ bool OpenVINOEngine::infer(const cv::Mat& input, std::vector<ov::Tensor>& output
         const auto t_pre0 = std::chrono::steady_clock::now();
 
         // 1. 预处理：缩放 + 归一化 + BGR转RGB + HWC转CHW
-        //   [T35] 快路径: 直接写进 inference request 自己的输入 tensor, 省掉每帧一次
-        //   4.9MB blob 分配 + 一次整体拷贝(这一步原本就在 worker 关键路径上)。
-        //   仅在“输入是 f32 / NCHW / 与配置尺寸一致 / 帧是 8UC3”时启用;
-        //   其它情况(如 u8 输入的量化模型)退回 blobFromImage, 保证不影响其他模型。
-        //   数值上与 blobFromImage(swapRB=true, crop=false) 等价 —— 同为
-        //   INTER_LINEAR 普通缩放 + 1/255 缩放 + BGR->RGB + HWC->CHW
-        //   (仅浮点乘结合顺序不同, 差异 <=1 ULP, 不影响阈值判定)。
+        // 快路径: 直接写进 inference request 自己的输入 tensor, 省掉每帧一次
+        // 4.9MB blob 分配 + 一次整体拷贝(这一步原本就在 worker 关键路径上)。
+        // 仅在“输入是 f32 / NCHW / 与配置尺寸一致 / 帧是 8UC3”时启用;
+        // 其它情况(如 u8 输入的量化模型)退回 blobFromImage, 保证不影响其他模型。
+        // 数值上与 blobFromImage(swapRB=true, crop=false) 等价 —— 同为
+        // INTER_LINEAR 普通缩放 + 1/255 缩放 + BGR->RGB + HWC->CHW
+        // (仅浮点乘结合顺序不同, 差异 <=1 ULP, 不影响阈值判定)。
         ov::Output<const ov::Node> input_port = compiled_model_.input();
         const ov::Shape in_shape = input_port.get_shape();
         const bool fast_path = (input_port.get_element_type() == ov::element::f32) &&
@@ -95,9 +95,9 @@ bool OpenVINOEngine::infer(const cv::Mat& input, std::vector<ov::Tensor>& output
                 const uchar* src = resized.ptr<uchar>(y);
                 float* base = dst + static_cast<std::size_t>(y) * w;
                 for (int x = 0; x < w; ++x, src += 3) {
-                    base[x]            = src[2] * inv;   // R
-                    base[area + x]     = src[1] * inv;   // G
-                    base[2 * area + x] = src[0] * inv;   // B
+                    base[x]            = src[2] * inv; // R
+                    base[area + x]     = src[1] * inv; // G
+                    base[2 * area + x] = src[0] * inv; // B
                 }
             }
         } else {
@@ -116,7 +116,7 @@ bool OpenVINOEngine::infer(const cv::Mat& input, std::vector<ov::Tensor>& output
 
         const auto t_inf1 = std::chrono::steady_clock::now();
 
-        // [T35] 分段计时: 每 100 帧打一行均值
+        // 分段计时: 每 100 帧打一行均值
         {
             const std::uint64_t pre_ns =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(t_inf0 - t_pre0).count();

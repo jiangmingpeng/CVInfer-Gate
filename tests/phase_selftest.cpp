@@ -1,20 +1,17 @@
 // tests/phase_selftest.cpp
-// ============================================================
 // Phase A~D 阶段自检 (T27)
-// ------------------------------------------------------------
 // 目的: 不依赖 模型/传感器/复核服务/数据库, 也不需要改动 config/config.yaml,
-//       用"测试内注入的假实现"驱动每个阶段的接缝, 一次跑完即可看到
-//       Phase A 抽象层 / Phase B 级联灰区 / Phase C 异步复核 / Phase D 融合
-//       的完整行为与统计, 并长期作为回归测试。
+// 用"测试内注入的假实现"驱动每个阶段的接缝, 一次跑完即可看到
+// Phase A 抽象层 / Phase B 级联灰区 / Phase C 异步复核 / Phase D 融合
+// 的完整行为与统计, 并长期作为回归测试。
 //
 // 原理: Phase A~D 的分层都是"面向接口"的, 因此每一层都能被替换:
-//   IDetector / IClassifier  -> FakeDetector / FakeClassifier   (Phase A/B)
-//   IReviewService           -> FakeReviewer                    (Phase C)
-//   SensorFusion             -> 纯函数, 直接喂合成样本            (Phase D)
-//   ISensorSource            -> ReplaySensorSource(backend=stub) (Phase D)
+// IDetector / IClassifier  -> FakeDetector / FakeClassifier   (Phase A/B)
+// IReviewService           -> FakeReviewer                    (Phase C)
+// SensorFusion             -> 纯函数, 直接喂合成样本            (Phase D)
+// ISensorSource            -> ReplaySensorSource(backend=stub) (Phase D)
 //
 // 构建/运行: cmake --build . --target phase_selftest && ./phase_selftest
-// ============================================================
 
 #include <atomic>
 #include <chrono>
@@ -76,12 +73,10 @@ DetectionResult mkDet(int class_id, const std::string& label, float conf, const 
     return d;
 }
 
-// ============================================================
 // Phase A/B 用的假实现: 替代 YoloDetector / BehaviorClassifier
-// ============================================================
 class FakeDetector : public IDetector {
 public:
-    std::vector<DetectionResult> results;               // 预置"主模型输出"
+    std::vector<DetectionResult> results; // 预置"主模型输出"
     DetectStatus status = DetectStatus::Ok;
     int calls = 0;
 
@@ -95,7 +90,7 @@ public:
     DetectStatus detect(const cv::Mat&, std::vector<DetectionResult>& out) override {
         ++calls;
         if (status != DetectStatus::Ok) return status;
-        out = results;                                  // 拷贝, 保持确定性
+        out = results; // 拷贝, 保持确定性
         return DetectStatus::Ok;
     }
 };
@@ -103,7 +98,7 @@ public:
 class FakeClassifier : public IClassifier {
 public:
     DetectStatus status = DetectStatus::Ok;
-    Classification cls;                                 // status==Ok 时返回
+    Classification cls; // status==Ok 时返回
     int calls = 0;
     std::string last_roi;
 
@@ -123,11 +118,9 @@ public:
     }
 };
 
-// ============================================================
 // Phase C 用的假实现: 替代 GrpcLlmReviewer(不需要服务端)
-//   按 frame_seq % 4 确定性产出四种结果, 便于断言:
-//     0 -> Ok + 确认   1 -> Ok + 否决   2 -> 服务不可达   3 -> 超时
-// ============================================================
+// 按 frame_seq % 4 确定性产出四种结果, 便于断言:
+// 0 -> Ok + 确认   1 -> Ok + 否决   2 -> 服务不可达   3 -> 超时
 class FakeReviewer : public IReviewService {
 public:
     std::atomic<int> calls{0};
@@ -156,7 +149,7 @@ public:
             case 2:
                 return ReviewStatus::Unavailable;
             default:
-                std::this_thread::sleep_for(std::chrono::milliseconds(30));   // 模拟慢服务
+                std::this_thread::sleep_for(std::chrono::milliseconds(30)); // 模拟慢服务
                 return ReviewStatus::Timeout;
         }
     }
@@ -165,15 +158,13 @@ public:
 // 构造所有 Phase B 场景共用的主模型输出
 std::vector<DetectionResult> greyZoneResults() {
     return {
-        mkDet(0, "person", 0.52f, cv::Rect(100, 100, 100, 200)),   // 灰区内 -> 触发复核
-        mkDet(0, "person", 0.97f, cv::Rect(400, 100, 100, 200)),   // 高于上界 -> 不复核
-        mkDet(2, "car",    0.60f, cv::Rect(600, 300, 200, 150)),   // 类别不命中 -> 不复核
+        mkDet(0, "person", 0.52f, cv::Rect(100, 100, 100, 200)), // 灰区内 -> 触发复核
+        mkDet(0, "person", 0.97f, cv::Rect(400, 100, 100, 200)), // 高于上界 -> 不复核
+        mkDet(2, "car",    0.60f, cv::Rect(600, 300, 200, 150)), // 类别不命中 -> 不复核
     };
 }
 
-// ============================================================
 // Phase A: 模型抽象层 (T12-T15)
-// ============================================================
 void phaseA() {
     section("Phase A: 模型抽象层 (T12-T15)");
 
@@ -197,16 +188,14 @@ void phaseA() {
     note("请用主程序日志验证 Phase A: '模型配置加载成功: ... (模型数=N)' + '使用检测器: ...'。");
 }
 
-// ============================================================
 // Phase B: 级联灰区复核 (T16-T19)
-// ============================================================
 void phaseB() {
     section("Phase B: 级联主筛 + 灰区二级复核 (T16-T19)");
 
     CascadeConfig cfg;
     cfg.trigger_labels = {"person"};
-    cfg.min_conf = 0.40f;      // 灰区下界(含)
-    cfg.max_conf = 0.90f;      // 灰区上界(不含)
+    cfg.min_conf = 0.40f; // 灰区下界(含)
+    cfg.max_conf = 0.90f; // 灰区上界(不含)
     cfg.roi_padding = 0.10f;
     cfg.accept_label = "with_helmet";
     cfg.accept_conf = 0.50f;
@@ -224,7 +213,7 @@ void phaseB() {
 
     const cv::Mat frame = cv::Mat::zeros(720, 1280, CV_8UC3);
 
-    // ---- B0: 灰区判定 + ROI 计算 (public 接口, 可单测) ----
+    // B0: 灰区判定 + ROI 计算 (public 接口, 可单测)
     check(cascade.isGrayZone(primary->results[0]), "灰区判定: person 0.52 ∈ [0.40,0.90) -> 触发");
     check(!cascade.isGrayZone(primary->results[1]), "灰区判定: person 0.97 >= 0.90 -> 不触发");
     check(!cascade.isGrayZone(primary->results[2]), "灰区判定: car 0.60 类别不命中 -> 不触发");
@@ -238,7 +227,7 @@ void phaseB() {
               std::to_string(roi.y) + " " + std::to_string(roi.width) + "x" +
               std::to_string(roi.height));
 
-    // ---- B1: 二级"确认" -> 保留 + 回写 sub_* ----
+    // B1: 二级"确认" -> 保留 + 回写 sub_*
     secondary->status = DetectStatus::Ok;
     secondary->cls = Classification{1, 0.91f, "with_helmet"};
     std::vector<DetectionResult> out1;
@@ -262,7 +251,7 @@ void phaseB() {
               "确认: 统计 primary=3 triggered=1 confirmed=1 rejected=0 skipped=0");
     }
 
-    // ---- B2: 二级"否决" + drop_rejected=true -> 丢弃 ----
+    // B2: 二级"否决" + drop_rejected=true -> 丢弃
     secondary->cls = Classification{1, 0.12f, "no_helmet"};
     std::vector<DetectionResult> out2;
     cascade.detect(frame, out2);
@@ -278,7 +267,7 @@ void phaseB() {
               "否决: 累计统计 triggered=2 confirmed=1 rejected=1 skipped=0");
     }
 
-    // ---- B3: 二级"繁忙/失败" -> 降级保留(绝不误杀) ----
+    // B3: 二级"繁忙/失败" -> 降级保留(绝不误杀)
     secondary->status = DetectStatus::Busy;
     std::vector<DetectionResult> out3;
     cascade.detect(frame, out3);
@@ -289,7 +278,7 @@ void phaseB() {
               "降级: 累计统计 triggered=3 skipped=1 rejected=1 (confirmed 不变=1)");
     }
 
-    // ---- B4: 没有二级分类器 -> 退化为单模型直通(这正是真实工程里最常见的情况) ----
+    // B4: 没有二级分类器 -> 退化为单模型直通(这正是真实工程里最常见的情况)
     std::shared_ptr<IClassifier> none;
     CascadeEngine degraded(primary, none, cfg);
     std::vector<DetectionResult> out4;
@@ -303,13 +292,11 @@ void phaseB() {
     note("'级联构建失败, 回退单模型检测器。'。这也是你当前跑出来'单模型模式'的原因之一。");
 }
 
-// ============================================================
 // Phase C: 大模型异步复核 (T20-T22)
-// ============================================================
 void phaseC() {
     section("Phase C: 大模型异步复核 (T20-T22)");
 
-    // ---- C1: alert_on_failure = true (拿不到复核结论时兜底告警; **否决仍不告警**) ----
+    // C1: alert_on_failure = true (拿不到复核结论时兜底告警; **否决仍不告警**)
     {
         ReviewConfig cfg;
         cfg.enabled = true;
@@ -334,14 +321,14 @@ void phaseC() {
         for (std::uint64_t seq = 0; seq < 10; ++seq) {
             ReviewRequest job;
             job.frame_seq = seq;
-            job.roi = cv::Mat::zeros(64, 64, CV_8UC3);   // 非空 ROI(GrpcLlmReviewer 拒收空 ROI)
+            job.roi = cv::Mat::zeros(64, 64, CV_8UC3); // 非空 ROI(GrpcLlmReviewer 拒收空 ROI)
             job.label = "person";
             job.confidence = 0.72f;
             if (sched.submit(std::move(job))) ++submitted;
         }
         check(submitted == 10, "10 个复核任务全部入队(submit 非阻塞)");
 
-        sched.stop();   // join 全部复核线程 => 回调必然已全部执行完
+        sched.stop(); // join 全部复核线程 => 回调必然已全部执行完
         const ReviewScheduler::Stats st = sched.stats();
         check(st.submitted == 10 && st.reviewed == 10, "统计: submitted=10 reviewed=10");
         check(st.confirmed == 3 && st.rejected == 3,
@@ -354,11 +341,11 @@ void phaseC() {
         check(got.size() == 10, "回调收到 10 个异步结果(按 frame_seq 可回收)");
 
         // 告警语义(容易弄反, 这里钉死):
-        //   Ok + 确认      -> 告警(复核确认了风险)
-        //   Ok + 否决      -> **不**告警(复核否掉了误报, 这才是复核的意义)
-        //   超时 / 不可用  -> 由 alert_on_failure 决定(默认 false; true = 拿不到结论时兜底)
+        // Ok + 确认      -> 告警(复核确认了风险)
+        // Ok + 否决      -> **不**告警(复核否掉了误报, 这才是复核的意义)
+        // 超时 / 不可用  -> 由 alert_on_failure 决定(默认 false; true = 拿不到结论时兜底)
         // 故 10 个任务 = 3 确认 + 3 否决 + 2 超时 + 2 不可用
-        //              -> 告警 = 3(确认) + 4(兜底) = 7
+        // -> 告警 = 3(确认) + 4(兜底) = 7
         int alerts = 0, alert_on_ok = 0, alert_on_fail = 0;
         for (const auto& o : got) {
             if (!o.alert) continue;
@@ -372,7 +359,7 @@ void phaseC() {
         check(alerts == 7, "合计 7/10 告警 = 3 确认 + 4 兜底; 3 个**否决**一条都不告警");
     }
 
-    // ---- C2: alert_on_failure = false (只有确认才告警) ----
+    // C2: alert_on_failure = false (只有确认才告警)
     {
         ReviewConfig cfg;
         cfg.enabled = true;
@@ -416,9 +403,7 @@ void phaseC() {
     note("想看到真实的 确认/否决, 可跑 scripts/mock_review_server.py (Python mock)。");
 }
 
-// ============================================================
 // Phase D: 多模态决策级融合 (T23-T26)
-// ============================================================
 void phaseD() {
     section("Phase D-1: 时间对齐 + 目标关联 + 置信度融合 (T25)");
 
@@ -458,7 +443,7 @@ void phaseD() {
 
         sensor::SensorTarget t2;
         t2.class_id = 0;
-        t2.label = "person";          // 无框(雷达) -> 走"标签关联"分支
+        t2.label = "person"; // 无框(雷达) -> 走"标签关联"分支
         t2.confidence = 0.55f;
         t2.distance_m = 11.0f;
 
@@ -467,7 +452,7 @@ void phaseD() {
         s2.timestamp_ms = anchor + 20;
         s2.targets.push_back(t2);
 
-        sensor::SensorTarget t3 = t2;  // 5 秒前的旧采样: 应被时间窗过滤掉
+        sensor::SensorTarget t3 = t2; // 5 秒前的旧采样: 应被时间窗过滤掉
         t3.confidence = 0.99f;
         sensor::SensorSample s3;
         s3.kind = sensor::SensorKind::Radar;
@@ -497,7 +482,7 @@ void phaseD() {
     check(!vision[1].fused && near(vision[1].confidence, 0.70f),
           "未关联的视觉目标(car)保持原样, 置信度未被改动");
 
-    // ---- D-2: emit_sensor_only=true -> 未关联且自带框的传感器目标追加为新目标 ----
+    // D-2: emit_sensor_only=true -> 未关联且自带框的传感器目标追加为新目标
     {
         FusionConfig c2 = cfg;
         c2.emit_sensor_only = true;
@@ -510,7 +495,7 @@ void phaseD() {
         t.class_id = 0;
         t.label = "person";
         t.confidence = 0.70f;
-        t.box = cv::Rect2f(900, 600, 100, 200);   // 与视觉框完全不重叠
+        t.box = cv::Rect2f(900, 600, 100, 200); // 与视觉框完全不重叠
         t.distance_m = 4.0f;
         sensor::SensorSample s;
         s.kind = sensor::SensorKind::Infrared;
@@ -524,12 +509,12 @@ void phaseD() {
               "追加的纯传感器目标: fused=true, vision_confidence=-1(无视觉置信度)");
     }
 
-    // ---- D-3: MultiSensorPipeline + 真实 poller 线程(stub 传感器) ----
+    // D-3: MultiSensorPipeline + 真实 poller 线程(stub 传感器)
     section("Phase D-2: 多传感器编排 MultiSensorPipeline (T26)");
 
     FusionConfig pc = cfg;
     pc.time_tolerance_ms = 100;
-    pc.buffer_capacity = 4;   // 故意设小, 便于观察"有界缓冲丢最旧"
+    pc.buffer_capacity = 4; // 故意设小, 便于观察"有界缓冲丢最旧"
 
     auto radar = std::make_shared<sensor::ReplaySensorSource>("radar_front",
                                                              sensor::SensorKind::Radar);
@@ -556,7 +541,7 @@ void phaseD() {
         std::vector<DetectionResult> dets = {
             mkDet(0, "person", 0.60f, cv::Rect(100, 120, 120, 240)),
         };
-        mp.fuse(dets);   // sink 线程语义: 就地融合, 不阻塞
+        mp.fuse(dets); // sink 线程语义: 就地融合, 不阻塞
         if (!dets.empty() && dets[0].fused) ++matched_frames;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
@@ -576,14 +561,14 @@ void phaseD() {
     note("真实链路: main.cpp 里 fuse() 挂在 sink 最前置, 画框/落库/告警看到的都是融合后置信度。");
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "===== CVInfer-Gate 阶段自检: Phase A~D =====\n";
     std::cout << "(不依赖模型/传感器/复核服务/数据库, 也不需要 config.yaml)\n";
 
     LogConfig lc;
-    lc.level = "info";   // 保留各模块 init 日志, 便于确认线程/资源真的起来了
+    lc.level = "info"; // 保留各模块 init 日志, 便于确认线程/资源真的起来了
     Logger::instance().init(lc);
 
     phaseA();

@@ -1,6 +1,4 @@
-// ============================================================
-// [T38] ConfigParser 单元测试
-// ------------------------------------------------------------
+// ConfigParser 单元测试
 // 为什么值得测: 配置是**唯一**能"静默把系统调成另一个东西"的输入 ——
 // 线程数、灰区阈值、融合开关、复核地址全在这里。本项目已经写了不少校验
 // (含交叉校验, 如 source_type 与 source_path 前缀是否自相矛盾), 但此前
@@ -11,10 +9,9 @@
 // 某个 private 函数。
 //
 // 覆盖: 最小合法配置 + 默认值 / 缺文件 / 类型与前缀交叉校验 / 日志与队列
-//       枚举校验 / ${VAR} 与 ${VAR:-default} 展开 / 级联灰区颠倒 / 复核缺
-//       endpoint / 传感器各种非法组合 / 多模型新格式 / 单模型旧格式兼容 /
-//       角色与性能模式校验。
-// ============================================================
+// 枚举校验 / ${VAR} 与 ${VAR:-default} 展开 / 级联灰区颠倒 / 复核缺
+// endpoint / 传感器各种非法组合 / 多模型新格式 / 单模型旧格式兼容 /
+// 角色与性能模式校验。
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -42,7 +39,7 @@ video:
   source_path: /tmp/unit_test.mp4
 )";
 
-}  // namespace
+} // namespace
 
 // ---------------------------------------------------------------- 系统配置
 
@@ -65,12 +62,12 @@ TEST(ConfigParserApp, LoadsMinimalConfigAndKeepsDocumentedDefaults) {
     EXPECT_FALSE(c.review.enabled);
     EXPECT_FALSE(c.fusion.enabled);
     EXPECT_TRUE(c.sensors.empty());
-    // [T39] 告警去重: 默认**开启** —— 这是刻意的行为修正(关掉就退回"每帧都告警")
+    // 告警去重: 默认**开启** —— 这是刻意的行为修正(关掉就退回"每帧都告警")
     EXPECT_TRUE(c.alert.dedup.enabled);
     EXPECT_FLOAT_EQ(c.alert.dedup.iou, 0.30f);
     EXPECT_EQ(c.alert.dedup.cooldown_ms, 5000);
     EXPECT_EQ(c.alert.dedup.max_entries, 256);
-    // [T40] 目标跟踪: 同样默认**开启**(关掉就退回几何去重)
+    // 目标跟踪: 同样默认**开启**(关掉就退回几何去重)
     EXPECT_TRUE(c.tracking.enabled);
     EXPECT_FLOAT_EQ(c.tracking.iou, 0.30f);
     EXPECT_FLOAT_EQ(c.tracking.dist_factor, 1.0f);
@@ -261,7 +258,7 @@ fusion:
 }
 
 TEST(ConfigParserApp, ParsesAlertDedupOverrides) {
-    // [T39] YAML 里的 alert.dedup 必须真的被读进去(不能只是默认值恰好一致)
+    // YAML 里的 alert.dedup 必须真的被读进去(不能只是默认值恰好一致)
     ConfigParser p;
     ASSERT_TRUE(p.loadAppConfig(writeTempYaml("cv_ut_gate_ok.yaml", R"(
 video:
@@ -282,7 +279,7 @@ alert:
 }
 
 TEST(ConfigParserApp, RejectsInvalidAlertDedup) {
-    // [T39] iou 越界 / cooldown 为负 / max_entries < 1 都必须被拒
+    // iou 越界 / cooldown 为负 / max_entries < 1 都必须被拒
     ConfigParser bad_iou;
     EXPECT_FALSE(bad_iou.loadAppConfig(writeTempYaml("cv_ut_gate1.yaml", R"(
 video:
@@ -315,7 +312,7 @@ alert:
 }
 
 TEST(ConfigParserApp, ParsesTrackingOverridesAndRejectsBadValues) {
-    // [T40] YAML 里的 tracking 必须真的被读进去
+    // YAML 里的 tracking 必须真的被读进去
     ConfigParser p;
     ASSERT_TRUE(p.loadAppConfig(writeTempYaml("cv_ut_trk_ok.yaml", R"(
 video:
@@ -460,7 +457,7 @@ models:
     EXPECT_FLOAT_EQ(all[0].nms_threshold, 0.50f);
     EXPECT_EQ(all[0].pool_size, 2);
     EXPECT_EQ(all[0].num_threads, 4);
-    EXPECT_EQ(all[0].perf_mode, "latency");   // 大写输入被规整为小写
+    EXPECT_EQ(all[0].perf_mode, "latency"); // 大写输入被规整为小写
 
     EXPECT_EQ(all[1].role, "classifier");
     EXPECT_EQ(all[1].input_width, 416);
@@ -485,7 +482,7 @@ thresholds:
 )")));
 
     const auto& all = p.getModelConfigs();
-    ASSERT_EQ(all.size(), 1u);                 // 单模型被规整为长度 1 的列表
+    ASSERT_EQ(all.size(), 1u); // 单模型被规整为长度 1 的列表
     EXPECT_EQ(all[0].name, "yolov8_detector");
     EXPECT_EQ(all[0].role, "detector");
     EXPECT_EQ(all[0].model_xml_path, "models/yolov8n.xml");

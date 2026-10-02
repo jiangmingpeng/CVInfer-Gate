@@ -24,4 +24,4 @@ private:
     void applyNMS(std::vector<DetectionResult>& detections);
 };
 
-//和Dete一起的
+// 和Dete一起的

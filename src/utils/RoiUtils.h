@@ -5,12 +5,9 @@
 
 #include <opencv2/opencv.hpp>
 
-// ============================================================
 // RoiUtils (T16/T22: 目标 ROI 外扩与裁剪)
-// ------------------------------------------------------------
 // 供 CascadeEngine(二级分类器复核, T16) 与 main(大模型复核, T22) 共用的
 // 纯几何工具, 避免两处重复实现"外扩 + 裁剪到图像边界"。
-// ============================================================
 namespace roi_utils {
 
 // 将框按 padding(相对宽高比例)外扩并裁剪到图像边界; 无效返回空 Rect
@@ -41,4 +38,4 @@ inline cv::Mat crop(const cv::Mat& frame, const cv::Rect& box, float padding) {
     return frame(r).clone();
 }
 
-}  // namespace roi_utils
+} // namespace roi_utils

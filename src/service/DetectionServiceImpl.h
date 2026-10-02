@@ -7,22 +7,19 @@
 #include "inference/IModel.h"
 #include "service/AuthGuard.h"
 
-// ============================================================
 // DetectionServiceImpl (T7: 推理引擎池; T15: 改用 IDetector 抽象)
-// ------------------------------------------------------------
 // 演进:
-//   - 原版: 持有裸 OpenVINOEngine&, 与流水线线程共享同一引擎 => 数据竞争。
-//   - T7 : 改为每次请求从 InferenceEnginePool 借一个独立引擎 (RAII 归还)。
-//   - T15: 进一步收敛为依赖 IDetector 抽象。借引擎/推理/后处理均在模型内部
-//          (YoloDetector) 完成, 与流水线 worker 共享同一个 detector, 资源隔离
-//          与复用能力与 T7 等价。T16+ 可直接注入级联 detector。
-//   - T42: [鉴权] 构造时注入 token(空 = 不校验); Detect 入口第一行显式校验。
-//   - T43: [自述] 新增 Health RPC(鉴权口径与 Detect 一致), 供容器/systemd/负载均衡探活。
-// ============================================================
+// - 原版: 持有裸 OpenVINOEngine&, 与流水线线程共享同一引擎 => 数据竞争。
+// - T7 : 改为每次请求从 InferenceEnginePool 借一个独立引擎 (RAII 归还)。
+// - T15: 进一步收敛为依赖 IDetector 抽象。借引擎/推理/后处理均在模型内部
+// (YoloDetector) 完成, 与流水线 worker 共享同一个 detector, 资源隔离
+// 与复用能力与 T7 等价。T16+ 可直接注入级联 detector。
+// - T42: [鉴权] 构造时注入 token(空 = 不校验); Detect 入口第一行显式校验。
+// - T43: [自述] 新增 Health RPC(鉴权口径与 Detect 一致), 供容器/systemd/负载均衡探活。
 class DetectionServiceImpl final : public inference::DetectionService::Service {
 public:
-    // [T42] auth_token 为空 => 不鉴权(完全等价改动前, 零破坏)
-    // [T43] version/start_ms 供 Health 自述; 带默认值 => 旧调用点不改也能编译
+    // auth_token 为空 => 不鉴权(完全等价改动前, 零破坏)
+    // version/start_ms 供 Health 自述; 带默认值 => 旧调用点不改也能编译
     explicit DetectionServiceImpl(IDetector& detector, std::string auth_token = "",
                                   std::string version = "dev", std::int64_t start_ms = 0);
 
@@ -31,14 +28,14 @@ public:
                         const inference::DetectRequest* request,
                         inference::DetectResponse* response) override;
 
-    // [T43] 健康检查 / 自述(不碰模型, 因此探针不会被推理阻塞)
+    // 健康检查 / 自述(不碰模型, 因此探针不会被推理阻塞)
     grpc::Status Health(grpc::ServerContext* context,
                         const inference::HealthRequest* request,
                         inference::HealthResponse* response) override;
 
 private:
     IDetector& detector_;
-    auth_guard::Guard auth_;   // [T42] token 为空 => require() 恒 OK
-    std::string version_;      // [T43]
-    std::int64_t start_ms_ = 0;  // [T43] 进程启动(epoch ms)
+    auth_guard::Guard auth_; // token 为空 => require() 恒 OK
+    std::string version_;
+    std::int64_t start_ms_ = 0; // 进程启动(epoch ms)
 };

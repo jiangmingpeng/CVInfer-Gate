@@ -1,13 +1,10 @@
-// ============================================================
-// [T38] ThreadSafeQueue 单元测试
-// ------------------------------------------------------------
+// ThreadSafeQueue 单元测试
 // 为什么先测它: 这个类是**所有线程边界的公共依赖**(帧队列 / 复核队列 /
 // 落库队列), 一旦改坏就是全线抖动; 而它本身是纯内存逻辑, 无任何外部依赖
 // —— 最适合做"零依赖、秒级"的回归保护。
 //
 // 覆盖: DropOldest 丢弃语义(丢最旧) / Block 策略返 Full / close 唤醒与排空 /
-//       关闭后拒绝入队 / 统计计数 / 带超时 pop / on_drop 回调 / Block 阻塞被消费者唤醒。
-// ============================================================
+// 关闭后拒绝入队 / 统计计数 / 带超时 pop / on_drop 回调 / Block 阻塞被消费者唤醒。
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -18,7 +15,7 @@
 
 namespace {
 using IntQueue = ThreadSafeQueue<int>;
-}  // namespace
+} // namespace
 
 TEST(ThreadSafeQueue, DropOldestKeepsNewestAndCountsDrops) {
     IntQueue q(3, IntQueue::Policy::DropOldest);
@@ -103,11 +100,11 @@ TEST(ThreadSafeQueue, BlockPolicyPushWaitsUntilConsumerFreesSlot) {
     });
 
     const auto t0 = std::chrono::steady_clock::now();
-    const auto r = q.push(2);   // 队列满 -> 必须阻塞到 consumer 取走
+    const auto r = q.push(2); // 队列满 -> 必须阻塞到 consumer 取走
     const auto waited_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                std::chrono::steady_clock::now() - t0).count();
     consumer.join();
 
     EXPECT_EQ(r, IntQueue::PushResult::Pushed);
-    EXPECT_GE(waited_ms, 100);   // 确实等过, 而不是立刻返回
+    EXPECT_GE(waited_ms, 100); // 确实等过, 而不是立刻返回
 }

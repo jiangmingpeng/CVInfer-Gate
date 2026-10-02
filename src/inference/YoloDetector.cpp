@@ -9,10 +9,10 @@
 #include "utils/Logger.h"
 
 namespace {
-// [T35] 后处理分段计时(每 100 帧打一行均值)
+// 后处理分段计时(每 100 帧打一行均值)
 std::atomic<std::uint64_t> g_post_ns{0};
 std::atomic<std::uint64_t> g_post_calls{0};
-}  // namespace
+} // namespace
 
 std::vector<std::string> YoloDetector::loadLabels(const std::string& path) {
     std::vector<std::string> labels;
@@ -81,7 +81,7 @@ DetectStatus YoloDetector::detect(const cv::Mat& frame,
     const auto t_post0 = std::chrono::steady_clock::now();
     out = post_->process(outputs[0], frame.size(), labels_);
 
-    // [T35] 后处理分段计时(每 100 帧一行均值)
+    // 后处理分段计时(每 100 帧一行均值)
     {
         const std::uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                      std::chrono::steady_clock::now() - t_post0)

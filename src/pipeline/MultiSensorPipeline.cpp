@@ -12,7 +12,7 @@ MultiSensorPipeline::~MultiSensorPipeline() {
 bool MultiSensorPipeline::init(const FusionConfig& fusion_cfg,
                                std::vector<std::shared_ptr<sensor::ISensorSource>> sensors,
                                sensor::ISensorSource* video_meta) {
-    stop();   // 幂等: 重复 init 时先清理上一次的线程/缓冲
+    stop(); // 幂等: 重复 init 时先清理上一次的线程/缓冲
 
     if (sensors.empty()) {
         CVLOG_ERROR << "[MultiSensorPipeline] 未提供任何非视频传感器, 初始化失败。";
@@ -51,7 +51,7 @@ void MultiSensorPipeline::pollLoop(const std::shared_ptr<sensor::ISensorSource>&
     while (running_.load()) {
         if (src->read(s)) {
             pushSample(std::move(s));
-            s = sensor::SensorSample{};   // 复位(防御: 避免下一轮残留 frame/targets)
+            s = sensor::SensorSample{}; // 复位(防御: 避免下一轮残留 frame/targets)
         } else {
             // read() 返回 false: 文件回放结束(正常) 或 close() 打断(收尾)
             if (running_.load()) {
@@ -84,10 +84,10 @@ void MultiSensorPipeline::fuse(std::vector<DetectionResult>& detections) {
     if (!enabled_.load() || !fusion_) return;
 
     // 对齐锚点: 优先用视频侧时间基。
-    //   注意: 当前接线中 VideoPipeline 直接持有底层 IVideoSource, 不会调用
-    //   VideoSensorSource::read(), 故 lastTimestampMs()==0 -> 实际锚点 = nowMs()
-    //   ("融合时刻")。一旦视频帧时间戳接入 ISensorSource / Frame::timestamp_ms,
-    //   此处会自动切换为真正的视频时间基, 本函数无需修改(见 VideoSensorSource.h)。
+    // 注意: 当前接线中 VideoPipeline 直接持有底层 IVideoSource, 不会调用
+    // VideoSensorSource::read(), 故 lastTimestampMs()==0 -> 实际锚点 = nowMs()
+    // ("融合时刻")。一旦视频帧时间戳接入 ISensorSource / Frame::timestamp_ms,
+    // 此处会自动切换为真正的视频时间基, 本函数无需修改(见 VideoSensorSource.h)。
     std::int64_t anchor = video_meta_ ? video_meta_->lastTimestampMs() : 0;
     if (anchor <= 0) anchor = sensor::nowMs();
 

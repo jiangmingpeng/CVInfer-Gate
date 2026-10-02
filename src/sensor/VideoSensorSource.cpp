@@ -31,4 +31,4 @@ bool VideoSensorSource::read(SensorSample& out) {
     return true;
 }
 
-}  // namespace sensor
+} // namespace sensor

@@ -9,7 +9,7 @@
 
 namespace {
 
-// [T43] RPC 计数(带 method/code 标签)。调用频率是"每秒几次", 成本可忽略。
+// RPC 计数(带 method/code 标签)。调用频率是"每秒几次", 成本可忽略。
 void countRpc(const char* method, const char* code) {
     std::string labels = "method=\"";
     labels += method;
@@ -24,7 +24,7 @@ std::int64_t nowMs() {
                std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-}  // namespace
+} // namespace
 
 DetectionServiceImpl::DetectionServiceImpl(IDetector& detector, std::string auth_token,
                                            std::string version, std::int64_t start_ms)
@@ -32,11 +32,11 @@ DetectionServiceImpl::DetectionServiceImpl(IDetector& detector, std::string auth
       auth_(std::move(auth_token)),
       version_(std::move(version)),
       start_ms_(start_ms != 0 ? start_ms : nowMs()) {
-    // [T42] 鉴权状态必须打出来: "以为开了其实没开" / "以为没开其实开了"
-    //       都是排查噩梦(与 T41 同一条纪律)。
+    // 鉴权状态必须打出来: "以为开了其实没开" / "以为没开其实开了"
+    // 都是排查噩梦(与 T41 同一条纪律)。
     CVLOG_INFO << "[鉴权] 主服务(50051): " << auth_.describe();
 
-    // [T43] 指标声明(HELP 文本在这里给全, /metrics 就能自解释)
+    // 指标声明(HELP 文本在这里给全, /metrics 就能自解释)
     auto& reg = metrics::Registry::instance();
     reg.declare("cvinfer_grpc_requests_total", metrics::Type::Counter,
                 "gRPC 请求总数(按方法/结果码)", "method=\"Detect\",code=\"OK\"");
@@ -45,7 +45,7 @@ DetectionServiceImpl::DetectionServiceImpl(IDetector& detector, std::string auth
 grpc::Status DetectionServiceImpl::Health(grpc::ServerContext* context,
                                           const inference::HealthRequest* /*request*/,
                                           inference::HealthResponse* response) {
-    // [T43] 鉴权口径与 Detect 完全一致(50051 不暴露任何匿名接口)
+    // 鉴权口径与 Detect 完全一致(50051 不暴露任何匿名接口)
     if (const grpc::Status st = auth_.require(*context); !st.ok()) {
         countRpc("Health", "UNAUTHENTICATED");
         CVLOG_WARN << "[鉴权] 拒绝 " << context->peer() << " 的 Health: " << st.error_message();
@@ -63,8 +63,8 @@ grpc::Status DetectionServiceImpl::Health(grpc::ServerContext* context,
 grpc::Status DetectionServiceImpl::Detect(grpc::ServerContext* context,
                                           const inference::DetectRequest* request,
                                           inference::DetectResponse* response) {
-    // [T42] 鉴权 — 必须是本方法**第一件事**: 未通过就不碰任何业务逻辑
-    //       (也不把内部细节回给调用方)。token 为空时 require() 恒 OK。
+    // 鉴权 — 必须是本方法**第一件事**: 未通过就不碰任何业务逻辑
+    // (也不把内部细节回给调用方)。token 为空时 require() 恒 OK。
     if (const grpc::Status st = auth_.require(*context); !st.ok()) {
         // 拒绝要留痕: 日志突增 = 有人在试 token, 或客户端配错了环境变量。
         countRpc("Detect", "UNAUTHENTICATED");

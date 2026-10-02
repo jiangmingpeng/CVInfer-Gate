@@ -27,7 +27,7 @@ bool InferenceEnginePool::init(const ModelConfig& config, int pool_size) {
     }
 
     for (auto& e : engines_) {
-        free_.push(e);   // 初始化后全部空闲
+        free_.push(e); // 初始化后全部空闲
     }
 
     std::cout << "[InferenceEnginePool] 初始化完成, 引擎数量: " << engines_.size() << std::endl;
@@ -39,7 +39,7 @@ std::shared_ptr<IInferenceEngine> InferenceEnginePool::acquire(std::chrono::mill
     if (closed_) return nullptr;
 
     const bool ok = cv_.wait_for(lock, timeout, [this] { return closed_ || !free_.empty(); });
-    if (!ok || free_.empty()) return nullptr;   // 超时或已关闭
+    if (!ok || free_.empty()) return nullptr; // 超时或已关闭
 
     auto engine = free_.front();
     free_.pop();
@@ -50,7 +50,7 @@ void InferenceEnginePool::release(std::shared_ptr<IInferenceEngine> engine) {
     if (!engine) return;
     {
         std::unique_lock<std::mutex> lock(mtx_);
-        if (closed_) return;   // 已关闭则直接丢弃(引擎随局部 shared_ptr 析构)
+        if (closed_) return; // 已关闭则直接丢弃(引擎随局部 shared_ptr 析构)
         free_.push(std::move(engine));
     }
     cv_.notify_one();

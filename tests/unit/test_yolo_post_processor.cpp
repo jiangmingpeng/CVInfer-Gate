@@ -1,23 +1,20 @@
-// ============================================================
-// [T38] YoloPostProcessor 单元测试 —— 本项目"最不能错"的一段纯计算
-// ------------------------------------------------------------
+// YoloPostProcessor 单元测试 —— 本项目"最不能错"的一段纯计算
 // 为什么值得测: 解码(cxcywh -> xyxy) + 置信度过滤 + 手写 NMS + 边界裁剪
 // 全部在这一个函数里, 它直接决定"框画在哪、有没有漏框/重框", 而且
-// [T35] 刚为性能改写过它的内存访问顺序(行列互换 + 先求 max 再判阈值)。
+// 刚为性能改写过它的内存访问顺序(行列互换 + 先求 max 再判阈值)。
 // 这种"为了快而重写"的代码, 正是最需要回归保护的地方 —— 而且它**不需要
 // 任何模型文件**: 张量可以手工构造。
 //
 // 张量布局(与实现严格一致): shape = [1, 4 + num_classes, num_boxes]
-//   row 0..3      = cx, cy, w, h          (每行沿 num_boxes 连续)
-//   row 4..4+C-1  = 该类别的分数
-//   取值: data[row * num_boxes + box_index]
-//   ⚠️ 输入张量必须清零: 实现用 "> best_conf(初值 0)" 求每列最大类别分,
-//      残留的随机大值会凭空造出目标。
+// row 0..3      = cx, cy, w, h          (每行沿 num_boxes 连续)
+// row 4..4+C-1  = 该类别的分数
+// 取值: data[row * num_boxes + box_index]
+// ⚠️ 输入张量必须清零: 实现用 "> best_conf(初值 0)" 求每列最大类别分,
+// 残留的随机大值会凭空造出目标。
 //
 // 覆盖: 单框解码+标签 / 阈值过滤 / 每框取最高分类别 / 同类重叠抑制(留高分) /
-//       异类重叠不抑制 / NMS 阈值是**严格大于**的边界 / 上下边界裁剪 /
-//       按原图尺寸缩放 / 标签不足回退 unknown / 多框 / 全零输入。
-// ============================================================
+// 异类重叠不抑制 / NMS 阈值是**严格大于**的边界 / 上下边界裁剪 /
+// 按原图尺寸缩放 / 标签不足回退 unknown / 多框 / 全零输入。
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -31,7 +28,7 @@
 
 namespace {
 
-constexpr std::size_t kChannels = 6;   // 4 + 2 个类别
+constexpr std::size_t kChannels = 6; // 4 + 2 个类别
 constexpr std::size_t kBoxes = 4;
 
 ov::Tensor makeZeroedOutput() {
@@ -58,7 +55,7 @@ std::vector<std::string> labels() { return {"person", "helmet"}; }
 constexpr float kConf = 0.25f;
 constexpr float kNms = 0.45f;
 
-}  // namespace
+} // namespace
 
 TEST(YoloPostProcessor, DecodesSingleBoxAndAttachesLabel) {
     YoloPostProcessor pp(kConf, kNms);
@@ -80,7 +77,7 @@ TEST(YoloPostProcessor, FiltersDetectionsBelowConfidenceThreshold) {
     YoloPostProcessor pp(kConf, kNms);
     ov::Tensor t = makeZeroedOutput();
     setBox(t, 0, 100.0f, 100.0f, 20.0f, 20.0f);
-    setScore(t, 0, 0, 0.24f);   // < 0.25
+    setScore(t, 0, 0, 0.24f); // < 0.25
     EXPECT_TRUE(pp.process(t, cv::Size(640, 640), labels()).empty());
 }
 
@@ -127,9 +124,9 @@ TEST(YoloPostProcessor, NmsThresholdComparisonIsStrictlyGreater) {
     // IoU 恰好 == 阈值(0.5) 时**不**抑制: 实现是 `if (iou > nms_threshold_)`
     YoloPostProcessor pp(kConf, 0.5f);
     ov::Tensor t = makeZeroedOutput();
-    setBox(t, 0, 50.0f, 50.0f, 100.0f, 100.0f);   // -> (0,0)-(100,100), 面积 10000
+    setBox(t, 0, 50.0f, 50.0f, 100.0f, 100.0f); // -> (0,0)-(100,100), 面积 10000
     setScore(t, 0, 0, 0.90f);
-    setBox(t, 1, 50.0f, 25.0f, 100.0f, 50.0f);    // -> (0,0)-(100,50),  交 5000 / 并 10000 = 0.5
+    setBox(t, 1, 50.0f, 25.0f, 100.0f, 50.0f); // -> (0,0)-(100,50),  交 5000 / 并 10000 = 0.5
     setScore(t, 1, 0, 0.80f);
 
     EXPECT_EQ(pp.process(t, cv::Size(640, 640), labels()).size(), 2u);
@@ -138,7 +135,7 @@ TEST(YoloPostProcessor, NmsThresholdComparisonIsStrictlyGreater) {
 TEST(YoloPostProcessor, ClampsLowerBoundToZero) {
     YoloPostProcessor pp(kConf, kNms);
     ov::Tensor t = makeZeroedOutput();
-    setBox(t, 0, 10.0f, 10.0f, 100.0f, 100.0f);   // x1 = y1 = -40 -> 0
+    setBox(t, 0, 10.0f, 10.0f, 100.0f, 100.0f); // x1 = y1 = -40 -> 0
     setScore(t, 0, 0, 0.9f);
 
     const auto dets = pp.process(t, cv::Size(640, 640), labels());
@@ -152,7 +149,7 @@ TEST(YoloPostProcessor, ClampsLowerBoundToZero) {
 TEST(YoloPostProcessor, ClampsUpperBoundToWidthMinusOne) {
     YoloPostProcessor pp(kConf, kNms);
     ov::Tensor t = makeZeroedOutput();
-    setBox(t, 0, 630.0f, 630.0f, 100.0f, 100.0f);   // x2 = y2 = 680 -> 639 (= W-1)
+    setBox(t, 0, 630.0f, 630.0f, 100.0f, 100.0f); // x2 = y2 = 680 -> 639 (= W-1)
     setScore(t, 0, 0, 0.9f);
 
     const auto dets = pp.process(t, cv::Size(640, 640), labels());

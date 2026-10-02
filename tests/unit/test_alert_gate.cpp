@@ -9,13 +9,10 @@
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
 
-// ============================================================
 // AlertGate 单测 (T39: 告警去重)
-// ------------------------------------------------------------
 // 覆盖: 滑动冷却窗(持续目标只告警一次 / 到期后重新告警) / 标签隔离 /
-//       框重叠判定 / 退化输入(空框, cooldown=0) / enabled=false 短路 /
-//       有界内存(丢最旧) / 多线程并发只放行一次 / IoU 数值
-// ============================================================
+// 框重叠判定 / 退化输入(空框, cooldown=0) / enabled=false 短路 /
+// 有界内存(丢最旧) / 多线程并发只放行一次 / IoU 数值
 
 namespace {
 
@@ -31,10 +28,10 @@ Config makeCfg() {
     return c;
 }
 
-const cv::Rect kBox(100, 100, 50, 100);          // 一个人
-const cv::Rect kBoxShifted(105, 100, 50, 100);  // 同一个人稍移动(IoU≈0.82 >= 0.30)
+const cv::Rect kBox(100, 100, 50, 100); // 一个人
+const cv::Rect kBoxShifted(105, 100, 50, 100); // 同一个人稍移动(IoU≈0.82 >= 0.30)
 
-}  // namespace
+} // namespace
 
 TEST(AlertGate, FirstAlertIsAllowedAndStatsAreCounted) {
     AlertGate g(makeCfg());
@@ -47,7 +44,7 @@ TEST(AlertGate, FirstAlertIsAllowedAndStatsAreCounted) {
 TEST(AlertGate, SameTargetWithinCooldownIsSuppressed) {
     AlertGate g(makeCfg());
     ASSERT_TRUE(g.allow("person", kBox, 1000));
-    EXPECT_FALSE(g.allow("person", kBoxShifted, 1200));   // 同标签 + 框重叠 => 同一目标
+    EXPECT_FALSE(g.allow("person", kBoxShifted, 1200)); // 同标签 + 框重叠 => 同一目标
     EXPECT_EQ(g.allowed(), 1u);
     EXPECT_EQ(g.suppressed(), 1u);
 }
@@ -64,12 +61,12 @@ TEST(AlertGate, SlidingWindowKeepsPersistentTargetSilent) {
 }
 
 TEST(AlertGate, TargetIsAlertedAgainAfterCooldownElapsed) {
-    AlertGate g(makeCfg());   // cooldown = 5000
+    AlertGate g(makeCfg()); // cooldown = 5000
     ASSERT_TRUE(g.allow("person", kBox, 1000));
     // 目标随后“消失”(这几秒内不再调用 allow) => 窗口不被刷新, 到期即重新放行。
     // 注意与滑动窗的区别: 若中间再命中一次, 窗口从那次命中重新计时
     // (见 SlidingWindowKeepsPersistentTargetSilent)。
-    EXPECT_TRUE(g.allow("person", kBox, 6000));   // 1000+5000 => 恰好到期(边界 >=)
+    EXPECT_TRUE(g.allow("person", kBox, 6000)); // 1000+5000 => 恰好到期(边界 >=)
     EXPECT_EQ(g.allowed(), 2u);
     EXPECT_EQ(g.suppressed(), 0u);
 }
@@ -77,7 +74,7 @@ TEST(AlertGate, TargetIsAlertedAgainAfterCooldownElapsed) {
 TEST(AlertGate, DifferentLabelsDoNotSuppressEachOther) {
     AlertGate g(makeCfg());
     EXPECT_TRUE(g.allow("person", kBox, 1000));
-    EXPECT_TRUE(g.allow("car", kBox, 1000));      // 同一位置但不同标签
+    EXPECT_TRUE(g.allow("car", kBox, 1000)); // 同一位置但不同标签
     EXPECT_EQ(g.allowed(), 2u);
     EXPECT_EQ(g.suppressed(), 0u);
 }
@@ -85,14 +82,14 @@ TEST(AlertGate, DifferentLabelsDoNotSuppressEachOther) {
 TEST(AlertGate, DistantTargetsOfSameLabelAreIndependent) {
     AlertGate g(makeCfg());
     EXPECT_TRUE(g.allow("person", kBox, 1000));
-    EXPECT_TRUE(g.allow("person", cv::Rect(400, 100, 50, 100), 1000));   // 画面另一侧
+    EXPECT_TRUE(g.allow("person", cv::Rect(400, 100, 50, 100), 1000)); // 画面另一侧
     EXPECT_EQ(g.allowed(), 2u);
 }
 
 TEST(AlertGate, ZeroSizedBoxNeverMatchesAnything) {
     AlertGate g(makeCfg());
     EXPECT_TRUE(g.allow("person", cv::Rect(0, 0, 0, 0), 1000));
-    EXPECT_TRUE(g.allow("person", cv::Rect(0, 0, 0, 0), 1100));   // 退化框 IoU=0 => 不判重
+    EXPECT_TRUE(g.allow("person", cv::Rect(0, 0, 0, 0), 1100)); // 退化框 IoU=0 => 不判重
     EXPECT_EQ(g.allowed(), 2u);
 }
 
@@ -103,7 +100,7 @@ TEST(AlertGate, DisabledGateAlwaysAllowsAndRemembersNothing) {
     for (int i = 0; i < 5; ++i) EXPECT_TRUE(g.allow("person", kBox, 1000 + i));
     EXPECT_EQ(g.allowed(), 5u);
     EXPECT_EQ(g.suppressed(), 0u);
-    EXPECT_EQ(g.tracked(), 0u);   // 不记忆 => 不占内存
+    EXPECT_EQ(g.tracked(), 0u); // 不记忆 => 不占内存
 }
 
 TEST(AlertGate, ZeroCooldownDegeneratesToNoDedup) {
@@ -111,7 +108,7 @@ TEST(AlertGate, ZeroCooldownDegeneratesToNoDedup) {
     c.cooldown_ms = 0;
     AlertGate g(c);
     EXPECT_TRUE(g.allow("person", kBox, 1000));
-    EXPECT_TRUE(g.allow("person", kBox, 1000));   // 窗口为 0 => 不抑制
+    EXPECT_TRUE(g.allow("person", kBox, 1000)); // 窗口为 0 => 不抑制
     EXPECT_EQ(g.suppressed(), 0u);
 }
 
@@ -120,10 +117,10 @@ TEST(AlertGate, MemoryIsBoundedByMaxEntries) {
     c.max_entries = 2;
     AlertGate g(c);
     for (int i = 0; i < 5; ++i) {
-        EXPECT_TRUE(g.allow("person", cv::Rect(i * 100, 0, 50, 50), 1000));   // 互不重叠
+        EXPECT_TRUE(g.allow("person", cv::Rect(i * 100, 0, 50, 50), 1000)); // 互不重叠
     }
     EXPECT_EQ(g.allowed(), 5u);
-    EXPECT_LE(g.tracked(), 2u);   // 有界: 超限丢最旧
+    EXPECT_LE(g.tracked(), 2u); // 有界: 超限丢最旧
 }
 
 TEST(AlertGate, ResetClearsMemory) {
@@ -132,7 +129,7 @@ TEST(AlertGate, ResetClearsMemory) {
     ASSERT_EQ(g.tracked(), 1u);
     g.reset();
     EXPECT_EQ(g.tracked(), 0u);
-    EXPECT_TRUE(g.allow("person", kBox, 1100));   // 记忆已清空 => 重新放行
+    EXPECT_TRUE(g.allow("person", kBox, 1100)); // 记忆已清空 => 重新放行
 }
 
 TEST(AlertGate, ConcurrentAllowOnSameTargetLetsExactlyOneThrough) {
@@ -150,14 +147,14 @@ TEST(AlertGate, ConcurrentAllowOnSameTargetLetsExactlyOneThrough) {
         });
     }
     for (auto& t : ts) t.join();
-    EXPECT_EQ(passed.load(), 1);              // 同一目标并发 => 只放行一次
+    EXPECT_EQ(passed.load(), 1); // 同一目标并发 => 只放行一次
     EXPECT_EQ(g.allowed(), 1u);
     EXPECT_EQ(g.suppressed(), static_cast<std::uint64_t>(kThreads * kCalls - 1));
 }
 
 TEST(AlertGate, SameTrackIdIsSuppressedEvenWhenBoxMovedFar) {
-    AlertGate g(makeCfg());   // cooldown = 5000, iou = 0.30
-    // [T40] 同一个 track_id: 框已移到完全不重叠的位置, 仍判同一目标
+    AlertGate g(makeCfg()); // cooldown = 5000, iou = 0.30
+    // 同一个 track_id: 框已移到完全不重叠的位置, 仍判同一目标
     ASSERT_TRUE(g.allow("person", 7, kBox, 1000));
     EXPECT_FALSE(g.allow("person", 7, cv::Rect(400, 400, 50, 100), 1200));
     EXPECT_EQ(g.allowed(), 1u);
@@ -166,8 +163,8 @@ TEST(AlertGate, SameTrackIdIsSuppressedEvenWhenBoxMovedFar) {
 
 TEST(AlertGate, DifferentTrackIdAtSameBoxIsNotSuppressed) {
     AlertGate g(makeCfg());
-    // [T40] 关键差异: 框一模一样但 id 不同 => 是新目标
-    //   (旧几何实现会把"换个目标站到同一位置"误判成重复告警)
+    // 关键差异: 框一模一样但 id 不同 => 是新目标
+    // (旧几何实现会把"换个目标站到同一位置"误判成重复告警)
     ASSERT_TRUE(g.allow("person", 1, kBox, 1000));
     EXPECT_TRUE(g.allow("person", 2, kBox, 1100));
     EXPECT_EQ(g.allowed(), 2u);
@@ -177,9 +174,9 @@ TEST(AlertGate, DifferentTrackIdAtSameBoxIsNotSuppressed) {
 TEST(AlertGate, FallsBackToIouWhenTrackIdMissingOnOneSide) {
     AlertGate g(makeCfg());
     // 一边有 id 一边没有(跟踪器刚启用 / 目标未确认) => 退回几何重叠
-    ASSERT_TRUE(g.allow("person", kBox, 1000));       // 无 id
-    EXPECT_FALSE(g.allow("person", 5, kBox, 1100));   // 有 id, 对面没有 => 比框
-    EXPECT_FALSE(g.allow("person", kBox, 1200));      // 仍无 id => 比框
+    ASSERT_TRUE(g.allow("person", kBox, 1000)); // 无 id
+    EXPECT_FALSE(g.allow("person", 5, kBox, 1100)); // 有 id, 对面没有 => 比框
+    EXPECT_FALSE(g.allow("person", kBox, 1200)); // 仍无 id => 比框
     EXPECT_EQ(g.allowed(), 1u);
     EXPECT_EQ(g.suppressed(), 2u);
 }

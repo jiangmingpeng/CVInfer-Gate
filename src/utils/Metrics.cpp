@@ -38,7 +38,7 @@ std::string formatValue(double v, Type t) {
     return std::string(buf);
 }
 
-}  // namespace
+} // namespace
 
 Registry& Registry::instance() {
     static Registry inst;
@@ -71,7 +71,7 @@ void Registry::declare(const std::string& name, Type type, const std::string& he
     Sample* s = findOrCreateLocked(name, labels);
     s->type = type;
     if (!help.empty()) s->help = help;
-    s->pull = nullptr;   // 声明为"推"式(会被后续 inc/setGauge 使用)
+    s->pull = nullptr; // 声明为"推"式(会被后续 inc/setGauge 使用)
 }
 
 void Registry::inc(const std::string& name, std::uint64_t n) {
@@ -81,7 +81,7 @@ void Registry::inc(const std::string& name, std::uint64_t n) {
 void Registry::inc(const std::string& name, const std::string& labels, std::uint64_t n) {
     std::lock_guard<std::mutex> lock(mtx_);
     Sample* s = findOrCreateLocked(name, labels);
-    if (s->pull) return;   // 拉式指标不接受手推(避免两套数据打架)
+    if (s->pull) return; // 拉式指标不接受手推(避免两套数据打架)
     s->counter.fetch_add(n, std::memory_order_relaxed);
 }
 
@@ -122,14 +122,14 @@ std::string Registry::render() const {
 
     std::ostringstream oss;
     std::string current;
-    for (const auto& kv : samples_) {          // key = name + '\x1f' + labels => 按名字天然分组
+    for (const auto& kv : samples_) { // key = name + '\x1f' + labels => 按名字天然分组
         const Sample& s = *kv.second;
         double value = 0.0;
         if (s.pull) {
             try {
                 value = s.pull();
             } catch (...) {
-                value = 0.0;   // 抓取端绝不能因为一个回调抛异常就整体 500
+                value = 0.0; // 抓取端绝不能因为一个回调抛异常就整体 500
             }
         } else if (s.type == Type::Counter) {
             value = static_cast<double>(s.counter.load(std::memory_order_relaxed));
@@ -162,4 +162,4 @@ std::size_t Registry::size() const {
     return samples_.size();
 }
 
-}  // namespace metrics
+} // namespace metrics

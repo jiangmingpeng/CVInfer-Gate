@@ -10,18 +10,15 @@
 
 #include <gtest/gtest.h>
 
-// ============================================================
 // 日志文件轮转单测 (T43)
-// ------------------------------------------------------------
 // 为什么必须测: 轮转写错 = 日志要么无限涨(撑爆磁盘), 要么被静默清空(审计断档)。
 // 覆盖:
-//   * max_size_mb=0 => 不轮转(默认行为不变)
-//   * 写入超过阈值 => 出现 .1, 当前文件重新开始
-//   * keep_files 上限生效(不会无限增生 .2/.3/...)
-//   * keep_files=0 => 只留当前文件
+// * max_size_mb=0 => 不轮转(默认行为不变)
+// * 写入超过阈值 => 出现 .1, 当前文件重新开始
+// * keep_files 上限生效(不会无限增生 .2/.3/...)
+// * keep_files=0 => 只留当前文件
 // 测试期间把 std::cout 重定向到 /dev/null: Logger 设计上双写控制台,
-//   否则几 MB 日志会把 CI 输出刷爆。
-// ============================================================
+// 否则几 MB 日志会把 CI 输出刷爆。
 
 namespace fs = std::filesystem;
 
@@ -35,7 +32,7 @@ protected:
         fs::create_directories(dir_);
         path_ = (dir_ / "app.log").string();
         sink_.open("/dev/null");
-        saved_cout_ = std::cout.rdbuf(sink_.rdbuf());   // 静音
+        saved_cout_ = std::cout.rdbuf(sink_.rdbuf()); // 静音
     }
 
     void TearDown() override {
@@ -69,7 +66,7 @@ protected:
     std::streambuf* saved_cout_ = nullptr;
 };
 
-}  // namespace
+} // namespace
 
 TEST_F(LoggerRotationTest, DisabledByDefault) {
     Logger::instance().init(makeCfg(/*max_size_mb=*/0, /*keep_files=*/3));
@@ -82,14 +79,14 @@ TEST_F(LoggerRotationTest, DisabledByDefault) {
 
 TEST_F(LoggerRotationTest, RotatesWhenExceedingMaxSize) {
     Logger::instance().init(makeCfg(1, 2));
-    const std::uint64_t size_before = fs::file_size(path_);   // 默认 0(新文件)
+    const std::uint64_t size_before = fs::file_size(path_); // 默认 0(新文件)
 
     writeBulk('x');
 
     EXPECT_GE(Logger::instance().rotations(), 1u);
     EXPECT_TRUE(fs::exists(path_ + ".1"));
     EXPECT_TRUE(fs::exists(path_));
-    EXPECT_FALSE(fs::exists(path_ + ".3"));   // keep_files=2 => 不会增生到 .3
+    EXPECT_FALSE(fs::exists(path_ + ".3")); // keep_files=2 => 不会增生到 .3
     EXPECT_GT(sink_.is_open() ? size_before + 1 : 0, 0u);
     // 轮转后重新计数 => 当前文件不该是一个"几十 MB"的巨物
     EXPECT_LE(fs::file_size(path_), 4ull * 1024 * 1024);
@@ -108,8 +105,8 @@ TEST_F(LoggerRotationTest, KeepFilesZeroDiscardsArchive) {
     writeBulk('y');
 
     EXPECT_GE(Logger::instance().rotations(), 1u);
-    EXPECT_TRUE(fs::exists(path_));            // 当前文件在
-    EXPECT_FALSE(fs::exists(path_ + ".1"));    // 不留归档
+    EXPECT_TRUE(fs::exists(path_)); // 当前文件在
+    EXPECT_FALSE(fs::exists(path_ + ".1")); // 不留归档
 }
 
 TEST_F(LoggerRotationTest, ExistingFileSizeCountsTowardBudget) {
@@ -120,7 +117,7 @@ TEST_F(LoggerRotationTest, ExistingFileSizeCountsTowardBudget) {
         pre << big;
     }
     Logger::instance().init(makeCfg(1, 2));
-    CVLOG_INFO << "one more line";   // 已有 1.5MB + 这一行 => 立刻越界
+    CVLOG_INFO << "one more line"; // 已有 1.5MB + 这一行 => 立刻越界
     EXPECT_GE(Logger::instance().rotations(), 1u);
     EXPECT_TRUE(fs::exists(path_ + ".1"));
 }

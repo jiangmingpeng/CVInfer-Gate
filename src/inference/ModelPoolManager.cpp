@@ -6,7 +6,7 @@
 
 bool ModelPoolManager::init(const std::vector<ModelConfig>& models,
                             int default_pool_size) {
-    close();   // 重置旧资源
+    close(); // 重置旧资源
 
     if (models.empty()) {
         CVLOG_ERROR << "[ModelPoolManager] 未提供任何模型配置。";
@@ -88,7 +88,7 @@ std::shared_ptr<IDetector> ModelPoolManager::buildCascade(const CascadeConfig& c
 
     // 3. 组装(两者均以 shared_ptr 注入, 生命周期安全)
     auto cascade = std::make_shared<CascadeEngine>(primary, secondary, cfg);
-    ModelConfig mc;   // 仅用于登记级联名字
+    ModelConfig mc; // 仅用于登记级联名字
     mc.name = "cascade";
     cascade->init(mc);
 

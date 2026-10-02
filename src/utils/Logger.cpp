@@ -56,7 +56,7 @@ Logger::~Logger() {
 void Logger::init(const LogConfig& config) {
     std::unique_lock<std::mutex> lock(mtx_);
     level_ = levelFromString(config.level);
-    if (file_.is_open()) file_.close();   // 可重入 init(测试/多次初始化)
+    if (file_.is_open()) file_.close(); // 可重入 init(测试/多次初始化)
 
     path_ = config.file;
     max_bytes_ = config.max_size_mb > 0

@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <string>
 
-#include <grpc/grpc.h>   // GRPC_ARG_* keepalive 常量
+#include <grpc/grpc.h> // GRPC_ARG_* keepalive 常量
 
 #include "service/DetectionServiceImpl.h"
 #include "utils/Logger.h"
@@ -44,7 +44,7 @@ std::unique_ptr<grpc::Server> buildAndStartGrpcServer(const GrpcConfig& cfg,
                << (cfg.worker_threads > 0 ? cfg.worker_threads : -1)
                << "(<=0 表示默认), keepalive=" << cfg.keepalive_time_ms
                << "ms, rpc_timeout=" << cfg.timeout_ms << "ms"
-               << ", auth=" << (cfg.auth_token.empty() ? "off" : "on");   // [T42]
+               << ", auth=" << (cfg.auth_token.empty() ? "off" : "on");
 
     return builder.BuildAndStart();
 }

@@ -11,7 +11,7 @@ ReviewScheduler::~ReviewScheduler() {
 bool ReviewScheduler::init(const ReviewConfig& cfg,
                            std::shared_ptr<IReviewService> service,
                            OutcomeCallback on_outcome) {
-    stop();   // 重置旧资源
+    stop(); // 重置旧资源
 
     if (!service) {
         CVLOG_ERROR << "[ReviewScheduler] 复核服务为空, 初始化失败。";
@@ -46,7 +46,7 @@ bool ReviewScheduler::init(const ReviewConfig& cfg,
 
 bool ReviewScheduler::submit(ReviewRequest job) {
     if (!enabled_.load() || !queue_) return false;
-    const auto r = queue_->try_push(std::move(job));   // 非阻塞
+    const auto r = queue_->try_push(std::move(job)); // 非阻塞
     if (r == ThreadSafeQueue<ReviewRequest>::PushResult::Closed) return false;
     ++submitted_;
     return true;
@@ -78,14 +78,14 @@ void ReviewScheduler::workerLoop() {
                 out.label      = res.label;
                 out.confidence = res.confidence;
                 out.reason     = res.reason;
-                out.model      = res.model;              // [T37]
-                out.latency_ms = res.latency_ms;         // [T37]
+                out.model      = res.model;
+                out.latency_ms = res.latency_ms;
                 if (res.confirmed) ++confirmed_; else ++rejected_;
-                out.alert = res.confirmed;              // 确认才告警
+                out.alert = res.confirmed; // 确认才告警
                 break;
             case ReviewStatus::Timeout:
                 ++timeout_;
-                out.alert = cfg_.alert_on_failure;      // 兜底策略(默认不告警)
+                out.alert = cfg_.alert_on_failure; // 兜底策略(默认不告警)
                 break;
             case ReviewStatus::Unavailable:
                 ++unavailable_;

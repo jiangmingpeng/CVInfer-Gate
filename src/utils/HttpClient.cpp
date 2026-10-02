@@ -35,7 +35,7 @@ bool connectWithTimeout(int fd, const sockaddr* addr, socklen_t addrlen, int tim
     tv.tv_sec = timeout_ms / 1000;
     tv.tv_usec = (timeout_ms % 1000) * 1000;
     rc = ::select(fd + 1, nullptr, &wset, nullptr, &tv);
-    if (rc <= 0) return false;   // 超时(0) 或出错(-1)
+    if (rc <= 0) return false; // 超时(0) 或出错(-1)
 
     int err = 0;
     socklen_t len = sizeof(err);
@@ -59,11 +59,11 @@ bool sendAll(int fd, const std::string& data) {
     return true;
 }
 
-}  // namespace
+} // namespace
 
 bool parseUrl(const std::string& url, std::string& host, int& port, std::string& path) {
     static const std::string scheme = "http://";
-    if (url.rfind(scheme, 0) != 0) return false;   // 只支持 http://
+    if (url.rfind(scheme, 0) != 0) return false; // 只支持 http://
 
     const std::string rest = url.substr(scheme.size());
     const std::size_t slash = rest.find('/');
@@ -169,7 +169,7 @@ Response request(const Request& req) {
             resp.error = "读响应超时";
             break;
         }
-        break;   // n == 0 => 对端关闭(正常结束)
+        break; // n == 0 => 对端关闭(正常结束)
     }
     ::close(fd);
 
@@ -198,4 +198,4 @@ Response request(const Request& req) {
     return resp;
 }
 
-}  // namespace http
+} // namespace http

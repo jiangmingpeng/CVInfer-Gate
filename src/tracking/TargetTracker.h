@@ -11,41 +11,38 @@
 
 #include "inference/DetectionResult.h"
 
-// ============================================================
 // TargetTracker (T40: 目标跟踪 / track_id)
-// ------------------------------------------------------------
 // 起因: 全链没有 track_id —— OVERVIEW §5 的 🔴 之一。后果有两条:
-//   1) [T39] 告警去重只能靠"框重叠" => 快速移动的目标照样重复告警;
-//   2) 停留/徘徊这类**行为分析**没有立足点(它需要"同一个目标持续了多久")。
+// 1) 告警去重只能靠"框重叠" => 快速移动的目标照样重复告警;
+// 2) 停留/徘徊这类**行为分析**没有立足点(它需要"同一个目标持续了多久")。
 //
 // 方案: 一个纯逻辑、无外部依赖的**关联式**跟踪器(IoU 贪心 + 质心距离兜底),
-//   就地给每个检测回写 det.track_id。刻意**不做**卡尔曼滤波与外观(re-ID)特征:
-//   先用最小复杂度把 track_id 打通, 让去重与行为分析有立足点。
+// 就地给每个检测回写 det.track_id。刻意**不做**卡尔曼滤波与外观(re-ID)特征:
+// 先用最小复杂度把 track_id 打通, 让去重与行为分析有立足点。
 //
-// 为什么可以"有状态": VideoPipeline 的 sink 是**单线程**, 且 [T29] 的
-//   sinkLoop 重排缓冲保证回调拿到的 frame_seq **单调递增**(丢帧只造成 seq 跳变,
-//   不会乱序) => 跟踪器在 sink 里被顺序调用, 天然无并发。仍防御性忽略回退帧。
+// 为什么可以"有状态": VideoPipeline 的 sink 是**单线程**, 且 的
+// sinkLoop 重排缓冲保证回调拿到的 frame_seq **单调递增**(丢帧只造成 seq 跳变,
+// 不会乱序) => 跟踪器在 sink 里被顺序调用, 天然无并发。仍防御性忽略回退帧。
 //
 // 与告警去重的关系: 有了 track_id, 去重应**以身份为准**(同 id = 同目标, 与框
-//   怎么移动无关); 几何重叠只作为"没有 id 时"的兜底 —— 见 AlertGate。
+// 怎么移动无关); 几何重叠只作为"没有 id 时"的兜底 —— 见 AlertGate。
 //
 // 诚实边界:
-//   * 无外观特征 => 遮挡/交叉后可能"换 id"(ID switch), 这是关联式跟踪的通病;
-//   * id 单调递增且**永不复用** —— 否则去重会把新目标误判成旧目标;
-//   * dwell 只统计"连续被跟踪的时长", 不含失配(遮挡)期间;
-//   * 跟踪发生在 sink => 只影响告警/统计, 回写的是本帧 detections 的副本,
-//     gRPC 返回给客户端的检测结果**不含** track_id(proto 未加字段)。
-// ============================================================
+// * 无外观特征 => 遮挡/交叉后可能"换 id"(ID switch), 这是关联式跟踪的通病;
+// * id 单调递增且**永不复用** —— 否则去重会把新目标误判成旧目标;
+// * dwell 只统计"连续被跟踪的时长", 不含失配(遮挡)期间;
+// * 跟踪发生在 sink => 只影响告警/统计, 回写的是本帧 detections 的副本,
+// gRPC 返回给客户端的检测结果**不含** track_id(proto 未加字段)。
 
 namespace tracking {
 
 struct Config {
     bool enabled = true;
-    float iou = 0.30f;          // 关联: 框重叠阈值(与 SensorFusion/AlertGate 同口径)
-    float dist_factor = 1.0f;   // 关联兜底: 质心距离 <= dist_factor * 框半周长; <=0 = 关闭
-    int max_age_ms = 1000;      // 失配后轨迹保留时长(容忍短暂遮挡/漏检)
-    int min_hits = 1;           // 连续命中多少次后才输出 track_id(>1 = 抑制瞬时误检)
-    std::size_t max_tracks = 256;   // 轨迹上限(有界, 超限丢最旧)
+    float iou = 0.30f; // 关联: 框重叠阈值(与 SensorFusion/AlertGate 同口径)
+    float dist_factor = 1.0f; // 关联兜底: 质心距离 <= dist_factor * 框半周长; <=0 = 关闭
+    int max_age_ms = 1000; // 失配后轨迹保留时长(容忍短暂遮挡/漏检)
+    int min_hits = 1; // 连续命中多少次后才输出 track_id(>1 = 抑制瞬时误检)
+    std::size_t max_tracks = 256; // 轨迹上限(有界, 超限丢最旧)
 };
 
 class TargetTracker {
@@ -54,20 +51,20 @@ public:
         int id = 0;
         std::string label;
         cv::Rect box;
-        std::int64_t first_ms = 0;   // 首次命中时刻
-        std::int64_t last_ms = 0;    // 最近一次命中时刻
-        int hits = 0;                // 累计命中次数
-        int misses = 0;              // 连续失配次数(>0 表示正在"滑行")
+        std::int64_t first_ms = 0; // 首次命中时刻
+        std::int64_t last_ms = 0; // 最近一次命中时刻
+        int hits = 0; // 累计命中次数
+        int misses = 0; // 连续失配次数(>0 表示正在"滑行")
         std::int64_t dwellMs() const { return last_ms - first_ms; }
     };
 
     struct Stats {
-        std::uint64_t frames = 0;         // 处理过的帧数
-        std::uint64_t matched = 0;        // 关联成功的检测数
-        std::uint64_t spawned = 0;        // 新建轨迹数
-        std::uint64_t retired = 0;        // 老化回收的轨迹数
-        std::uint64_t stale_skipped = 0;  // 被忽略的回退帧数
-        std::size_t active = 0;           // 当前轨迹数
+        std::uint64_t frames = 0; // 处理过的帧数
+        std::uint64_t matched = 0; // 关联成功的检测数
+        std::uint64_t spawned = 0; // 新建轨迹数
+        std::uint64_t retired = 0; // 老化回收的轨迹数
+        std::uint64_t stale_skipped = 0; // 被忽略的回退帧数
+        std::size_t active = 0; // 当前轨迹数
     };
 
     explicit TargetTracker(Config cfg = Config{}) : cfg_(cfg) {
@@ -83,7 +80,7 @@ public:
     // 就地给 dets 回写 track_id(无轨迹 / 未确认 = -1)。必须顺序调用。
     void update(std::vector<DetectionResult>& dets, std::int64_t now_ms, std::uint64_t seq);
 
-    // ---- 观测 / 测试 ----
+    // 观测 / 测试
     Stats stats() const;
     std::size_t activeTracks() const { return tracks_.size(); }
     const std::vector<Track>& tracks() const { return tracks_; }
@@ -107,7 +104,7 @@ private:
 
     Config cfg_;
     std::vector<Track> tracks_;
-    int next_id_ = 1;          // 从 1 开始(-1 已被"无 id"占用)
+    int next_id_ = 1; // 从 1 开始(-1 已被"无 id"占用)
     bool has_seq_ = false;
     std::uint64_t last_seq_ = 0;
     std::uint64_t frames_ = 0;
@@ -117,7 +114,7 @@ private:
     std::uint64_t stale_skipped_ = 0;
 };
 
-// ---- 局部几何工具: "框"的口径与 SensorFusion/AlertGate 保持一致 ----
+// 局部几何工具: "框"的口径与 SensorFusion/AlertGate 保持一致
 // (刻意不抽公共头: 就十来行, 且各模块对框的语义将来可能分化)
 namespace detail {
 inline float iouOf(const cv::Rect& a, const cv::Rect& b) {
@@ -148,12 +145,12 @@ inline float centroidDistSq(const cv::Rect& a, const cv::Rect& b) {
     const float dy = ay - by;
     return dx * dx + dy * dy;
 }
-}  // namespace detail
+} // namespace detail
 
 inline void TargetTracker::update(std::vector<DetectionResult>& dets, std::int64_t now_ms,
                                   std::uint64_t seq) {
     if (!cfg_.enabled) return;
-    // 防御: 回退帧会打乱轨迹。[T29] 的 sink 重排已保证升序, 这里只做兜底。
+    // 防御: 回退帧会打乱轨迹。的 sink 重排已保证升序, 这里只做兜底。
     if (has_seq_ && seq <= last_seq_) {
         ++stale_skipped_;
         return;
@@ -163,7 +160,7 @@ inline void TargetTracker::update(std::vector<DetectionResult>& dets, std::int64
     ++frames_;
 
     // 1) 先老化: 过期轨迹必须在匹配前退场 —— 否则"离开又回来"的目标会被当成
-    //    同一条轨迹复用, 去重也就会漏报新目标。
+    // 同一条轨迹复用, 去重也就会漏报新目标。
     retireExpired(now_ms);
 
     // 2) 关联: 同标签候选, IoU 贪心为主, 质心距离兼底(救快速移动目标)。
@@ -184,7 +181,7 @@ inline void TargetTracker::update(std::vector<DetectionResult>& dets, std::int64
             if (cfg_.dist_factor > 0.0f) {
                 const float reach = cfg_.dist_factor * detail::halfPerimeter(dets[di].box);
                 if (detail::centroidDistSq(tracks_[ti].box, dets[di].box) <= reach * reach) {
-                    cands.push_back(Cand{0.0f, ti, di});   // 兼底得分低于任何 IoU 命中
+                    cands.push_back(Cand{0.0f, ti, di}); // 兼底得分低于任何 IoU 命中
                 }
             }
         }
@@ -195,11 +192,11 @@ inline void TargetTracker::update(std::vector<DetectionResult>& dets, std::int64
     std::vector<bool> track_used(tracks_.size(), false);
     std::vector<bool> det_used(dets.size(), false);
     for (const auto& c : cands) {
-        if (track_used[c.ti] || det_used[c.di]) continue;   // 贪心: 一对一
+        if (track_used[c.ti] || det_used[c.di]) continue; // 贪心: 一对一
         track_used[c.ti] = true;
         det_used[c.di] = true;
         Track& t = tracks_[c.ti];
-        t.box = dets[c.di].box;   // 用新框续接, 下一帧才接得住
+        t.box = dets[c.di].box; // 用新框续接, 下一帧才接得住
         t.last_ms = now_ms;
         ++t.hits;
         t.misses = 0;
@@ -262,4 +259,4 @@ inline void TargetTracker::enforceCap() {
     }
 }
 
-}  // namespace tracking
+} // namespace tracking

@@ -11,7 +11,7 @@ ConnectionPool::~ConnectionPool() {
 }
 
 bool ConnectionPool::init(const DatabaseConfig& config, int max_attempts, int retry_sleep_ms) {
-    close();   // 重置旧资源
+    close(); // 重置旧资源
 
     {
         std::unique_lock<std::mutex> lock(mtx_);
@@ -29,7 +29,7 @@ bool ConnectionPool::init(const DatabaseConfig& config, int max_attempts, int re
     }
 
     const int n = config.pool_size < 1 ? 1 : config.pool_size;
-    // [T36] 启动时可只试一次(不卡启动); 后台探测也走这里重连。
+    // 启动时可只试一次(不卡启动); 后台探测也走这里重连。
     const int retries = (max_attempts > 0)
                             ? max_attempts
                             : (config.max_retries < 1 ? 1 : config.max_retries);

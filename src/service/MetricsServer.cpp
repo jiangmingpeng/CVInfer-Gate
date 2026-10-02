@@ -16,8 +16,8 @@ namespace metrics {
 
 namespace {
 constexpr std::size_t kMaxRequestBytes = 4096;
-constexpr int kReadTimeoutMs = 1000;    // 单个客户端最多给它 1s 把请求发完
-}  // namespace
+constexpr int kReadTimeoutMs = 1000; // 单个客户端最多给它 1s 把请求发完
+} // namespace
 
 HttpServer::~HttpServer() {
     stop();
@@ -56,11 +56,11 @@ std::string HttpServer::parseRequestTarget(const std::string& raw_request) {
     const std::size_t sp2 = line.find(' ', sp1 + 1);
     if (sp2 == std::string::npos) return {};
     const std::string method = line.substr(0, sp1);
-    if (method != "GET" && method != "HEAD") return {};   // 只读接口
+    if (method != "GET" && method != "HEAD") return {}; // 只读接口
 
     std::string target = line.substr(sp1 + 1, sp2 - sp1 - 1);
     if (target.empty() || target[0] != '/') return {};
-    const std::size_t q = target.find('?');               // 忽略 query(如 ?format=text)
+    const std::size_t q = target.find('?'); // 忽略 query(如 ?format=text)
     if (q != std::string::npos) target = target.substr(0, q);
     return target;
 }
@@ -80,7 +80,7 @@ bool HttpServer::start(const Config& cfg, std::function<std::string()> metrics_b
         return false;
     }
     const int one = 1;
-    ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));   // 重启后端口可立即复用
+    ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)); // 重启后端口可立即复用
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -117,7 +117,7 @@ bool HttpServer::start(const Config& cfg, std::function<std::string()> metrics_b
 
 void HttpServer::stop() {
     if (!running_.exchange(false)) return;
-    if (thread_.joinable()) thread_.join();   // serveLoop 最多 100ms 内看到标志退出
+    if (thread_.joinable()) thread_.join(); // serveLoop 最多 100ms 内看到标志退出
     closeListen();
 }
 
@@ -137,9 +137,9 @@ void HttpServer::serveLoop() {
         FD_SET(listen_fd_, &rset);
         timeval tv{};
         tv.tv_sec = 0;
-        tv.tv_usec = 100 * 1000;   // 100ms: 让 stop() 及时生效
+        tv.tv_usec = 100 * 1000; // 100ms: 让 stop() 及时生效
         const int rc = ::select(listen_fd_ + 1, &rset, nullptr, nullptr, &tv);
-        if (rc <= 0) continue;      // 超时(正常) 或被打断
+        if (rc <= 0) continue; // 超时(正常) 或被打断
 
         sockaddr_in peer{};
         socklen_t plen = sizeof(peer);
@@ -162,7 +162,7 @@ void HttpServer::handleClient(int fd) {
         const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
         if (n > 0) {
             raw.append(buf, static_cast<std::size_t>(n));
-            if (raw.find("\r\n\r\n") != std::string::npos) break;   // 请求头收全即可(GET 无 body)
+            if (raw.find("\r\n\r\n") != std::string::npos) break; // 请求头收全即可(GET 无 body)
             continue;
         }
         break;
@@ -192,4 +192,4 @@ void HttpServer::handleClient(int fd) {
     ::send(fd, response.data(), response.size(), MSG_NOSIGNAL);
 }
 
-}  // namespace metrics
+} // namespace metrics

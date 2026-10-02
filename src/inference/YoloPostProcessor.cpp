@@ -55,23 +55,23 @@ std::vector<DetectionResult> YoloPostProcessor::process(const ov::Tensor& output
     ov::Shape shape = output_tensor.get_shape(); // [1, 84, 8400]
     
     int num_classes = shape[1] - 4; // 80
-    int num_boxes = shape[2];       // 8400
+    int num_boxes = shape[2]; // 8400
 
     // 计算缩放比例
     float scale_x = static_cast<float>(original_size.width) / 640.0f;
     float scale_y = static_cast<float>(original_size.height) / 640.0f;
 
-    // ---- [T35] 缓存友好改造 (原实现见 git 历史) ----
+    // 缓存友好改造 (原实现见 git 历史)
     // 旧写法: for (i) for (c) data[(4+c)*num_boxes + i] —— 内层每次跨 33.6KB, 672k 次访问
-    //         几乎全部 miss(实测后处理是 worker 关键路径上的主要开销之一)。
+    // 几乎全部 miss(实测后处理是 worker 关键路径上的主要开销之一)。
     // 新写法: 让 c 走外层, 内层 i 沿 8400 个 float(33.6KB, 能驻 L1/L2) 连续扫 ——
-    //         顺序访问 + 可被硬件预取 + 自动向量化(vmaxps); 先逐列求 max 再单独判阈值。
+    // 顺序访问 + 可被硬件预取 + 自动向量化(vmaxps); 先逐列求 max 再单独判阈值。
     // 等价性: 用 `>` 比较, 平局时保留较小 class id; max 初值 0.0f 与原实现一致
-    //         (全为负/零时同样会被 conf_threshold_ 滤掉, 行为不变)。
+    // (全为负/零时同样会被 conf_threshold_ 滤掉, 行为不变)。
     detections.reserve(64);
 
-    std::vector<float> best_conf(num_boxes, 0.0f);        // 33.6KB, 热数据
-    std::vector<std::uint8_t> best_cls(num_boxes, 0);     // 8.4KB
+    std::vector<float> best_conf(num_boxes, 0.0f); // 33.6KB, 热数据
+    std::vector<std::uint8_t> best_cls(num_boxes, 0); // 8.4KB
 
     for (int c = 0; c < num_classes; ++c) {
         const float* row = data + static_cast<std::size_t>(4 + c) * num_boxes;

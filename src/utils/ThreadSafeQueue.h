@@ -10,20 +10,17 @@
 #include <queue>
 #include <utility>
 
-// ============================================================
 // ThreadSafeQueue<T>  (T3: 有界 + 策略 + 统计 + 超时)
-// ------------------------------------------------------------
 // 与原版差异:
-//   1) 队列策略可配: DropOldest(默认, 实时) / Block(离线不丢帧)
-//   2) 新增统计 pushed/popped/dropped, 丢弃可见(on_drop 回调)
-//   3) pop 支持超时, 避免消费者永久阻塞
-//   4) 新增 try_pop() 非阻塞出队
-//   5) close() 语义统一, stop() 保留为兼容别名
-//   6) push/pop 采用移动语义; 头文件不再依赖 OpenCV
+// 1) 队列策略可配: DropOldest(默认, 实时) / Block(离线不丢帧)
+// 2) 新增统计 pushed/popped/dropped, 丢弃可见(on_drop 回调)
+// 3) pop 支持超时, 避免消费者永久阻塞
+// 4) 新增 try_pop() 非阻塞出队
+// 5) close() 语义统一, stop() 保留为兼容别名
+// 6) push/pop 采用移动语义; 头文件不再依赖 OpenCV
 //
 // 兼容性: 原用法 ThreadSafeQueue<cv::Mat> q(10); q.push(...);
-//         q.pop(...); q.stop(); 全部保持不变。
-// ============================================================
+// q.pop(...); q.stop(); 全部保持不变。
 template <typename T>
 class ThreadSafeQueue {
 public:
@@ -31,11 +28,11 @@ public:
     enum class PushResult { Pushed, Dropped, Full, Closed };
 
     struct Stats {
-        std::uint64_t pushed = 0;     // 累计入队
-        std::uint64_t popped = 0;     // 累计出队
-        std::uint64_t dropped = 0;    // 累计丢弃(仅 DropOldest)
-        std::size_t   size = 0;       // 当前长度
-        std::size_t   capacity = 0;   // 容量上限
+        std::uint64_t pushed = 0; // 累计入队
+        std::uint64_t popped = 0; // 累计出队
+        std::uint64_t dropped = 0; // 累计丢弃(仅 DropOldest)
+        std::size_t   size = 0; // 当前长度
+        std::size_t   capacity = 0; // 容量上限
     };
 
     // 注意: on_drop 回调在持锁状态下被调用, 请保持轻量, 切勿再访问本队列
@@ -57,7 +54,7 @@ public:
         bool dropped = false;
         if (queue_.size() >= capacity_) {
             if (policy_ == Policy::DropOldest) {
-                queue_.pop();          // 丢弃最旧帧
+                queue_.pop(); // 丢弃最旧帧
                 ++dropped_;
                 dropped = true;
                 if (on_drop_) on_drop_();
@@ -91,7 +88,7 @@ public:
     bool pop(T& item) {
         std::unique_lock<std::mutex> lock(mtx_);
         not_empty_.wait(lock, [this] { return closed_ || !queue_.empty(); });
-        if (queue_.empty()) return false;    // closed_ && empty
+        if (queue_.empty()) return false; // closed_ && empty
         item = std::move(queue_.front());
         queue_.pop();
         ++popped_;
@@ -167,8 +164,8 @@ public:
 
 private:
     mutable std::mutex mtx_;
-    std::condition_variable not_empty_;   // 消费者等待
-    std::condition_variable not_full_;    // [新增] Block 策略下生产者等待
+    std::condition_variable not_empty_; // 消费者等待
+    std::condition_variable not_full_; // Block 策略下生产者等待
     std::queue<T> queue_;
     std::size_t capacity_;
     Policy policy_;

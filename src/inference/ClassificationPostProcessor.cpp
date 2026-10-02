@@ -7,7 +7,7 @@ ClassificationPostProcessor::ClassificationPostProcessor(std::vector<std::string
     : labels_(std::move(labels)) {}
 
 Classification ClassificationPostProcessor::process(const ov::Tensor& output) const {
-    Classification c;   // class_id = -1 (无效)
+    Classification c; // class_id = -1 (无效)
 
     try {
         if (output.get_element_type() != ov::element::f32) return c;

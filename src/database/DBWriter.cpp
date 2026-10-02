@@ -9,7 +9,7 @@
 #include <utility>
 #include "utils/Logger.h"
 
-// ------------------------- 生命周期 -------------------------
+// 生命周期
 
 DBWriter::~DBWriter() {
     stop();
@@ -18,10 +18,10 @@ DBWriter::~DBWriter() {
 bool DBWriter::init(const AppConfig& config) {
     const auto& db = config.database;
 
-    db_cfg_ = db;   // [T36] 保存配置: 后台重连要用
+    db_cfg_ = db; // 保存配置: 后台重连要用
 
     // 1.  批量 / 重试 / 降级 阈值 (全部来自 DatabaseConfig, 带兜底默认)
-    //     注: [T36] 提到“连库”之前 —— 降级提示里要用到 probe_interval_ / fallback_path_
+    // 注: 提到“连库”之前 —— 降级提示里要用到 probe_interval_ / fallback_path_
     batch_size_ = db.batch_size < 1 ? 20 : db.batch_size;
     batch_interval_ =
         std::chrono::milliseconds(db.flush_interval_ms < 1 ? 1000 : db.flush_interval_ms);
@@ -29,15 +29,15 @@ bool DBWriter::init(const AppConfig& config) {
         std::chrono::milliseconds(db.reconnect_interval_ms < 1 ? 30000 : db.reconnect_interval_ms);
     probe_after_calls_ = db.reconnect_after_writes < 1 ? 100 : db.reconnect_after_writes;
     fallback_path_ = db.fallback_path;
-    pop_timeout_ = batch_interval_;   // 空闲时按批量间隔唤起, 保证定时冲刷
+    pop_timeout_ = batch_interval_; // 空闲时按批量间隔唤起, 保证定时冲刷
 
-    // 2. [T36] 连接池: **只做一次快速尝试**(不重试、不睡眠)。
-    //    失败**不再让调用方退出** —— 转“降级模式”, 由后台线程按
-    //    reconnect_interval_ms / reconnect_after_writes 自动重连
-    //    (见 ensurePoolAvailable)。这样“数据库没起”不再等于“程序起不来”:
-    //    演示/联调时 gRPC 与流水线照常工作, 记录先落本地 CSV。
+    // 2. 连接池: **只做一次快速尝试**(不重试、不睡眠)。
+    // 失败**不再让调用方退出** —— 转“降级模式”, 由后台线程按
+    // reconnect_interval_ms / reconnect_after_writes 自动重连
+    // (见 ensurePoolAvailable)。这样“数据库没起”不再等于“程序起不来”:
+    // 演示/联调时 gRPC 与流水线照常工作, 记录先落本地 CSV。
     if (!pool_.init(db, /*max_attempts=*/1, /*retry_sleep_ms=*/0)) {
-        db_healthy_ = false;   // 直接进入“暂停写库 + 定时探测”, 不等第一帧才发现
+        db_healthy_ = false; // 直接进入“暂停写库 + 定时探测”, 不等第一帧才发现
         CVLOG_WARN << "[DBWriter][T36] 数据库不可用, 以【降级模式】启动: 记录先落本地 "
                    << (fallback_path_.empty() ? "(未配置降级文件!)" : fallback_path_)
                    << ", 每 " << probe_interval_.count() << "ms 或 "
@@ -60,13 +60,13 @@ bool DBWriter::init(const AppConfig& config) {
                << ", 队列容量=" << capacity << ", batch=" << batch_size_ << "/"
                << batch_interval_.count() << "ms, 降级文件="
                << (fallback_path_.empty() ? "(禁用)" : fallback_path_) << ")";
-    // [T36] 无论连没连上库都返回 true: 让进程能继续把 gRPC / 流水线跑起来。
+    // 无论连没连上库都返回 true: 让进程能继续把 gRPC / 流水线跑起来。
     return true;
 }
 
 void DBWriter::flush() {
     if (!queue_) return;
-    //  同时等待任务队列与批缓冲排空
+    // 同时等待任务队列与批缓冲排空
     while (running_.load() && (queue_->size() > 0 || buffered_rows_.load() > 0)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
@@ -79,7 +79,7 @@ void DBWriter::stop() {
     pool_.close();
 }
 
-// ------------------------- 异步入队 -------------------------
+// 异步入队
 
 bool DBWriter::writeDetections(const std::vector<DetectionResult>& detections) {
     if (!queue_ || !running_.load() || detections.empty()) return false;
@@ -100,7 +100,7 @@ bool DBWriter::writeAlert(const std::string& type, const std::string& descriptio
     return true;
 }
 
-// ------------------------- 后台线程 -------------------------
+// 后台线程
 
 void DBWriter::writerLoop() {
     const auto start = std::chrono::steady_clock::now();
@@ -112,11 +112,11 @@ void DBWriter::writerLoop() {
         bool timed_out = false;
         const bool got = queue_->pop(task, pop_timeout_, &timed_out);
         if (got) {
-            appendTaskToBatch(task);          // 攒批而非立即写
+            appendTaskToBatch(task); // 攒批而非立即写
         } else if (!timed_out) {
-            break;                            // 队列已关闭且为空
+            break; // 队列已关闭且为空
         }
-        if (shouldFlush()) {                  // 够量或到点
+        if (shouldFlush()) { // 够量或到点
             flushBatch();
         }
     }
@@ -126,7 +126,7 @@ void DBWriter::writerLoop() {
     }
 }
 
-// ------------------------- 批处理 -------------------------
+// 批处理
 
 void DBWriter::appendTaskToBatch(const Task& task) {
     if (task.type == Task::Type::Detection) {
@@ -154,20 +154,20 @@ void DBWriter::appendTaskToBatch(const Task& task) {
 
 bool DBWriter::shouldFlush() const {
     if (batch_.empty()) return false;
-    if (static_cast<int>(batch_.size()) >= batch_size_) return true;               // 够量
-    return (std::chrono::steady_clock::now() - last_flush_) >= batch_interval_;    // 到点
+    if (static_cast<int>(batch_.size()) >= batch_size_) return true; // 够量
+    return (std::chrono::steady_clock::now() - last_flush_) >= batch_interval_; // 到点
 }
 
 bool DBWriter::shouldProbe() const {
     const auto now = std::chrono::steady_clock::now();
-    if (now - last_probe_ >= probe_interval_) return true;   // 每隔 30s
-    if (probe_counter_ >= probe_after_calls_) return true;   // 或累计 100 次冲刷
+    if (now - last_probe_ >= probe_interval_) return true; // 每隔 30s
+    if (probe_counter_ >= probe_after_calls_) return true; // 或累计 100 次冲刷
     return false;
 }
 
-// [T36] 池为空(启动时数据库不可用)时, 单次重建。
-//   刻意传 (1, 0): 只试一次、不睡眠 —— 探测是“顺路做一下”, 不能把
-//   写库线程阻塞几秒; 这次不成, 下一轮(probe_interval_ms 后)再来。
+// 池为空(启动时数据库不可用)时, 单次重建。
+// 刻意传 (1, 0): 只试一次、不睡眠 —— 探测是“顺路做一下”, 不能把
+// 写库线程阻塞几秒; 这次不成, 下一轮(probe_interval_ms 后)再来。
 bool DBWriter::ensurePoolAvailable() {
     if (pool_.ready()) return true;
     const bool ok = pool_.init(db_cfg_, /*max_attempts=*/1, /*retry_sleep_ms=*/0);
@@ -190,15 +190,15 @@ void DBWriter::flushBatch() {
         // 到重试时机: 做一次探测性写入
         last_probe_ = std::chrono::steady_clock::now();
         probe_counter_ = 0;
-        // [T36] 池里一个连接都没有(启动时就没连上)时, 先单次重建池 ——
-        //   否则 acquire() 永远返回 nullptr, 永远恢复不了。
+        // 池里一个连接都没有(启动时就没连上)时, 先单次重建池 ——
+        // 否则 acquire() 永远返回 nullptr, 永远恢复不了。
         written = ensurePoolAvailable() && tryWriteOnce();
     } else {
-        ++probe_counter_;   // 数据库不可用且未到重试时机: 直接跳过写库
+        ++probe_counter_; // 数据库不可用且未到重试时机: 直接跳过写库
     }
 
     if (!written) {
-        spillToFallback(batch_);   // 降级: 写本地, 保证数据不丢
+        spillToFallback(batch_); // 降级: 写本地, 保证数据不丢
     }
 
     batch_.clear();
@@ -213,11 +213,11 @@ bool DBWriter::tryWriteOnce() {
         return false;
     }
     if (!writeBatch(conn.get())) {
-        return false;   // writeBatch 内部已 markUnhealthy
+        return false; // writeBatch 内部已 markUnhealthy
     }
     // 由"不健康"转为"健康": 说明数据库恢复, 回传本地缓存
     if (!db_healthy_.exchange(true)) {
-        db_reconnects_.fetch_add(1);   // [T36] 观测
+        db_reconnects_.fetch_add(1); // 观测
         CVLOG_INFO << "[DBWriter] 数据库已恢复(第 " << db_reconnects_.load()
                    << " 次), 开始回传本地缓存...";
         replayFallback();
@@ -254,9 +254,9 @@ bool DBWriter::writeBatch(sql::Connection* conn) {
     try {
         conn->setAutoCommit(false);
 
-        // ---- 检测行: 多 VALUES 的 INSERT, 一条语句写多行(单往返) ----
+        // 检测行: 多 VALUES 的 INSERT, 一条语句写多行(单往返)
         // 注: 不使用 addBatch()/executeBatch() (部分 Connector/C++ 版本不提供),
-        //     仅依赖 prepareStatement/setXxx/executeUpdate 等基础 API
+        // 仅依赖 prepareStatement/setXxx/executeUpdate 等基础 API
         for (std::size_t i = 0; i < dets.size(); i += kMaxRowsPerStmt) {
             const std::size_t n = std::min(kMaxRowsPerStmt, dets.size() - i);
             std::string sql =
@@ -280,7 +280,7 @@ bool DBWriter::writeBatch(sql::Connection* conn) {
             ps->executeUpdate();
         }
 
-        // ---- 告警行: 同样多 VALUES ----
+        // 告警行: 同样多 VALUES
         for (std::size_t i = 0; i < alerts.size(); i += kMaxRowsPerStmt) {
             const std::size_t n = std::min(kMaxRowsPerStmt, alerts.size() - i);
             std::string sql = "INSERT INTO alerts (alert_type, description) VALUES ";
@@ -316,7 +316,7 @@ bool DBWriter::writeBatch(sql::Connection* conn) {
     }
 }
 
-// ------------------------- 本地降级 / 回传 -------------------------
+// 本地降级 / 回传
 
 namespace {
 
@@ -362,7 +362,7 @@ std::vector<std::string> csvSplit(const std::string& line) {
     return fields;
 }
 
-}  // namespace
+} // namespace
 
 void DBWriter::spillToFallback(const std::vector<Row>& rows) {
     if (fallback_path_.empty() || rows.empty()) return;
@@ -391,7 +391,7 @@ void DBWriter::replayFallback() {
     if (fallback_path_.empty()) return;
 
     std::ifstream in(fallback_path_);
-    if (!in) return;   // 没有降级文件
+    if (!in) return; // 没有降级文件
 
     std::vector<Row> rows;
     std::string line;

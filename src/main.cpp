@@ -40,51 +40,48 @@
 #include "utils/Metrics.h"
 #include "tracking/TargetTracker.h"
 #include "alert/AlertNotifier.h"
-#include "inference.grpc.pb.h"   // [T43] --health-check 探针要用的 Health RPC 存根
+#include "inference.grpc.pb.h" // --health-check 探针要用的 Health RPC 存根
 
-// [T43] 版本号由 CMake 注入(project(... VERSION x.y.z)); 脱离 CMake 单独编译时兜底 "dev"
+// 版本号由 CMake 注入(project(... VERSION x.y.z)); 脱离 CMake 单独编译时兜底 "dev"
 #ifndef CV_GATE_VERSION
 #define CV_GATE_VERSION "dev"
 #endif
 
-// ============================================================
 // CVInfer-Gate 主程序 (T7: 装配收口)
-// ------------------------------------------------------------
 // 与旧版 main.cpp 的差异:
-//   1) T2: 引入 Logger, 统一分级日志, 取代散落的 std::cout/cerr
-//   2) T6: 引入 LifecycleCoordinator + SignalWatcher, 主线程与
-//      gRPC/流水线子线程通过 condition_variable 协作, Ctrl+C 优雅关闭
-//   3) gRPC 服务在独立线程启动, 与视频流水线"并行"
-//      (旧版是视频跑完才启动 gRPC, 且无法优雅退出)
-//   4) T4: 引入 InferenceEnginePool, 推理引擎被流水线 worker 与 gRPC
-//      共享, 消除"多线程共用单个 ov::InferRequest"的数据竞争
-//   5) T5: 视频处理交棒给 VideoPipeline (解码/抽帧/限速/多 worker/落库)
-//   6) 保留原业务规则: 画框写视频、检测入库、person>0.8 触发告警
-//   7) T12-T15: 推理链路由"单引擎池"升级为"多模型注册 + IDetector 抽象":
-//      ModelPoolManager 按 model_config 批量构建模型(每模型独立引擎池),
-//      流水线/gRPC 只依赖 IDetector, 为 T16+ 的多模型级联铺路。
-//   8) T16-T19: 当 config.yaml 中 cascade.enabled=true 时, 用 CascadeEngine
-//      (同样实现 IDetector)替换单模型: 主筛灰区目标 -> 二级分类器复核。
-//      流水线/gRPC 代码无需改动(这正是 Phase A 抽象层的价值)。
-//   9) T20-T22: 当 config.yaml 中 review.enabled=true 时, 告警候选目标被裁剪
-//      ROI 后异步送大模型复核(复用 gRPC), **复核确认后才写告警**; 画框/写视频/
-//      检测入库仍用本地结果实时进行, 复核不阻塞任何流水线线程。
-//  10) T23-T26: 当 config.yaml 中 fusion.enabled=true 时, 在 sink **最前置**叠加
-//      多模态决策级融合: 雷达/红外采样经 poller 存进有界时间缓冲, 每帧按
-//      fusion.time_tolerance_ms 时间对齐 + 目标关联 + 加权置信度融合。
-//      视频仍是主模态(画框/落库/告警的框都来自视觉), 融合只调置信度/补测距;
-//   11) T39: 告警去重(alert.dedup): 告警判定按帧执行, 而"安全帽缺失"描述的是**目标
-//      状态** => 同一静止目标会被连续帧反复告警。新增 AlertGate(标签 + 框重叠 +
-//      冷却窗), 在**告警链路上**去重(送审处 / 写告警处), 画框与落库不受影响。
-//  12) T43: 运维收口 —— 把"能跑"补成"好运维":
-//      (a) 告警可推 webhook(alert.push): 有界队列 + 重试退避, 不阻塞流水线;
-//      (b) /metrics 指标端点(metrics.enabled) + 日志文件轮转(app.log_max_size_mb);
-//      (c) gRPC Health RPC + `--health-check` 探针, 供容器 healthcheck / systemd 判活。
-// ============================================================
+// 1) T2: 引入 Logger, 统一分级日志, 取代散落的 std::cout/cerr
+// 2) T6: 引入 LifecycleCoordinator + SignalWatcher, 主线程与
+// gRPC/流水线子线程通过 condition_variable 协作, Ctrl+C 优雅关闭
+// 3) gRPC 服务在独立线程启动, 与视频流水线"并行"
+// (旧版是视频跑完才启动 gRPC, 且无法优雅退出)
+// 4) T4: 引入 InferenceEnginePool, 推理引擎被流水线 worker 与 gRPC
+// 共享, 消除"多线程共用单个 ov::InferRequest"的数据竞争
+// 5) T5: 视频处理交棒给 VideoPipeline (解码/抽帧/限速/多 worker/落库)
+// 6) 保留原业务规则: 画框写视频、检测入库、person>0.8 触发告警
+// 7) T12-T15: 推理链路由"单引擎池"升级为"多模型注册 + IDetector 抽象":
+// ModelPoolManager 按 model_config 批量构建模型(每模型独立引擎池),
+// 流水线/gRPC 只依赖 IDetector, 为 T16+ 的多模型级联铺路。
+// 8) T16-T19: 当 config.yaml 中 cascade.enabled=true 时, 用 CascadeEngine
+// (同样实现 IDetector)替换单模型: 主筛灰区目标 -> 二级分类器复核。
+// 流水线/gRPC 代码无需改动(这正是 Phase A 抽象层的价值)。
+// 9) T20-T22: 当 config.yaml 中 review.enabled=true 时, 告警候选目标被裁剪
+// ROI 后异步送大模型复核(复用 gRPC), **复核确认后才写告警**; 画框/写视频/
+// 检测入库仍用本地结果实时进行, 复核不阻塞任何流水线线程。
+// 10) T23-T26: 当 config.yaml 中 fusion.enabled=true 时, 在 sink **最前置**叠加
+// 多模态决策级融合: 雷达/红外采样经 poller 存进有界时间缓冲, 每帧按
+// fusion.time_tolerance_ms 时间对齐 + 目标关联 + 加权置信度融合。
+// 视频仍是主模态(画框/落库/告警的框都来自视觉), 融合只调置信度/补测距;
+// 11) T39: 告警去重(alert.dedup): 告警判定按帧执行, 而"安全帽缺失"描述的是**目标
+// 状态** => 同一静止目标会被连续帧反复告警。新增 AlertGate(标签 + 框重叠 +
+// 冷却窗), 在**告警链路上**去重(送审处 / 写告警处), 画框与落库不受影响。
+// 12) T43: 运维收口 —— 把"能跑"补成"好运维":
+// (a) 告警可推 webhook(alert.push): 有界队列 + 重试退避, 不阻塞流水线;
+// (b) /metrics 指标端点(metrics.enabled) + 日志文件轮转(app.log_max_size_mb);
+// (c) gRPC Health RPC + `--health-check` 探针, 供容器 healthcheck / systemd 判活。
 
 namespace {
 
-// [T22] 判定某检测是否为"送复核"的候选(与 review.trigger 条件一致)
+// 判定某检测是否为"送复核"的候选(与 review.trigger 条件一致)
 bool isReviewCandidate(const DetectionResult& det, const ReviewConfig& rc) {
     if (det.confidence < rc.min_conf || det.confidence >= rc.max_conf) return false;
     if (rc.trigger_labels.empty()) return true;
@@ -92,23 +89,23 @@ bool isReviewCandidate(const DetectionResult& det, const ReviewConfig& rc) {
            rc.trigger_labels.end();
 }
 
-// [T39] 单调时钟(ms): 冷却窗必须用单调钟 —— 系统时间被回拨/校正时,
-//   steady_clock 不会跳变(否则可能永久抑制或去重失效)。
+// 单调时钟(ms): 冷却窗必须用单调钟 —— 系统时间被回拨/校正时,
+// steady_clock 不会跳变(否则可能永久抑制或去重失效)。
 std::int64_t nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// [T43] epoch 毫秒: 只用于"对外"的时间戳(uptime 基准、告警 webhook 的 ts_ms)
+// epoch 毫秒: 只用于"对外"的时间戳(uptime 基准、告警 webhook 的 ts_ms)
 std::int64_t epochMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-// [T27] 配置路径可注入: `--config <path>` / `CVINFER_CONFIG`(优先级: 命令行 > 环境变量 > 默认)
-//   动机: config/config.yaml 是运行时唯一入口, 但 CMake 的 POST_BUILD 会用它**覆盖**
-//   build/config/config.yaml, 导致"改了 build 下的配置, 一 build 就被还原"。
-//   有了这个开关, 就可以用 config/config.test.yaml 等测试配置运行, 互不干扰。
+// 配置路径可注入: `--config <path>` / `CVINFER_CONFIG`(优先级: 命令行 > 环境变量 > 默认)
+// 动机: config/config.yaml 是运行时唯一入口, 但 CMake 的 POST_BUILD 会用它**覆盖**
+// build/config/config.yaml, 导致"改了 build 下的配置, 一 build 就被还原"。
+// 有了这个开关, 就可以用 config/config.test.yaml 等测试配置运行, 互不干扰。
 std::string resolvePath(int argc, char** argv, const char* flag, const char* env,
                         const char* default_path) {
     for (int i = 1; i < argc; ++i) {
@@ -133,7 +130,7 @@ void printUsage(const char* argv0) {
               << "  --help                 显示本帮助\n";
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
@@ -155,13 +152,13 @@ int main(int argc, char** argv) {
     if (!config_parser.loadModelConfig(model_cfg_path)) return -1;
 
     const auto& app_cfg = config_parser.getAppConfig();
-    const std::int64_t start_ms = epochMs();   // [T43] 进程启动时刻(uptime 基准)
+    const std::int64_t start_ms = epochMs(); // 进程启动时刻(uptime 基准)
 
-    // ---- [T43] --health-check: 一次性健康探针 ----
-    //   存在意义: 容器 healthcheck / systemd / 负载均衡需要一个"进程真的在服务"的判据。
-    //   刻意**不加载模型、不连数据库**(探针必须秒级返回), 只问 gRPC 的 Health RPC;
-    //   鉴权口径与 Detect 一致 => 开了鉴权就带上 GRPC_AUTH_TOKEN。
-    //   退出码: 0=serving 1=失败 2=连不上 3=超时 4=未授权
+    // --health-check: 一次性健康探针
+    // 存在意义: 容器 healthcheck / systemd / 负载均衡需要一个"进程真的在服务"的判据。
+    // 刻意**不加载模型、不连数据库**(探针必须秒级返回), 只问 gRPC 的 Health RPC;
+    // 鉴权口径与 Detect 一致 => 开了鉴权就带上 GRPC_AUTH_TOKEN。
+    // 退出码: 0=serving 1=失败 2=连不上 3=超时 4=未授权
     {
         bool health_check = false;
         std::string health_addr;
@@ -171,7 +168,7 @@ int main(int argc, char** argv) {
                 health_check = true;
             } else if (a.rfind("--health-check=", 0) == 0) {
                 health_check = true;
-                health_addr = a.substr(15);   // "--health-check=" 长度 15
+                health_addr = a.substr(15); // "--health-check=" 长度 15
             }
         }
         if (health_check) {
@@ -217,11 +214,11 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ---- T2: 初始化分级日志 ----
+    // T2: 初始化分级日志
     Logger::instance().init(app_cfg.log);
     CVLOG_INFO << "=== CVInfer-Gate 启动 ===";
 
-    // ---- T6: 信号监听必须早于其它线程, 使其继承信号掩码 ----
+    // T6: 信号监听必须早于其它线程, 使其继承信号掩码
     LifecycleCoordinator lifecycle;
     SignalWatcher signal_watcher([&lifecycle](int sig) {
         CVLOG_WARN << "收到信号 " << sig << ", 开始优雅关闭...";
@@ -232,19 +229,19 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    // ---- T9: 数据库 (连接池 + 异步落库) ----
-    // [T36] DBWriter::init() 已改为“连不上库也**不**失败”: 降级模式启动(记录先落
-    //   本地 CSV), 后台按 database.reconnect_interval_ms 自动重建连接池, 恢复
-    //   后回传; 启动只做 1 次快速连库尝试(不再白等 ~20s)。
-    //   故这里**不再 return -1** —— 网关必须能“无库运行”。
-    //   注: init() 现在恒返回 true, 本分支仅在极端异常时触发。
+    // T9: 数据库 (连接池 + 异步落库)
+    // DBWriter::init() 已改为“连不上库也**不**失败”: 降级模式启动(记录先落
+    // 本地 CSV), 后台按 database.reconnect_interval_ms 自动重建连接池, 恢复
+    // 后回传; 启动只做 1 次快速连库尝试(不再白等 ~20s)。
+    // 故这里**不再 return -1** —— 网关必须能“无库运行”。
+    // 注: init() 现在恒返回 true, 本分支仅在极端异常时触发。
     DBWriter db_writer;
     if (!db_writer.init(app_cfg)) {
         CVLOG_ERROR << "数据库初始化异常! 将以【无落库】模式启动, 请检查 config.yaml。";
     }
 
-    // ---- [T43] 告警推送 (webhook) ----
-    //   定位: 推送是"通知", 落库才是"账"。推送失败/队列满只计数 + 告警, 绝不影响落库与推理。
+    // 告警推送 (webhook)
+    // 定位: 推送是"通知", 落库才是"账"。推送失败/队列满只计数 + 告警, 绝不影响落库与推理。
     alert::AlertNotifier alert_notifier;
     if (app_cfg.alert.push.enabled) {
         if (!alert_notifier.init(app_cfg.alert.push)) {
@@ -260,23 +257,23 @@ int main(int argc, char** argv) {
         CVLOG_INFO << "告警推送: 已禁用(仅落库; 需要时在 config 里开 alert.push.enabled)";
     }
 
-    // [T43] 统一告警入口: "落库 + 推送 + 计数"三件事只在这一处发生
-    //   (此前 writeAlert 散在 sink 与复核回调里 => 新增通知渠道就得改多处, 漏一处就是静默丢通知)
+    // 统一告警入口: "落库 + 推送 + 计数"三件事只在这一处发生
+    // (此前 writeAlert 散在 sink 与复核回调里 => 新增通知渠道就得改多处, 漏一处就是静默丢通知)
     std::atomic<std::uint64_t> alerts_raised{0};
-    std::atomic<std::uint64_t> det_total{0};     // 检测框总数(供 /metrics "拉"取)
+    std::atomic<std::uint64_t> det_total{0}; // 检测框总数(供 /metrics "拉"取)
     auto raise_alert = [&db_writer, &alert_notifier, &alerts_raised](
                            const std::string& type, const std::string& desc,
                            std::uint64_t frame_seq = 0, const std::string& label = "",
                            float confidence = 0.0f, int track_id = -1) {
         alerts_raised.fetch_add(1, std::memory_order_relaxed);
-        db_writer.writeAlert(type, desc);   // 账: 先落库(异步入队)
-        alert::Alert a;                     // 通知: 尽力而为
+        db_writer.writeAlert(type, desc); // 账: 先落库(异步入队)
+        alert::Alert a; // 通知: 尽力而为
         a.type = type;
         a.description = desc;
         a.frame_seq = frame_seq;
         a.label = label;
         a.confidence = confidence;
-        a.track_id = track_id;              // ts_ms 留给 AlertNotifier 盖戳(发送时刻)
+        a.track_id = track_id; // ts_ms 留给 AlertNotifier 盖戳(发送时刻)
         alert_notifier.push(a);
     };
 
@@ -306,29 +303,29 @@ int main(int argc, char** argv) {
         }
     }
 
-    // [T29] 输出视频的容器帧率 = **抽帧后**的有效帧率, 否则回看会快放:
-    //   源 30fps + frame_interval=3 -> sink 实际只拿到 10fps 的帧, 若容器仍写 30,
-    //   视频就会 3 倍速播放(实测 RTSP 场景因丢了 65% 的帧, 写出了 8 倍速视频)。
+    // 输出视频的容器帧率 = **抽帧后**的有效帧率, 否则回看会快放:
+    // 源 30fps + frame_interval=3 -> sink 实际只拿到 10fps 的帧, 若容器仍写 30,
+    // 视频就会 3 倍速播放(实测 RTSP 场景因丢了 65% 的帧, 写出了 8 倍速视频)。
     const int interval = app_cfg.video.frame_interval > 0 ? app_cfg.video.frame_interval : 1;
     double fps = source_fps / static_cast<double>(interval);
     if (app_cfg.video.target_fps > 0 && app_cfg.video.target_fps < fps) {
-        fps = app_cfg.video.target_fps;   // 限速比抽帧更严时, 以限速为准
+        fps = app_cfg.video.target_fps; // 限速比抽帧更严时, 以限速为准
     }
     if (fps <= 0.0) fps = 30.0;
     CVLOG_INFO << "视频帧率: 源=" << source_fps << "fps, frame_interval=" << interval
                << ", 输出容器=" << fps << "fps";
 
     // 3. T12-T15: 多模型注册 (Phase A 走单模型路径; 级联在 T16+)
-    //    ModelPoolManager 按配置批量构建模型: 每个模型(如 YoloDetector)内部持有
-    //    独立引擎池, 流水线 worker 与 gRPC 共享同一个 detector, 资源隔离/复用等价于旧版。
+    // ModelPoolManager 按配置批量构建模型: 每个模型(如 YoloDetector)内部持有
+    // 独立引擎池, 流水线 worker 与 gRPC 共享同一个 detector, 资源隔离/复用等价于旧版。
     ModelPoolManager model_manager;
     if (!model_manager.init(config_parser.getModelConfigs(), app_cfg.pipeline.worker_threads)) {
         CVLOG_ERROR << "模型初始化失败!";
         db_writer.stop();
         return -1;
     }
-    // [T18] 选择检测器: 启用级联则用 CascadeEngine, 否则回退单模型。
-    //   级联内部仍依赖 ModelPoolManager 中的模型(共享指针保证生命周期)。
+    // 选择检测器: 启用级联则用 CascadeEngine, 否则回退单模型。
+    // 级联内部仍依赖 ModelPoolManager 中的模型(共享指针保证生命周期)。
     std::shared_ptr<IDetector> detector;
     if (app_cfg.cascade.enabled) {
         detector = model_manager.buildCascade(app_cfg.cascade);
@@ -347,9 +344,9 @@ int main(int argc, char** argv) {
     CVLOG_INFO << "使用检测器: " << detector->name()
                << (app_cfg.cascade.enabled ? " (级联模式)" : " (单模型模式)");
 
-    // 3.5 [T20-T22] 大模型异步复核 (可选; 复用 gRPC)
-    //   仅作用于"告警"链路: 命中 review.trigger 的候选目标裁剪 ROI 后异步送审,
-    //   复核确认后才写告警; 画框/写视频/检测入库完全不受影响。
+    // 3.5 大模型异步复核 (可选; 复用 gRPC)
+    // 仅作用于"告警"链路: 命中 review.trigger 的候选目标裁剪 ROI 后异步送审,
+    // 复核确认后才写告警; 画框/写视频/检测入库完全不受影响。
     std::unique_ptr<ReviewScheduler> review_scheduler;
     if (app_cfg.review.enabled) {
         auto reviewer = std::make_shared<GrpcLlmReviewer>();
@@ -382,18 +379,18 @@ int main(int argc, char** argv) {
         }
     }
 
-    // 3.6 [T23-T26] 多模态决策级融合 (可选)
-    //   不改动 VideoPipeline: 融合作为 sink **最前置阶段**就地执行 ——
-    //   poller 线程只做 read->入时间缓冲(有界丢最旧), fuse() 只做一次内存快照 +
-    //   纯计算, 因此对流水线是"不阻塞"的。
-    //   生命周期: video_sensor 必须先于 fusion_stage 声明(后者持有其裸指针),
-    //   故析构顺序为 fusion_stage -> video_sensor, 不会悬空。
-    std::unique_ptr<sensor::VideoSensorSource> video_sensor;   // 视频时间基(非拥有底层)
+    // 3.6 多模态决策级融合 (可选)
+    // 不改动 VideoPipeline: 融合作为 sink **最前置阶段**就地执行 ——
+    // poller 线程只做 read->入时间缓冲(有界丢最旧), fuse() 只做一次内存快照 +
+    // 纯计算, 因此对流水线是"不阻塞"的。
+    // 生命周期: video_sensor 必须先于 fusion_stage 声明(后者持有其裸指针),
+    // 故析构顺序为 fusion_stage -> video_sensor, 不会悬空。
+    std::unique_ptr<sensor::VideoSensorSource> video_sensor; // 视频时间基(非拥有底层)
     std::unique_ptr<MultiSensorPipeline> fusion_stage;
     if (app_cfg.fusion.enabled) {
         std::vector<std::shared_ptr<sensor::ISensorSource>> sensors;
         for (const auto& sc : app_cfg.sensors) {
-            auto src = sensor::createSensorSource(sc);   // 内部已完成 open()
+            auto src = sensor::createSensorSource(sc); // 内部已完成 open()
             if (!src) {
                 // 单路传感器失败只降级跳过, 不影响主视频链路
                 CVLOG_WARN << "传感器构建失败, 已跳过: " << sc.name
@@ -406,7 +403,7 @@ int main(int argc, char** argv) {
             CVLOG_WARN << "没有可用的非视频传感器, 关闭多模态融合。";
         } else {
             video_sensor = std::make_unique<sensor::VideoSensorSource>(*video_source);
-            SensorConfig vcfg;   // 视频源由 main 持有, 这里只借名(不重复 open)
+            SensorConfig vcfg; // 视频源由 main 持有, 这里只借名(不重复 open)
             vcfg.kind = "video";
             vcfg.name = "video";
             video_sensor->open(vcfg);
@@ -420,19 +417,19 @@ int main(int argc, char** argv) {
     }
 
     // 4. 初始化视频写入器 (AVI + MJPG; 视频不可用时降级为“不写结果视频”, gRPC 仍能启动)
-    // [T28] RTSP 兼容: 某些网络流 open() 成功但拿不到分辨率(codec_ctx_->width==0),
-    //   旧逻辑会把 0x0 交给 VideoWriter -> 打不开 -> 直接 return -1 退出,
-    //   于是“流连上了却启不来服务”。现在改为**降级**: 尺寸未知时不写结果视频,
-    //   推理/落库/告警/gRPC 全部照常。
-    // [T31] 关键细节: 尺寸未知时**根本不要构造 VideoWriter** ——
-    //   传 cv::Size(0,0) 会让 OpenCV 依次试 GStreamer/CV_IMAGES/FFMPEG 后端,
-    //   每个后端都抛异常并打印 [ERROR:0] 噪声(实测: GStreamer 断言
-    //   “frameSize.width > 0” + CV_IMAGES “can't find starting number: output.avi”),
-    //   还可能留下一个“已打开但写不出”的 0x0 writer。故改为延迟 open。
+    // RTSP 兼容: 某些网络流 open() 成功但拿不到分辨率(codec_ctx_->width==0),
+    // 旧逻辑会把 0x0 交给 VideoWriter -> 打不开 -> 直接 return -1 退出,
+    // 于是“流连上了却启不来服务”。现在改为**降级**: 尺寸未知时不写结果视频,
+    // 推理/落库/告警/gRPC 全部照常。
+    // 关键细节: 尺寸未知时**根本不要构造 VideoWriter** ——
+    // 传 cv::Size(0,0) 会让 OpenCV 依次试 GStreamer/CV_IMAGES/FFMPEG 后端,
+    // 每个后端都抛异常并打印 [ERROR:0] 噪声(实测: GStreamer 断言
+    // “frameSize.width > 0” + CV_IMAGES “can't find starting number: output.avi”),
+    // 还可能留下一个“已打开但写不出”的 0x0 writer。故改为延迟 open。
     const int video_width  = video_ok ? video_source->getWidth() : 0;
     const int video_height = video_ok ? video_source->getHeight() : 0;
-    bool wrote_video = false;        // [T31] 末尾据此决定是否打印“结果视频已保存”
-    cv::VideoWriter video_writer;    // [T31] 延迟 open(尺寸未知时保持关闭, 不触发后端探测)
+    bool wrote_video = false; // 末尾据此决定是否打印“结果视频已保存”
+    cv::VideoWriter video_writer; // 延迟 open(尺寸未知时保持关闭, 不触发后端探测)
     if (video_width > 0 && video_height > 0) {
         std::cout << "原视频分辨率: " << video_width << "x" << video_height << std::endl;
         video_writer.open("output.avi",
@@ -440,7 +437,7 @@ int main(int argc, char** argv) {
                           fps, cv::Size(video_width, video_height));
         wrote_video = video_writer.isOpened();
         if (!wrote_video) {
-            // [T28] 不再 return -1: 编码器不可用时降级为“不写结果视频”, 其余照常
+            // 不再 return -1: 编码器不可用时降级为“不写结果视频”, 其余照常
             CVLOG_WARN << "无法初始化 VideoWriter(output.avi), 继续运行(仅不写结果视频)。";
         }
     } else if (video_ok) {
@@ -449,11 +446,11 @@ int main(int argc, char** argv) {
     }
     // (!video_ok 时前面已 warn 过“视频源打开失败”, 此处不重复刷屏)
 
-    // 4.5 [T39] 告警去重闸门 (同标签 + 框重叠 + 冷却窗)
-    //   告警判定是每帧执行的, 而"安全帽缺失"描述的是目标状态 => 同一静止目标会被
-    //   连续帧反复告警。闸门只作用于**告警链路**(送审处 + 写告警处), 画框/落库不受影响。
-    //   sink 回调会在多个 worker 线程并发执行, 故 AlertGate 内部自带 mutex
-    //   (已单测: 同目标并发调用只放行一次)。
+    // 4.5 告警去重闸门 (同标签 + 框重叠 + 冷却窗)
+    // 告警判定是每帧执行的, 而"安全帽缺失"描述的是目标状态 => 同一静止目标会被
+    // 连续帧反复告警。闸门只作用于**告警链路**(送审处 + 写告警处), 画框/落库不受影响。
+    // sink 回调会在多个 worker 线程并发执行, 故 AlertGate 内部自带 mutex
+    // (已单测: 同目标并发调用只放行一次)。
     alert_gate::Config gate_cfg;
     gate_cfg.enabled     = app_cfg.alert.dedup.enabled;
     gate_cfg.iou         = app_cfg.alert.dedup.iou;
@@ -467,10 +464,10 @@ int main(int argc, char** argv) {
         CVLOG_INFO << "告警去重: 已禁用(每帧都可能告警)";
     }
 
-    // 4.6 [T40] 目标跟踪: 给每个目标一个跨帧稳定的 track_id。
-    //   位置必须在 sink 内、**融合之后**: 跟踪的应是"最终参与告警的那批目标"。
-    //   安全性: sink 是单线程, 且 [T29] 的重排缓冲保证 frame_seq 单调递增 =>
-    //   有状态的跟踪器在这里被顺序调用, 天然无并发。
+    // 4.6 目标跟踪: 给每个目标一个跨帧稳定的 track_id。
+    // 位置必须在 sink 内、**融合之后**: 跟踪的应是"最终参与告警的那批目标"。
+    // 安全性: sink 是单线程, 且 的重排缓冲保证 frame_seq 单调递增 =>
+    // 有状态的跟踪器在这里被顺序调用, 天然无并发。
     tracking::Config trk_cfg;
     trk_cfg.enabled     = app_cfg.tracking.enabled;
     trk_cfg.iou         = app_cfg.tracking.iou;
@@ -499,9 +496,9 @@ int main(int argc, char** argv) {
         *video_source, *detector, pipe_cfg, lifecycle,
         [&](std::uint64_t frame_seq, const cv::Mat& frame,
             const std::vector<DetectionResult>& detections) {
-            // (0) [T25/T26] 多模态决策级融合: sink 最前置, 就地融合(不阻塞)。
-            //     启用时在**拷贝**上改写(回调入参是 const, 且下游都应看到融合值);
-            //     未启用时零拷贝, 直接引用原入参。
+            // (0) 多模态决策级融合: sink 最前置, 就地融合(不阻塞)。
+            // 启用时在**拷贝**上改写(回调入参是 const, 且下游都应看到融合值);
+            // 未启用时零拷贝, 直接引用原入参。
             std::vector<DetectionResult> fused_dets;
             const std::vector<DetectionResult>* dets_ptr = &detections;
             if (fusion_stage) {
@@ -510,8 +507,8 @@ int main(int argc, char** argv) {
                 dets_ptr = &fused_dets;
             }
 
-            // (0.5) [T40] 目标跟踪: 就地回写 track_id(未启用时零拷贝)。
-            //   跟踪**融合之后**的最终集合 => 传感器补出的目标也能拿到 id。
+            // (0.5) 目标跟踪: 就地回写 track_id(未启用时零拷贝)。
+            // 跟踪**融合之后**的最终集合 => 传感器补出的目标也能拿到 id。
             std::vector<DetectionResult> tracked_dets;
             if (tracker) {
                 tracked_dets = *dets_ptr;
@@ -525,7 +522,7 @@ int main(int argc, char** argv) {
                 cv::Mat annotated = frame.clone();
                 for (const auto& det : dets) {
                     cv::rectangle(annotated, det.box, cv::Scalar(0, 255, 0), 2);
-                    // [T40] 带上 track_id: 肉眼可验证"同一个人是否只有一个 id"
+                    // 带上 track_id: 肉眼可验证"同一个人是否只有一个 id"
                     const std::string text =
                         (det.track_id >= 0 ? "#" + std::to_string(det.track_id) + " " : "") +
                         det.label + " " +
@@ -542,8 +539,8 @@ int main(int argc, char** argv) {
             db_writer.writeDetections(dets);
 
             // (3) 告警:
-            //     启用复核 -> 候选目标裁剪 ROI 后异步送审, 确认后由 on_outcome 写告警;
-            //     未启用   -> 保持原本地规则(person>0.8 立即告警)。
+            // 启用复核 -> 候选目标裁剪 ROI 后异步送审, 确认后由 on_outcome 写告警;
+            // 未启用   -> 保持原本地规则(person>0.8 立即告警)。
             const bool review_on = (review_scheduler && review_scheduler->enabled());
             for (const auto& det : dets) {
                 const bool candidate =
@@ -551,11 +548,11 @@ int main(int argc, char** argv) {
                               : (det.label == "person" && det.confidence > 0.8f);
                 if (!candidate) continue;
 
-                // [T39] 去重打点:
-                //   复核路径打在**送审处** —— 同一目标只送审一次, 自然不可能重复告警,
-                //   而且省掉重复的 VLM 调用(复核回调拿不到框, 无法在那里去重);
-                //   本地规则路径打在**写告警处**。
-                //   [T40] 有 track_id 时闸门**以身份为准**(与框怎么移动无关)。
+                // 去重打点:
+                // 复核路径打在**送审处** —— 同一目标只送审一次, 自然不可能重复告警,
+                // 而且省掉重复的 VLM 调用(复核回调拿不到框, 无法在那里去重);
+                // 本地规则路径打在**写告警处**。
+                // 有 track_id 时闸门**以身份为准**(与框怎么移动无关)。
                 if (review_on) {
                     ReviewRequest job;
                     job.frame_seq = frame_seq;
@@ -596,7 +593,7 @@ int main(int argc, char** argv) {
         });
             
     // 6. 启动 gRPC 服务 (独立线程, 与流水线并行; 旧版是视频跑完才启动)
-    // [T42] 鉴权: token 取自 grpc.auth_token(建议写 "${GRPC_AUTH_TOKEN:-}"; 空 = 不鉴权)
+    // 鉴权: token 取自 grpc.auth_token(建议写 "${GRPC_AUTH_TOKEN:-}"; 空 = 不鉴权)
     DetectionServiceImpl service(*detector, app_cfg.grpc.auth_token, CV_GATE_VERSION, start_ms);
     // T8: 按 GrpcConfig 配置消息大小/线程/keepalive 并启动服务
     std::string server_address;
@@ -609,10 +606,10 @@ int main(int argc, char** argv) {
     }
     CVLOG_INFO << "gRPC 服务已启动, 监听: " << server_address;
 
-    // ---- [T43] 指标端点 (/metrics + /healthz) ----
-    //   口径: 帧级数据"拉"(直接读各处已有的 Stats 原子量, 不在热路径上加锁);
-    //         离散事件"推"(gRPC 计数在 service 内部自带)。
-    //   enabled=false 时不监听任何端口(零行为变化)。
+    // 指标端点 (/metrics + /healthz)
+    // 口径: 帧级数据"拉"(直接读各处已有的 Stats 原子量, 不在热路径上加锁);
+    // 离散事件"推"(gRPC 计数在 service 内部自带)。
+    // enabled=false 时不监听任何端口(零行为变化)。
     metrics::HttpServer metrics_server;
     if (app_cfg.metrics.enabled) {
         auto& reg = metrics::Registry::instance();
@@ -711,7 +708,7 @@ int main(int argc, char** argv) {
     if (server) server->Shutdown();
     if (grpc_thread.joinable()) grpc_thread.join();
 
-    // [T43] 指标端点必须最先停: 之后的析构会让 collector 们持有的对象逐个消失, 不能再被抓取
+    // 指标端点必须最先停: 之后的析构会让 collector 们持有的对象逐个消失, 不能再被抓取
     metrics_server.stop();
 
     pipeline.stop();
@@ -719,7 +716,7 @@ int main(int argc, char** argv) {
     CVLOG_INFO << "流水线统计: decoded=" << st.decoded << " dropped=" << st.dropped
                << " processed=" << st.processed << " emitted=" << st.emitted;
 
-    // [T16] 级联统计(若处于级联模式): 主筛/触发/确认/否决/降级
+    // 级联统计(若处于级联模式): 主筛/触发/确认/否决/降级
     if (auto* cascade = dynamic_cast<CascadeEngine*>(detector.get())) {
         const CascadeEngine::Stats cs = cascade->stats();
         CVLOG_INFO << "级联统计: primary=" << cs.primary << " triggered=" << cs.triggered
@@ -727,8 +724,8 @@ int main(int argc, char** argv) {
                    << " skipped=" << cs.skipped;
     }
 
-    // [T21] 复核调度器: 停机并排空在途复核(结果回调会写告警),
-    //       必须在 db_writer.flush()/stop() 之前完成, 否则告警可能丢失。
+    // 复核调度器: 停机并排空在途复核(结果回调会写告警),
+    // 必须在 db_writer.flush()/stop() 之前完成, 否则告警可能丢失。
     if (review_scheduler) {
         review_scheduler->stop();
         const ReviewScheduler::Stats rs = review_scheduler->stats();
@@ -738,7 +735,7 @@ int main(int argc, char** argv) {
                    << " unavailable=" << rs.unavailable << " failed=" << rs.failed;
     }
 
-    // [T26] 多模态融合: 停机并打印统计。必须晚于 pipeline.stop() —— fuse() 由 sink 调用。
+    // 多模态融合: 停机并打印统计。必须晚于 pipeline.stop() —— fuse() 由 sink 调用。
     if (fusion_stage) {
         fusion_stage->stop();
         const MultiSensorPipeline::Stats fs = fusion_stage->stats();
@@ -751,14 +748,14 @@ int main(int argc, char** argv) {
                    << " poll_errors=" << fs.poll_errors;
     }
 
-    // [T39] 告警去重统计: suppressed 越大说明去重越在干活(告警刷屏被压住)
-    //   注意: 复核路径是“确认后才告警”, 故这里的 allowed 包含“已放行送审”的次数,
-    //   不等于最终告警条数(最终条数看数据库)。
+    // 告警去重统计: suppressed 越大说明去重越在干活(告警刷屏被压住)
+    // 注意: 复核路径是“确认后才告警”, 故这里的 allowed 包含“已放行送审”的次数,
+    // 不等于最终告警条数(最终条数看数据库)。
     CVLOG_INFO << "告警去重统计: allowed=" << alert_gate.allowed()
                << " suppressed=" << alert_gate.suppressed()
                << " tracked=" << alert_gate.tracked();
 
-    // [T40] 跟踪统计: spawned/retired 看目标进出, longest_dwell 是行为分析的雏形
+    // 跟踪统计: spawned/retired 看目标进出, longest_dwell 是行为分析的雏形
     if (tracker) {
         const auto ts = tracker->stats();
         CVLOG_INFO << "目标跟踪统计: frames=" << ts.frames
@@ -769,8 +766,8 @@ int main(int argc, char** argv) {
                    << " longest_dwell=" << tracker->longestDwellMs() << "ms";
     }
 
-    // [T43] 告警推送: 排空队列(有超时)后再关库;
-    //   顺序很关键 —— 复核回调也会 raise_alert, 故本行晚于 review_scheduler->stop()。
+    // 告警推送: 排空队列(有超时)后再关库;
+    // 顺序很关键 —— 复核回调也会 raise_alert, 故本行晚于 review_scheduler->stop()。
     {
         const auto ps = alert_notifier.stats();
         alert_notifier.stop();
@@ -785,7 +782,7 @@ int main(int argc, char** argv) {
 
     video_writer.release();
     video_source->close();
-    // [T31] 只有真的写过结果视频才宣告(降级运行时不误导)
+    // 只有真的写过结果视频才宣告(降级运行时不误导)
     if (wrote_video) CVLOG_INFO << "结果视频已保存至 output.avi";
     CVLOG_INFO << "日志轮转次数: " << Logger::instance().rotations();
     CVLOG_INFO << "已安全退出。";

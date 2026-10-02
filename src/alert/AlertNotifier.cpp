@@ -22,7 +22,7 @@ std::string formatConfidence(float c) {
     return std::string(buf);
 }
 
-}  // namespace
+} // namespace
 
 AlertNotifier::~AlertNotifier() {
     stop();
@@ -69,7 +69,7 @@ bool AlertNotifier::push(const Alert& a) {
         std::lock_guard<std::mutex> lock(mtx_);
         if (stopping_) return false;
         while (queue_.size() >= cfg_.max_queue) {
-            queue_.pop_front();          // 与帧队列同策略: 丢旧帧保实时
+            queue_.pop_front(); // 与帧队列同策略: 丢旧帧保实时
             stats_.dropped++;
             dropped_oldest = true;
         }
@@ -77,7 +77,7 @@ bool AlertNotifier::push(const Alert& a) {
         stats_.pushed++;
     }
     if (dropped_oldest) {
-        static std::atomic<std::uint64_t> warn_count{0};   // 防日志刷屏: 每 100 次丢一条 WARN
+        static std::atomic<std::uint64_t> warn_count{0}; // 防日志刷屏: 每 100 次丢一条 WARN
         if (warn_count.fetch_add(1, std::memory_order_relaxed) % 100 == 0) {
             CVLOG_WARN << "[告警推送] 队列已满(" << cfg_.max_queue << "), 丢弃最旧告警"
                        << " —— 下游 webhook 可能不可用或过慢";
@@ -122,14 +122,14 @@ void AlertNotifier::workerLoop() {
             if (a.ts_ms == 0) a.ts_ms = nowMs();
             lock.unlock();
 
-            // ---- 发送(带重试; 期间不持锁, 不阻塞 push) ----
+            // 发送(带重试; 期间不持锁, 不阻塞 push)
             http::Request req;
             req.method = "POST";
             req.url = cfg_.url;
             req.timeout_ms = cfg_.timeout_ms;
             req.body = toJson(a);
             // 自定义头只在"名字与值都给全"时才发 —— 只给了名字不发空值头
-            //   (与 ConfigParser 的校验口径对称: 值非空才要求名字)
+            // (与 ConfigParser 的校验口径对称: 值非空才要求名字)
             if (!cfg_.header_name.empty() && !cfg_.header_value.empty()) {
                 req.headers[cfg_.header_name] = cfg_.header_value;
             }
@@ -152,7 +152,7 @@ void AlertNotifier::workerLoop() {
                     }
                     // 超出排空预算: 本条彻底放弃(外层会把它计入 dropped)
                     if (stopping_ && std::chrono::steady_clock::now() > drain_deadline) break;
-                    stats_.retried++;   // wait_lock 已持有 mtx_, 不要再上锁(会自锁)
+                    stats_.retried++; // wait_lock 已持有 mtx_, 不要再上锁(会自锁)
                 }
                 const http::Response resp = transport_ ? transport_(req) : http::Response{};
                 if (resp.ok && resp.status >= 200 && resp.status < 300) {
@@ -202,12 +202,12 @@ std::string AlertNotifier::jsonEscape(const std::string& s) {
             case '\r': out += "\\r";  break;
             case '\t': out += "\\t";  break;
             default:
-                if (c < 0x20) {                      // 控制字符 -> \u00XX
+                if (c < 0x20) { // 控制字符 -> \u00XX
                     char buf[8];
                     std::snprintf(buf, sizeof(buf), "\\u%04x", c);
                     out += buf;
                 } else {
-                    out += static_cast<char>(c);     // UTF-8 原样透传(JSON 允许)
+                    out += static_cast<char>(c); // UTF-8 原样透传(JSON 允许)
                 }
         }
     }
@@ -228,4 +228,4 @@ std::string AlertNotifier::toJson(const Alert& a) {
     return oss.str();
 }
 
-}  // namespace alert
+} // namespace alert

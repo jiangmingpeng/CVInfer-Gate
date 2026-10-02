@@ -1,25 +1,22 @@
-// ============================================================
 // 复核服务联调客户端 (T37: 接真 VLM 的"探针")
-// ------------------------------------------------------------
 // 用途: 不启动整条视频流水线的前提下, 单独验证 Phase C 的**复核服务端**
-//       (scripts/mock_review_server.py 或 vlm_review/server.py) 是否可用。
+// (scripts/mock_review_server.py 或 vlm_review/server.py) 是否可用。
 //
 // 为什么它可信: 它与流水线内的 GrpcLlmReviewer 调**同一份 review.proto**、
-//       发同样的 ReviewRequest(ROI JPEG + label + confidence + prompt)。
-//       因此 "本客户端能跑通" ⇒ "流水线内的复核链路也能跑通"。
+// 发同样的 ReviewRequest(ROI JPEG + label + confidence + prompt)。
+// 因此 "本客户端能跑通" ⇒ "流水线内的复核链路也能跑通"。
 //
 // 用法:
-//   ./review_client [addr] [image_path] [prompt] [label] [conf] [timeout_ms]
-//   ./review_client 127.0.0.1:50052 test_frame.jpg "判断该人员是否未佩戴安全帽"
-//   省略 image_path 时会生成一张合成图(无需任何素材即可冒烟)。
+// ./review_client [addr] [image_path] [prompt] [label] [conf] [timeout_ms]
+// ./review_client 127.0.0.1:50052 test_frame.jpg "判断该人员是否未佩戴安全帽"
+// 省略 image_path 时会生成一张合成图(无需任何素材即可冒烟)。
 //
-// [T41] 鉴权: 环境变量 REVIEW_AUTH_TOKEN 非空时, 每个 RPC(含 Health)都带
-//       authorization: Bearer <token> —— 与服务端 vlm_review/server.py 对称。
-//       用环境变量而非命令行参数: token 不会落进 shell 历史/ps。
+// 鉴权: 环境变量 REVIEW_AUTH_TOKEN 非空时, 每个 RPC(含 Health)都带
+// authorization: Bearer <token> —— 与服务端 vlm_review/server.py 对称。
+// 用环境变量而非命令行参数: token 不会落进 shell 历史/ps。
 //
 // 退出码: 0=Ok  1=Failed  2=服务不可达(Unavailable)  3=超时(Timeout)  4=入参错误
-//         5=鉴权失败(UNAUTHENTICATED: token 缺失/错误)
-// ============================================================
+// 5=鉴权失败(UNAUTHENTICATED: token 缺失/错误)
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -28,7 +25,7 @@
 
 #include <opencv2/opencv.hpp>
 #include <grpcpp/grpcpp.h>
-#include <grpc/grpc.h>   // GRPC_ARG_* keepalive 常量
+#include <grpc/grpc.h> // GRPC_ARG_* keepalive 常量
 
 #include "review.grpc.pb.h"
 
@@ -38,7 +35,7 @@ std::string argOr(int argc, char** argv, int idx, const std::string& def) {
     return (argc > idx && argv[idx] && argv[idx][0] != '\0') ? std::string(argv[idx]) : def;
 }
 
-// [T41] 鉴权 token 从环境变量读(不占命令行参数 => 不落进 shell 历史/ps)
+// 鉴权 token 从环境变量读(不占命令行参数 => 不落进 shell 历史/ps)
 std::string authTokenFromEnv() {
     const char* t = std::getenv("REVIEW_AUTH_TOKEN");
     return (t && *t) ? std::string(t) : std::string();
@@ -49,7 +46,7 @@ void addAuth(grpc::ClientContext& ctx, const std::string& token) {
     if (!token.empty()) ctx.AddMetadata("authorization", "Bearer " + token);
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     const std::string addr       = argOr(argc, argv, 1, "127.0.0.1:50052");
@@ -58,7 +55,7 @@ int main(int argc, char** argv) {
     const std::string label      = argOr(argc, argv, 4, "person");
     const float confidence       = static_cast<float>(std::atof(argOr(argc, argv, 5, "0.72").c_str()));
     const int timeout_ms         = (argc > 6) ? std::atoi(argv[6]) : 20000;
-    const std::string auth_token = authTokenFromEnv();   // [T41]
+    const std::string auth_token = authTokenFromEnv();
 
     // 1. channel: 与服务端对齐 keepalive / 消息上限
     grpc::ChannelArguments args;
@@ -83,7 +80,7 @@ int main(int argc, char** argv) {
     {
         grpc::ClientContext ctx;
         ctx.set_deadline(deadline());
-        addAuth(ctx, auth_token);   // [T41] Health 也要带(与服务端对称)
+        addAuth(ctx, auth_token); // Health 也要带(与服务端对称)
         review::HealthRequest hreq;
         review::HealthResponse hresp;
         const grpc::Status hs = stub->Health(&ctx, hreq, &hresp);
@@ -99,7 +96,7 @@ int main(int argc, char** argv) {
             std::cerr << "[review_client] Health 失败: " << hs.error_code()
                       << " - " << hs.error_message() << std::endl;
             if (hs.error_code() == grpc::StatusCode::UNAVAILABLE) return 2;
-            if (hs.error_code() == grpc::StatusCode::UNAUTHENTICATED) return 5;   // [T41]
+            if (hs.error_code() == grpc::StatusCode::UNAUTHENTICATED) return 5;
         }
     }
 
@@ -138,7 +135,7 @@ int main(int argc, char** argv) {
     review::ReviewResponse resp;
     grpc::ClientContext ctx;
     ctx.set_deadline(deadline());
-    addAuth(ctx, auth_token);       // [T41]
+    addAuth(ctx, auth_token);
 
     std::cout << "[review_client] 向 " << addr << " 送审: label=" << label
               << " conf=" << confidence << " jpeg=" << jpeg.size() << "B"
@@ -156,7 +153,7 @@ int main(int argc, char** argv) {
                   << " - " << st.error_message() << " (client_ms=" << client_ms << ")" << std::endl;
         if (st.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) return 3;
         if (st.error_code() == grpc::StatusCode::UNAVAILABLE)        return 2;
-        if (st.error_code() == grpc::StatusCode::UNAUTHENTICATED)    return 5;   // [T41]
+        if (st.error_code() == grpc::StatusCode::UNAUTHENTICATED)    return 5;
         return 1;
     }
     if (!resp.ok()) {

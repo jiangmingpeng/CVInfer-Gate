@@ -16,43 +16,43 @@ std::string avErr(int rc) {
     return std::string(buf);
 }
 
-}  // namespace
+} // namespace
 
 RtspVideoSource::~RtspVideoSource() { close(); }
 
-// [T36] FFmpeg 的中断回调: 可能在**任意线程/任意时刻**被调用,
-//   因此只做“读一个 atomic 就返回”这一件事(不加锁、不分配、不打印)。
+// FFmpeg 的中断回调: 可能在**任意线程/任意时刻**被调用,
+// 因此只做“读一个 atomic 就返回”这一件事(不加锁、不分配、不打印)。
 int RtspVideoSource::interruptCb(void* opaque) {
     auto* self = static_cast<RtspVideoSource*>(opaque);
     return self->abort_read_.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
 bool RtspVideoSource::open(const std::string& source_path) {
-    // [T36] open/read/close 共用一把锁: 保证不会“一边读一边被 free”。
+    // open/read/close 共用一把锁: 保证不会“一边读一边被 free”。
     std::lock_guard<std::mutex> lk(api_mtx_);
     url_ = source_path;
-    stop_ = false;          // 允许重新 open
+    stop_ = false; // 允许重新 open
     abort_read_ = false;
     const bool ok = openInternal(/*verbose=*/true);
-    if (ok) connected_once_ = true;   // 只有成功过, 后续断流才值得重连
+    if (ok) connected_once_ = true; // 只有成功过, 后续断流才值得重连
     return ok;
 }
 
 bool RtspVideoSource::openInternal(bool verbose) {
-    closeInternal();   // 幂等: 保证从干净状态开始(重连时用)
+    closeInternal(); // 幂等: 保证从干净状态开始(重连时用)
 
     // 关键：设置 RTSP 传输参数，防止卡死
     AVDictionary* opts = nullptr;
     av_dict_set(&opts, "rtsp_transport", "tcp", 0); // 强制 TCP，避免 UDP 丢包
-    // [T36] 超时: stimeout 是 RTSP 专用(旧名), rw_timeout 是通用读写超时;
-    //   两个都设以兼容不同 FFmpeg 版本。单位都是微秒。
-    av_dict_set(&opts, "stimeout", "5000000", 0);   // 5秒超时（微秒）
+    // 超时: stimeout 是 RTSP 专用(旧名), rw_timeout 是通用读写超时;
+    // 两个都设以兼容不同 FFmpeg 版本。单位都是微秒。
+    av_dict_set(&opts, "stimeout", "5000000", 0); // 5秒超时（微秒）
     av_dict_set(&opts, "rw_timeout", "5000000", 0); // 5秒(通用读写超时)
-    av_dict_set(&opts, "max_delay", "500000", 0);   // 最大延迟 500ms
+    av_dict_set(&opts, "max_delay", "500000", 0); // 最大延迟 500ms
 
-    // [T36] 必须自己 avformat_alloc_context() 才能挂 interrupt_callback ——
-    //   avformat_open_input 内部自己分配 context, 我们插不进回调, 于是“打开阶段
-    //   卡住”也没法中断(close() 只能干等 rw_timeout 到点)。
+    // 必须自己 avformat_alloc_context() 才能挂 interrupt_callback ——
+    // avformat_open_input 内部自己分配 context, 我们插不进回调, 于是“打开阶段
+    // 卡住”也没法中断(close() 只能干等 rw_timeout 到点)。
     fmt_ctx_ = avformat_alloc_context();
     if (!fmt_ctx_) {
         std::cerr << "[RtspVideoSource] avformat_alloc_context 失败" << std::endl;
@@ -62,8 +62,8 @@ bool RtspVideoSource::openInternal(bool verbose) {
     fmt_ctx_->interrupt_callback.callback = &RtspVideoSource::interruptCb;
     fmt_ctx_->interrupt_callback.opaque = this;
 
-    // [T31] 保留错误码: 原代码用 `!= 0` 丢掉了 rc, 只留下 FFmpeg 自己那行
-    //   "[rtsp @ ...] method DESCRIBE failed: 404 Not Found", 看不懂到底出了什么事。
+    // 保留错误码: 原代码用 `!= 0` 丢掉了 rc, 只留下 FFmpeg 自己那行
+    // "[rtsp @ ...] method DESCRIBE failed: 404 Not Found", 看不懂到底出了什么事。
     const int rc = avformat_open_input(&fmt_ctx_, url_.c_str(), nullptr, &opts);
     if (rc < 0) {
         std::cerr << "[RtspVideoSource] 打开失败: " << url_
@@ -76,9 +76,9 @@ bool RtspVideoSource::openInternal(bool verbose) {
                   << "    3) mediamtx 是否只绑定了回环? ss -tlnp | grep 8554 (127.0.0.1:8554 -> 公网推流进不来; 应为 0.0.0.0:*:8554)\n"
                   << "    4) 路径名/端口是否与推流端一致(如推的是 /live 而拉的是 /live/stream)"
                   << std::endl;
-        }   // if (verbose) —— 重连时不重复刷这 5 行自查
+        } // if (verbose) —— 重连时不重复刷这 5 行自查
         av_dict_free(&opts);
-        closeInternal();   // avformat_open_input 失败时已把 fmt_ctx_ 置空, 这里清理其余
+        closeInternal(); // avformat_open_input 失败时已把 fmt_ctx_ 置空, 这里清理其余
         return false;
     }
     av_dict_free(&opts);
@@ -127,7 +127,7 @@ bool RtspVideoSource::openInternal(bool verbose) {
         return false;
     }
 
-    // [T36] 缓存对外元数据: 重连期间 getWidth()/getFps() 不会瞬时变 0
+    // 缓存对外元数据: 重连期间 getWidth()/getFps() 不会瞬时变 0
     width_ = codec_ctx_->width;
     height_ = codec_ctx_->height;
     last_fps_ = readStreamFps();
@@ -140,16 +140,16 @@ bool RtspVideoSource::openInternal(bool verbose) {
 }
 
 bool RtspVideoSource::read(cv::Mat& frame) {
-    // [T36] 持锁: 与 close() 互斥, 保证不会“一边 av_read_frame 一边被 free”。
+    // 持锁: 与 close() 互斥, 保证不会“一边 av_read_frame 一边被 free”。
     std::lock_guard<std::mutex> lk(api_mtx_);
 
     while (!stop_.load()) {
-        // ---- 没连上(或刚断): 先重连 ----
+        // 没连上(或刚断): 先重连
         if (!fmt_ctx_ || !codec_ctx_) {
             // 启动时就没连上(open() 失败过): 不要把上层卡在这里无限重连 ——
             // 如实返回“没流”, 让调用方去起 gRPC / 报错(与 T36 之前行为一致)。
             if (!connected_once_.load()) return false;
-            if (!tryReconnect()) return false;   // 被要求关闭
+            if (!tryReconnect()) return false; // 被要求关闭
             continue;
         }
 
@@ -158,7 +158,7 @@ bool RtspVideoSource::read(cv::Mat& frame) {
             av_packet_unref(packet_);
             // 主动关闭: interrupt_callback 会让阻塞中的读返回 AVERROR_EXIT
             if (stop_.load() || abort_read_.load() || rc == AVERROR_EXIT) return false;
-            if (rc == AVERROR(EAGAIN)) {         // 暂时没数据, 不是断流
+            if (rc == AVERROR(EAGAIN)) { // 暂时没数据, 不是断流
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
             }
@@ -179,7 +179,7 @@ bool RtspVideoSource::read(cv::Mat& frame) {
             av_packet_unref(packet_);
             continue;
         }
-        av_packet_unref(packet_);   // send 已拷贝/引用数据, 这里可安全释放
+        av_packet_unref(packet_); // send 已拷贝/引用数据, 这里可安全释放
 
         while (avcodec_receive_frame(codec_ctx_, frame_) == 0) {
             sws_ctx_ = sws_getCachedContext(sws_ctx_,
@@ -203,12 +203,12 @@ bool RtspVideoSource::read(cv::Mat& frame) {
             return true;
         }
     }
-    return false;   // 被 close() 要求停止
+    return false; // 被 close() 要求停止
 }
 
-// [T29] 源真实帧率: 从流元数据 avg_frame_rate 取(拿不到退回 r_frame_rate;
-//   都不行返回 0 -> 调用方回退默认值)。RTSP 的 avg_frame_rate 常为 0/0,
-//   此时 r_frame_rate 一般是 25/1 或 30/1 这类可用值。
+// 源真实帧率: 从流元数据 avg_frame_rate 取(拿不到退回 r_frame_rate;
+// 都不行返回 0 -> 调用方回退默认值)。RTSP 的 avg_frame_rate 常为 0/0,
+// 此时 r_frame_rate 一般是 25/1 或 30/1 这类可用值。
 double RtspVideoSource::readStreamFps() const {
     if (!fmt_ctx_ || video_stream_index_ < 0) return 0.0;
     const AVStream* st = fmt_ctx_->streams[video_stream_index_];
@@ -219,8 +219,8 @@ double RtspVideoSource::readStreamFps() const {
     return (fps > 0.0 && fps <= 240.0) ? fps : 0.0;
 }
 
-// [T36] 指数退避重连。调用者必须已持 api_mtx_ (从 read() 里调用)。
-//   返回 true = 已重新连上; false = 被要求关闭。
+// 指数退避重连。调用者必须已持 api_mtx_ (从 read() 里调用)。
+// 返回 true = 已重新连上; false = 被要求关闭。
 bool RtspVideoSource::tryReconnect() {
     if (stop_.load()) return false;
 
@@ -249,8 +249,8 @@ bool RtspVideoSource::tryReconnect() {
     return false;
 }
 
-// [T36] 只释放 FFmpeg 资源: 不动 stop_/abort_read_, 也不清对外元数据缓存
-//   (重连期间 getWidth()/getFps() 要保持稳定)。
+// 只释放 FFmpeg 资源: 不动 stop_/abort_read_, 也不清对外元数据缓存
+// (重连期间 getWidth()/getFps() 要保持稳定)。
 void RtspVideoSource::closeInternal() {
     if (sws_ctx_) { sws_freeContext(sws_ctx_); sws_ctx_ = nullptr; }
     if (frame_) { av_frame_free(&frame_); }
@@ -262,10 +262,10 @@ void RtspVideoSource::closeInternal() {
 }
 
 void RtspVideoSource::close() {
-    // [T36] 顺序很重要:
-    //   1) 先置位 —— interrupt_callback 会在 FFmpeg 的下一个阻塞点返回 1,
-    //      让卡在 av_read_frame / avformat_open_input 里的那次调用尽快退出;
-    //   2) 再抢锁 —— 等 read() 真正退出临界区, 此时 free 才是安全的。
+    // 顺序很重要:
+    // 1) 先置位 —— interrupt_callback 会在 FFmpeg 的下一个阻塞点返回 1,
+    // 让卡在 av_read_frame / avformat_open_input 里的那次调用尽快退出;
+    // 2) 再抢锁 —— 等 read() 真正退出临界区, 此时 free 才是安全的。
     stop_ = true;
     abort_read_ = true;
     std::lock_guard<std::mutex> lk(api_mtx_);

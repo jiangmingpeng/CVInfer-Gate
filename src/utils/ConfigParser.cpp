@@ -8,10 +8,10 @@
 
 namespace {
 
-// 展开字符串中的环境变量引用 [新增]:
-//   ${VAR}           -> 取环境变量 VAR
-//   ${VAR:-default}  -> 取环境变量 VAR, 不存在则用 default
-//   未定义且无默认值时保留原样(便于排查配置)
+// 展开字符串中的环境变量引用 :
+// ${VAR}           -> 取环境变量 VAR
+// ${VAR:-default}  -> 取环境变量 VAR, 不存在则用 default
+// 未定义且无默认值时保留原样(便于排查配置)
 std::string expandEnv(const std::string& input) {
     static const std::regex re(R"(\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\})");
     std::string out;
@@ -23,11 +23,11 @@ std::string expandEnv(const std::string& input) {
         out.append(input, last, static_cast<std::size_t>(m.position()) - last);
         const char* env = std::getenv(m[1].str().c_str());
         if (env) {
-            out.append(env);                     // 环境变量优先
+            out.append(env); // 环境变量优先
         } else if (m[2].matched) {
-            out.append(m[2].str());              // 回退到默认值
+            out.append(m[2].str()); // 回退到默认值
         } else {
-            out.append(m.str());                 // 保留原样
+            out.append(m.str()); // 保留原样
         }
         last = static_cast<std::size_t>(m.position() + m.length());
     }
@@ -41,13 +41,13 @@ std::string readStr(const YAML::Node& node, const std::string& key, const std::s
     return def;
 }
 
-// [T30] 小写化(枚举类配置项容错: LATENCY/Throughput 均可)
+// 小写化(枚举类配置项容错: LATENCY/Throughput 均可)
 std::string toLower(std::string s) {
     for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
 
-// [T14] 解析新格式 models: 列表中的单个模型条目
+// 解析新格式 models: 列表中的单个模型条目
 void parseModelEntry(const YAML::Node& n, ModelConfig& mc) {
     mc.name = n["name"].as<std::string>(mc.name);
     mc.role = n["role"].as<std::string>(mc.role);
@@ -63,13 +63,13 @@ void parseModelEntry(const YAML::Node& n, ModelConfig& mc) {
     else if (n["thresholds"]) mc.nms_threshold = n["thresholds"]["nms"].as<float>(mc.nms_threshold);
     mc.pool_size = n["pool_size"].as<int>(0);
     mc.acquire_timeout_ms = n["acquire_timeout_ms"].as<int>(mc.acquire_timeout_ms);
-    // [T30] 推理性能旋钮(可选; 缺省=改造前行为)
+    // 推理性能旋钮(可选; 缺省=改造前行为)
     mc.device      = n["device"].as<std::string>(mc.device);
     mc.perf_mode   = toLower(n["performance_mode"].as<std::string>(mc.perf_mode));
     mc.num_threads = n["num_threads"].as<int>(mc.num_threads);
 }
 
-// [T14] 解析旧格式 (model: + thresholds:), 保持向后兼容
+// 解析旧格式 (model: + thresholds:), 保持向后兼容
 void parseLegacyModel(const YAML::Node& root, ModelConfig& mc) {
     if (root["model"]) {
         const YAML::Node m = root["model"];
@@ -78,7 +78,7 @@ void parseLegacyModel(const YAML::Node& root, ModelConfig& mc) {
         mc.labels_path = m["labels_path"].as<std::string>("");
         mc.input_width = m["input_width"].as<int>(640);
         mc.input_height = m["input_height"].as<int>(640);
-        // [T30] 性能旋钮(旧格式放在 model: 下, 缺省即现状)
+        // 性能旋钮(旧格式放在 model: 下, 缺省即现状)
         mc.device      = m["device"].as<std::string>(mc.device);
         mc.perf_mode   = toLower(m["performance_mode"].as<std::string>(mc.perf_mode));
         mc.num_threads = m["num_threads"].as<int>(mc.num_threads);
@@ -98,25 +98,25 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
     try {
         YAML::Node config = YAML::LoadFile(filepath);
 
-        // ---- app: 日志 [新增] ----
+        // app: 日志
         if (config["app"]) {
             app_config_.log.level = readStr(config["app"], "log_level", app_config_.log.level);
             app_config_.log.file  = readStr(config["app"], "log_file",  app_config_.log.file);
-            // [T43] 日志文件轮转
+            // 日志文件轮转
             app_config_.log.max_size_mb =
                 config["app"]["log_max_size_mb"].as<int>(app_config_.log.max_size_mb);
             app_config_.log.keep_files =
                 config["app"]["log_keep_files"].as<int>(app_config_.log.keep_files);
         }
 
-        // ---- video ----
+        // video
         if (config["video"]) {
             const YAML::Node v = config["video"];
             app_config_.video.source_type = readStr(v, "source_type", app_config_.video.source_type);
             app_config_.video.source_path = readStr(v, "source_path", app_config_.video.source_path);
             app_config_.video.target_fps  = v["target_fps"].as<int>(app_config_.video.target_fps);
             app_config_.video.frame_interval = v["frame_interval"].as<int>(app_config_.video.frame_interval);
-            // queue 帧队列防爆配置 [新增]
+            // queue 帧队列防爆配置
             if (v["queue"]) {
                 app_config_.video.queue.max_size =
                     v["queue"]["max_size"].as<std::size_t>(app_config_.video.queue.max_size);
@@ -125,13 +125,13 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             }
         }
 
-        // ---- pipeline [新增] ----
+        // pipeline
         if (config["pipeline"]) {
             app_config_.pipeline.worker_threads =
                 config["pipeline"]["worker_threads"].as<int>(app_config_.pipeline.worker_threads);
         }
 
-        // ---- database ----
+        // database
         if (config["database"]) {
             const YAML::Node d = config["database"];
             app_config_.database.host     = readStr(d, "host", app_config_.database.host);
@@ -143,7 +143,7 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             app_config_.database.batch_size        = d["batch_size"].as<int>(app_config_.database.batch_size);
             app_config_.database.flush_interval_ms = d["flush_interval_ms"].as<int>(app_config_.database.flush_interval_ms);
             app_config_.database.max_retries       = d["max_retries"].as<int>(app_config_.database.max_retries);
-            // [T11] 降级 / 重试策略
+            // 降级 / 重试策略
             app_config_.database.fallback_path = readStr(d, "fallback_path", app_config_.database.fallback_path);
             app_config_.database.reconnect_interval_ms =
                 d["reconnect_interval_ms"].as<int>(app_config_.database.reconnect_interval_ms);
@@ -151,7 +151,7 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
                 d["reconnect_after_writes"].as<int>(app_config_.database.reconnect_after_writes);
         }
 
-        // ---- grpc ----
+        // grpc
         if (config["grpc"]) {
             const YAML::Node g = config["grpc"];
             app_config_.grpc.port = g["port"].as<int>(app_config_.grpc.port);
@@ -160,11 +160,11 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             app_config_.grpc.max_message_size_mb = g["max_message_size_mb"].as<int>(app_config_.grpc.max_message_size_mb);
             app_config_.grpc.worker_threads      = g["worker_threads"].as<int>(app_config_.grpc.worker_threads);
             app_config_.grpc.keepalive_time_ms   = g["keepalive_time_ms"].as<int>(app_config_.grpc.keepalive_time_ms);
-            // [T42] 走 readStr => 支持 ${GRPC_AUTH_TOKEN:-} 环境变量展开(同 database.password)
+            // 走 readStr => 支持 ${GRPC_AUTH_TOKEN:-} 环境变量展开(同 database.password)
             app_config_.grpc.auth_token          = readStr(g, "auth_token", app_config_.grpc.auth_token);
         }
 
-        // ---- metrics [T43] 指标端点(Prometheus) ----
+        // metrics 指标端点(Prometheus)
         if (config["metrics"]) {
             const YAML::Node m = config["metrics"];
             app_config_.metrics.enabled = m["enabled"].as<bool>(app_config_.metrics.enabled);
@@ -172,7 +172,7 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             app_config_.metrics.port    = m["port"].as<int>(app_config_.metrics.port);
         }
 
-        // ---- cascade [T16-T19] ----
+        // cascade
         if (config["cascade"]) {
             const YAML::Node c = config["cascade"];
             auto& ccfg = app_config_.cascade;
@@ -199,7 +199,7 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             }
         }
 
-        // ---- review [T20-T22] ----
+        // review
         if (config["review"]) {
             const YAML::Node r = config["review"];
             auto& rcfg = app_config_.review;
@@ -212,7 +212,7 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             rcfg.prompt           = readStr(r, "prompt", rcfg.prompt);
             rcfg.alert_type       = readStr(r, "alert_type", rcfg.alert_type);
             rcfg.alert_on_failure = r["alert_on_failure"].as<bool>(rcfg.alert_on_failure);
-            // [T37] 接入真实 VLM 服务端(传输/鉴权/探活)
+            // 接入真实 VLM 服务端(传输/鉴权/探活)
             rcfg.max_message_size_mb = r["max_message_size_mb"].as<int>(rcfg.max_message_size_mb);
             rcfg.keepalive_time_ms   = r["keepalive_time_ms"].as<int>(rcfg.keepalive_time_ms);
             rcfg.auth_token          = readStr(r, "auth_token", rcfg.auth_token);
@@ -232,7 +232,7 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             }
         }
 
-        // ---- sensors [T23-T24] 非视频传感器列表 ----
+        // sensors 非视频传感器列表
         if (config["sensors"] && config["sensors"].IsSequence()) {
             app_config_.sensors.clear();
             for (const auto& node : config["sensors"]) {
@@ -248,12 +248,12 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
                         sc.labels.push_back(l.as<std::string>());
                     }
                 }
-                if (sc.name.empty()) sc.name = sc.kind;   // 未命名则用 kind 兜底
+                if (sc.name.empty()) sc.name = sc.kind; // 未命名则用 kind 兜底
                 app_config_.sensors.push_back(std::move(sc));
             }
         }
 
-        // ---- fusion [T25-T26] 多模态决策级融合 ----
+        // fusion 多模态决策级融合
         if (config["fusion"]) {
             const YAML::Node f = config["fusion"];
             auto& fc = app_config_.fusion;
@@ -267,7 +267,7 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             fc.buffer_capacity    = f["buffer_capacity"].as<std::size_t>(fc.buffer_capacity);
         }
 
-        // ---- alert [T39] 告警去重 ----
+        // alert 告警去重
         if (config["alert"]) {
             const YAML::Node a = config["alert"];
             if (a["dedup"]) {
@@ -278,7 +278,7 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
                 dc.cooldown_ms = d["cooldown_ms"].as<int>(dc.cooldown_ms);
                 dc.max_entries = d["max_entries"].as<int>(dc.max_entries);
             }
-            // [T43] 告警推送(webhook): 推送是"通知", 落库才是"账" —— 推送失败不影响落库
+            // 告警推送(webhook): 推送是"通知", 落库才是"账" —— 推送失败不影响落库
             if (a["push"]) {
                 const YAML::Node p = a["push"];
                 auto& pc = app_config_.alert.push;
@@ -294,7 +294,7 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             }
         }
 
-        // ---- tracking [T40] 目标跟踪 ----
+        // tracking 目标跟踪
         if (config["tracking"]) {
             const YAML::Node tr = config["tracking"];
             auto& tc = app_config_.tracking;
@@ -315,7 +315,7 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
     }
 }
 
-// [新增] 配置合法性校验
+// 配置合法性校验
 bool ConfigParser::validate() const {
     bool ok = true;
     auto fail = [&ok](const std::string& msg) {
@@ -341,7 +341,7 @@ bool ConfigParser::validate() const {
         fail("video.queue.max_size 必须 >= 1");
     if (app_config_.video.queue.policy != "drop_oldest" && app_config_.video.queue.policy != "block")
         fail("video.queue.policy 必须为 drop_oldest 或 block");
-    // [T31] 交叉校验 source_type 与 source_path 前缀(高频手误: 类型忘了改 -> 静默走错视频源)
+    // 交叉校验 source_type 与 source_path 前缀(高频手误: 类型忘了改 -> 静默走错视频源)
     {
         const std::string& sp = app_config_.video.source_path;
         const bool looks_rtsp = (sp.rfind("rtsp://", 0) == 0);
@@ -377,7 +377,7 @@ bool ConfigParser::validate() const {
     if (app_config_.grpc.max_message_size_mb < 1)
         fail("grpc.max_message_size_mb 必须 >= 1");
 
-    // 级联 [T16-T19]
+    // 级联
     const auto& cs = app_config_.cascade;
     if (cs.min_conf < 0.0f || cs.min_conf > 1.0f)
         fail("cascade.trigger.min_conf 必须在 0..1");
@@ -390,7 +390,7 @@ bool ConfigParser::validate() const {
     if (cs.accept_conf < 0.0f || cs.accept_conf > 1.0f)
         fail("cascade.accept_conf 必须在 0..1");
 
-    // 大模型复核 [T20-T22]
+    // 大模型复核
     const auto& rv = app_config_.review;
     if (rv.timeout_ms < 1)
         fail("review.timeout_ms 必须 >= 1");
@@ -413,7 +413,7 @@ bool ConfigParser::validate() const {
     if (rv.keepalive_time_ms < 0)
         fail("review.keepalive_time_ms 不能为负");
 
-    // 传感器 / 融合 [T23-T26]
+    // 传感器 / 融合
     const auto& fc = app_config_.fusion;
     if (fc.level != "decision")
         fail("fusion.level 目前仅支持 decision(决策级融合): " + fc.level);
@@ -448,7 +448,7 @@ bool ConfigParser::validate() const {
             fail("fusion.enabled=true 但未配置任何 sensors:");
     }
 
-    // 告警去重 [T39]
+    // 告警去重
     const auto& dd = app_config_.alert.dedup;
     if (dd.iou < 0.0f || dd.iou > 1.0f)
         fail("alert.dedup.iou 必须在 0..1");
@@ -457,13 +457,13 @@ bool ConfigParser::validate() const {
     if (dd.max_entries < 1)
         fail("alert.dedup.max_entries 必须 >= 1");
 
-    // 日志轮转 [T43]
+    // 日志轮转
     if (app_config_.log.max_size_mb < 0)
         fail("app.log_max_size_mb 不能为负(0 = 不轮转)");
     if (app_config_.log.keep_files < 0)
         fail("app.log_keep_files 不能为负(0 = 只保留当前文件)");
 
-    // 指标端点 [T43]
+    // 指标端点
     if (app_config_.metrics.port <= 0 || app_config_.metrics.port > 65535)
         fail("metrics.port 必须位于 1..65535");
     if (app_config_.metrics.port == app_config_.grpc.port)
@@ -471,7 +471,7 @@ bool ConfigParser::validate() const {
     if (app_config_.metrics.enabled && app_config_.metrics.bind.empty())
         fail("metrics.enabled=true 时 metrics.bind 不能为空(建议 127.0.0.1 或 0.0.0.0)");
 
-    // 告警推送 [T43]
+    // 告警推送
     const auto& ap = app_config_.alert.push;
     if (ap.timeout_ms < 1)
         fail("alert.push.timeout_ms 必须 >= 1");
@@ -488,11 +488,11 @@ bool ConfigParser::validate() const {
     if (ap.enabled && ap.url.rfind("http://", 0) != 0)
         fail("alert.push.url 目前仅支持 http:// (无 TLS; 公网请用内网转发/侧车): " + ap.url);
     // 自定义头: "给了名字但值暂时为空" 是常见且合法的组合(等环境变量注入) => 视为不发该头;
-    //   反过来 "给了值却没给名字" 一定是写错了(发了也白发) => 拦下。
+    // 反过来 "给了值却没给名字" 一定是写错了(发了也白发) => 拦下。
     if (!ap.header_value.empty() && ap.header_name.empty())
         fail("alert.push.header_value 非空时必须同时给 header_name");
 
-    // 目标跟踪 [T40]
+    // 目标跟踪
     const auto& tc = app_config_.tracking;
     if (tc.iou < 0.0f || tc.iou > 1.0f)
         fail("tracking.iou 必须在 0..1");
@@ -513,7 +513,7 @@ bool ConfigParser::loadModelConfig(const std::string& filepath) {
         YAML::Node config = YAML::LoadFile(filepath);
         model_configs_.clear();
 
-        // [T14] 新格式: models: [ {name, role, xml_path, ...}, ... ]
+        // 新格式: models: [ {name, role, xml_path, ...}, ... ]
         if (config["models"] && config["models"].IsSequence() && config["models"].size() > 0) {
             for (const auto& node : config["models"]) {
                 ModelConfig mc;
@@ -521,13 +521,13 @@ bool ConfigParser::loadModelConfig(const std::string& filepath) {
                 model_configs_.push_back(std::move(mc));
             }
         } else {
-            // [T14] 兼容旧的单模型格式 (model: + thresholds:)
+            // 兼容旧的单模型格式 (model: + thresholds:)
             ModelConfig mc;
             parseLegacyModel(config, mc);
             model_configs_.push_back(std::move(mc));
         }
 
-        model_config_ = model_configs_.front();   // 主模型 = 首个
+        model_config_ = model_configs_.front(); // 主模型 = 首个
 
         std::cout << "[ConfigParser] 模型配置加载成功: " << filepath
                   << " (模型数=" << model_configs_.size() << ")" << std::endl;
@@ -538,7 +538,7 @@ bool ConfigParser::loadModelConfig(const std::string& filepath) {
     }
 }
 
-// [T14] 模型配置合法性校验
+// 模型配置合法性校验
 bool ConfigParser::validateModelConfigs() const {
     bool ok = true;
     auto fail = [&ok](const std::string& msg) {
@@ -557,7 +557,7 @@ bool ConfigParser::validateModelConfigs() const {
             fail("模型 " + m.name + " 的 xml_path 不能为空");
         if (m.role != "detector" && m.role != "classifier" && m.role != "reviewer")
             fail("模型 " + m.name + " 的 role 非法(应为 detector/classifier/reviewer): " + m.role);
-        // [T20-T22] reviewer 已废弃: 大模型复核不走本地模型, 而在 config.yaml 的 review: 段配置。
+        // reviewer 已废弃: 大模型复核不走本地模型, 而在 config.yaml 的 review: 段配置。
         if (m.role == "reviewer")
             fail("模型 " + m.name + " 的 role=reviewer 已废弃: 大模型复核请改用 config.yaml 的 review: 段(T20-T22), 不要放入 models:");
         if (m.conf_threshold < 0.0f || m.conf_threshold > 1.0f)
@@ -566,7 +566,7 @@ bool ConfigParser::validateModelConfigs() const {
             fail("模型 " + m.name + " 的 nms 阈值必须在 0..1");
         if (!names.insert(m.name).second)
             fail("模型名重复: " + m.name);
-        // [T30] 性能旋钮校验
+        // 性能旋钮校验
         if (m.device.empty())
             fail("模型 " + m.name + " 的 device 不能为空(可用 AUTO/CPU/GPU/NPU)");
         if (m.perf_mode != "" && m.perf_mode != "latency" && m.perf_mode != "throughput")

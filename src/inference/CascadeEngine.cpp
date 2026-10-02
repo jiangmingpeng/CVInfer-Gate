@@ -3,7 +3,7 @@
 #include <algorithm>
 
 #include "utils/Logger.h"
-#include "utils/RoiUtils.h"   // roi_utils::expandAndClamp (与 T22 大模型复核共用)
+#include "utils/RoiUtils.h" // roi_utils::expandAndClamp (与 T22 大模型复核共用)
 
 CascadeEngine::CascadeEngine(std::shared_ptr<IDetector> primary,
                              std::shared_ptr<IClassifier> secondary,
@@ -14,7 +14,7 @@ CascadeEngine::CascadeEngine(std::shared_ptr<IDetector> primary,
 
 bool CascadeEngine::init(const ModelConfig& cfg) {
     if (!cfg.name.empty()) name_ = cfg.name;
-    return true;   // 主/二级组件已在构造时注入
+    return true; // 主/二级组件已在构造时注入
 }
 
 bool CascadeEngine::isGrayZone(const DetectionResult& det) const {
@@ -63,7 +63,7 @@ DetectStatus CascadeEngine::detect(const cv::Mat& frame, std::vector<DetectionRe
 
         const cv::Rect roi = roiFor(det.box, frame.size());
         if (roi.width <= 0 || roi.height <= 0) {
-            out.push_back(std::move(det));   // ROI 无效: 降级保留
+            out.push_back(std::move(det)); // ROI 无效: 降级保留
             continue;
         }
 
@@ -93,7 +93,7 @@ DetectStatus CascadeEngine::detect(const cv::Mat& frame, std::vector<DetectionRe
         } else {
             ++rejected;
             if (!cfg_.drop_rejected) {
-                out.push_back(std::move(det));   // 保留但已带 reviewed/sub_* 标记
+                out.push_back(std::move(det)); // 保留但已带 reviewed/sub_* 标记
             }
             // drop_rejected = true => 丢弃该目标
         }

@@ -29,7 +29,7 @@ inline bool labelCompatible(const std::string& a, const std::string& b) {
 
 inline float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 
-}  // namespace
+} // namespace
 
 namespace fusion {
 
@@ -56,7 +56,7 @@ FusionStats SensorFusion::fuse(std::vector<DetectionResult>& vision,
     // 目前仅决策级(校验层已保证 level=="decision", 这里再兜一层防御)
     if (cfg_.level != "decision") return st;
 
-    // ---- 1) 时间对齐 ----
+    // 1) 时间对齐
     const std::vector<sensor::SensorSample> in_window =
         align(samples, anchor_ms, cfg_.time_tolerance_ms);
     st.aligned = in_window.size();
@@ -78,7 +78,7 @@ FusionStats SensorFusion::fuse(std::vector<DetectionResult>& vision,
 
     std::vector<char> used(targets.size(), 0);
 
-    // ---- 2) + 3) 关联 + 融合 ----
+    // 2) + 3) 关联 + 融合
     for (auto& det : vision) {
         int best = -1;
         float best_score = 0.0f;
@@ -98,12 +98,12 @@ FusionStats SensorFusion::fuse(std::vector<DetectionResult>& vision,
             }
             if (score > best_score) { best_score = score; best = static_cast<int>(i); }
         }
-        if (best < 0) continue;   // 该视觉目标无传感器证据 -> 保持原样
+        if (best < 0) continue; // 该视觉目标无传感器证据 -> 保持原样
 
         used[static_cast<std::size_t>(best)] = 1;
         const sensor::SensorTarget& t = *targets[static_cast<std::size_t>(best)];
 
-        det.vision_confidence = det.confidence;            // 保留原始视觉置信度
+        det.vision_confidence = det.confidence; // 保留原始视觉置信度
         det.sensor_confidence = t.confidence;
         if (t.distance_m >= 0.0f) det.distance_m = t.distance_m;
         if (cfg_.adopt_sensor_label && !t.label.empty()) det.label = t.label;
@@ -114,14 +114,14 @@ FusionStats SensorFusion::fuse(std::vector<DetectionResult>& vision,
         ++st.matched;
     }
 
-    // ---- 未关联的传感器目标 ----
+    // 未关联的传感器目标
     for (std::size_t i = 0; i < targets.size(); ++i) {
         if (used[i]) continue;
         ++st.unmatched_sensor;
 
         if (!cfg_.emit_sensor_only) continue;
         const sensor::SensorTarget& t = *targets[i];
-        if (t.box.width <= 0.0f || t.box.height <= 0.0f) continue;   // 无框无法定位, 不输出
+        if (t.box.width <= 0.0f || t.box.height <= 0.0f) continue; // 无框无法定位, 不输出
 
         DetectionResult d;
         d.class_id = t.class_id;
@@ -130,7 +130,7 @@ FusionStats SensorFusion::fuse(std::vector<DetectionResult>& vision,
         d.box = cv::Rect(cvRound(t.box.x), cvRound(t.box.y),
                          cvRound(t.box.width), cvRound(t.box.height));
         d.fused = true;
-        d.vision_confidence = -1.0f;      // 纯传感器目标, 无视觉置信度
+        d.vision_confidence = -1.0f; // 纯传感器目标, 无视觉置信度
         d.sensor_confidence = t.confidence;
         d.distance_m = t.distance_m;
         vision.push_back(std::move(d));
@@ -140,4 +140,4 @@ FusionStats SensorFusion::fuse(std::vector<DetectionResult>& vision,
     return st;
 }
 
-}  // namespace fusion
+} // namespace fusion

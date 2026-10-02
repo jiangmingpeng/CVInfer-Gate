@@ -46,7 +46,7 @@ bool VideoPipeline::start() {
         }
         sink_thread_ = std::thread([this] { sinkLoop(); });
     } catch (const std::exception&) {
-        stop();          // 启动失败则回滚
+        stop(); // 启动失败则回滚
         return false;
     }
 
@@ -98,7 +98,7 @@ void VideoPipeline::decodeLoop() {
         }
 
         auto pf = std::make_shared<Frame>();
-        pf->image = frame.clone();     // 源缓冲可能复用, 必须深拷贝
+        pf->image = frame.clone(); // 源缓冲可能复用, 必须深拷贝
         pf->seq = index++;
         frame_queue_.push(std::move(pf));
         ++decoded_;
@@ -110,7 +110,7 @@ void VideoPipeline::decodeLoop() {
         }
     }
 
-    frame_queue_.close();   // 解码结束 -> 通知 worker 收尾
+    frame_queue_.close(); // 解码结束 -> 通知 worker 收尾
 }
 
 // 阶段二: 推理 worker (统一走 IDetector 抽象, 借引擎/推理/后处理在模型内部完成)
@@ -138,11 +138,11 @@ void VideoPipeline::workerLoop() {
 
 // 阶段三: sink (画框 / 写视频 / 落库)
 // 阶段三: sink (按帧序保序 -> 画框 / 写视频 / 落库)
-//   [T29] 多 worker 并发推理, 结果完成顺序与帧序不一致; 直接写视频会出现
-//   “画面回跳/抖动”。这里用一个小重排缓冲: 期望 next_seq, 乱序结果先暂存,
-//   能连续吐出就吐出; 若暂存数超过 kMaxReorder(说明有帧已被 drop_oldest 丢掉,
-//   对应的 seq 永远等不到), 则放弃等待、按 seq 从小到大吐出, 保证不无限阻塞。
-//   单 worker / 无丢帧时退化为“来一帧吐一帧”, 零额外延迟。
+// 多 worker 并发推理, 结果完成顺序与帧序不一致; 直接写视频会出现
+// “画面回跳/抖动”。这里用一个小重排缓冲: 期望 next_seq, 乱序结果先暂存,
+// 能连续吐出就吐出; 若暂存数超过 kMaxReorder(说明有帧已被 drop_oldest 丢掉,
+// 对应的 seq 永远等不到), 则放弃等待、按 seq 从小到大吐出, 保证不无限阻塞。
+// 单 worker / 无丢帧时退化为“来一帧吐一帧”, 零额外延迟。
 void VideoPipeline::sinkLoop() {
     constexpr std::size_t kMaxReorder = 8;
     std::map<std::uint64_t, std::shared_ptr<Result>> pending;
@@ -150,7 +150,7 @@ void VideoPipeline::sinkLoop() {
 
     auto emit = [this](const std::shared_ptr<Result>& r) {
         if (on_result_ && r && r->frame) {
-            // [T22] 透传 frame_seq, 供异步复核按帧回收结果
+            // 透传 frame_seq, 供异步复核按帧回收结果
             on_result_(r->frame->seq, r->frame->image, r->detections);
             ++emitted_;
         }
@@ -159,7 +159,7 @@ void VideoPipeline::sinkLoop() {
     std::shared_ptr<Result> result;
     while (result_queue_.pop(result)) {
         if (!result || !result->frame) continue;
-        if (pending.empty()) next_seq = result->frame->seq;   // 首帧/跳变后重新对齐
+        if (pending.empty()) next_seq = result->frame->seq; // 首帧/跳变后重新对齐
         pending[result->frame->seq] = std::move(result);
         while (!pending.empty() &&
                (pending.begin()->first == next_seq || pending.size() > kMaxReorder)) {
@@ -170,5 +170,5 @@ void VideoPipeline::sinkLoop() {
         }
     }
 
-    for (auto& kv : pending) emit(kv.second);   // 收尾: 按 seq 从小到大输出剩余
+    for (auto& kv : pending) emit(kv.second); // 收尾: 按 seq 从小到大输出剩余
 }
