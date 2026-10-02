@@ -765,7 +765,7 @@ cd build && cmake .. && cmake --build . -j
 ```bash
 ./phase_selftest
 ```
-通过标准：末行 `结果: 50 项通过, 0 项失败`，退出码 0（`echo $?`）。
+通过标准：末行 `结果: 52 项通过, 0 项失败`（T35 时为 50 项；T39/T43 增加用例后为 52 项），退出码 0（`echo $?`）。
 
 ### P0-3 向后兼容基线（**最重要**的一条）
 不带任何参数直接跑（等价于 cascade/review/sensors/fusion 全关）：
@@ -975,7 +975,7 @@ ffprobe -v error -show_entries stream=avg_frame_rate,nb_frames,duration -of defa
 ### 17.5 验证状态（三色）
 
 **已闭环**
-- `phase_selftest` **50/50**（零依赖、秒级）
+- `phase_selftest` **52/52**（零依赖、秒级）
 - P0-3 向后兼容基线（单模型、无 B/C/D 组件、零开销）
 - **Phase C 端到端**（mock）：`confirmed(24)+rejected(29)+unavailable(10)=reviewed(63)`，且 `alert 数 == confirmed 数`
 - **Phase D 端到端**：`aligned=75/75, matched=66`
@@ -1532,7 +1532,7 @@ AUTO 一让插件去枚举就崩。（先前写的“本机是带 NPU 的 Core U
 
 **架构完备度高，真实资源验证覆盖率低。**
 
-- 🟢 **可信**：T12–T35（11 个架构级 BUG 全修 + Phase A~D 四层抽象 + 自检 50/50 + 优雅关闭 + 性能定档）
+- 🟢 **可信**：T12–T35（11 个架构级 BUG 全修 + Phase A~D 四层抽象 + 自检 52/52 + 优雅关闭 + 性能定档）
 - 🟡 **做完了但没被真实资源验证**：Phase B 级联（**本仓库无 classifier 模型**）/ 复核（只有 Python mock，真 VLM 未接）/ `web_gateway`（未联调）/ T29（待回归，**且只能在 RTSP 实时源下验**）
 - 🔴 **已知但冻结**：§20.4 库不可用直接退出；R-13（RTSP `close()` 打不断 + `output.avi` 无上限）；R-5（断流不重连）；R-9（时间基未透传）
 
@@ -1647,7 +1647,7 @@ cvinfer_grpc_requests_total{method="Detect",code="OK"} 1     # grpc_client 返�
 
 #### 20.16.5 文件清单
 
-- 新增：`src/utils/Metrics.{h,cpp}`、`src/utils/HttpClient.{h,cpp}`、`src/service/MetricsServer.h`、`src/service/HealthCheck.cpp`、
+- 新增：`src/utils/Metrics.{h,cpp}`、`src/utils/HttpClient.{h,cpp}`、`src/service/MetricsServer.{h,cpp}`、
   `src/alert/AlertNotifier.{h,cpp}`、`scripts/alert_receiver.py`、`docker/prometheus.example.yml`、`config/config.ops.yaml`
 - 修改：`main.cpp`（接线 + `--health-check` + 退出统计）、`ConfigParser`（`metrics`/`alert.push`/轮转 + 校验）、`Logger`（轮转 + 自建目录）、
   `DetectionServiceImpl`（version/uptime/指标）、`SensorFusion`（样本计数器）、`ReviewScheduler`（指标）、`TargetTracker`（活跃轨迹拉式指标）、

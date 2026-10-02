@@ -87,7 +87,7 @@ CVInfer-Gate/
 ├── docker/           # Dockerfile 与 Compose 编排
 ├── tests/            # gRPC 客户端 + Phase A~D 阶段自检 (phase_selftest)
 │   └── unit/         # [T38] gtest 单元测试 (纯逻辑: NMS/融合/配置/队列/ROI/告警去重/目标跟踪)
-├── docs/             # 架构与一致性总览 (OVERVIEW.md)
+├── docs/             # 文件级阅读地图 (READING_MAP.md) + 架构总览 (OVERVIEW.md)
 ├── mediamtx          # 内置 RTSP 服务器二进制(有意入库: clone 即可跑 RTSP 演示)
 ├── mediamtx.yml      # mediamtx 配置
 └── .github/workflows # [T38] CI: 编译 + ctest + [P2-5] Python 自测
@@ -208,7 +208,7 @@ kill -TERM <pid>
 | 层 | 状态 | 说明 |
 |---|---|---|
 | 架构重构 T12–T36 | 🟢 可信 | 11 个架构级 BUG 全修（线程安全/启动时序/优雅关闭/背压/落库）+ **[T36] 数据库降级 / RTSP 断流重连**（见下）|
-| Phase A~D 四层抽象 | 🟢 可信 | `phase_selftest` 50/50，零外部依赖、秒级 |
+| Phase A~D 四层抽象 | 🟢 可信 | `phase_selftest` 52/52，零外部依赖、秒级 |
 | 单元测试 / CI | 🟢 **[T38+T39+T40+T42+T43] 新增** | `ctest` = `cv_unit_tests`(gtest 128 例) + `phase_selftest`，共 129 项全绿；覆盖 NMS / 多模态融合 / 配置校验 / 线程安全队列 / ROI / 告警去重 / 目标跟踪 / **鉴权语义** / **[T43] 指标注册表+告警推送(重试/丢弃/排空)+日志轮转**；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过） |
 | MySQL 落库 | 🟢 可信 | 表已建，程序正常写入（**不再产生 `db_fallback.csv`**）；**[T36] 库不可用不再退出**：降级写 CSV + 后台自动重连并回传 |
 | Phase B 级联 | 🟡 能级联 / 精度未回归 | **本仓库已带 `role=classifier` 模型**（`models/helmet_cls.xml` + `helmet_labels.txt`，`model_config.yaml` 已注册 `helmet_classifier`，`config/config.test.yaml` 默认开启级联）；⚠️ 目前只有「能跑通级联」的冒烟，**未做过精度回归**（改 `accept_label`/`accept_conf` 无人能自动报警） |
@@ -290,7 +290,7 @@ kill -TERM <pid>
 1. 数据库不可用时程序**直接退出** → 现为**降级模式**：记录先落本地 CSV，后台按 `reconnect_interval_ms` 自动重建连接池，恢复后回传（启动只做 1 次快速连库尝试，不再白等 ~20s）。
 2. RTSP 断流不重连 / `close()` 打不断 `av_read_frame` → 现为 `interrupt_callback` 打断 + 读循环内**指数退避重连**（0.5s→8s 封顶），且**未新增任何接口**。
 
-> 完整推导、逐条实测数据与踩坑记录都在 **[PROJECT_NOTES.md](PROJECT_NOTES.md)**（§20.12–§20.15 = 性能与收尾对账）。
+> 完整推导、逐条实测数据与踩坑记录都在 **[PROJECT_NOTES.md](PROJECT_NOTES.md)**（§20.12–§20.15 = 性能与收尾对账）；想**按文件**读代码先看 **[docs/READING_MAP.md](docs/READING_MAP.md)**。
 
 ## 目前打算的拓展方向
 - **INT8 量化**（唯一剩下的性能杠杆）：预计 1.5~2.5×（本机 AVX-VNNI）；阿里云 SPR/Xeon 带 AMX 收益更大 —— 但这是**拿精度换速度**，必须与 FP32 做同视频一致率对比

@@ -27,7 +27,7 @@
 ```
 轴① 运行时数据流   —— 一条流水线，帧怎么流（§2）
 轴② 四层抽象      —— Phase A–D，挂在流水线上的可插拔层（§4）
-轴③ 开发里程碑    —— T1~T42，记录"什么时候做了什么、修了什么坑"（见 PROJECT_NOTES）
+轴③ 开发里程碑    —— T1–T43，记录"什么时候做了什么、修了什么坑"（见 PROJECT_NOTES）
 ```
 
 ---
@@ -152,7 +152,7 @@ src/
 | Phase A 模型抽象 | 🟢 **可信** | 已在跑 |
 | Phase D 融合(stub) | 🟢 **可信** | 端到端 `matched=66` |
 | MySQL 落库 | 🟢 **可信** | 表已建，正常写入，不再产生 `db_fallback.csv` |
-| 自检 | 🟢 50/50 | `phase_selftest`，零外部依赖、秒级 |
+| 自检 | 🟢 52/52 | `phase_selftest`，零外部依赖、秒级 |
 | 单元测试 / CI | 🟢 **[T38+T39+T40+T42+T43] 新增** | `ctest` = `cv_unit_tests`(gtest 128 例) + `phase_selftest`，共 129 项全绿；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过）|
 | 可观测性 / 告警外发 | 🟢 **[T43] 新增** | `/metrics` 20 组指标（Prometheus 文本格式）+ `--health-check`（退出码 0/2/3/4/5）+ 告警 webhook 外发（实测 5/5 投递；死端口 `failed=3 retried=6` 不影响主链路）+ 日志按大小轮转；均默认关闭 |
 | 性能 | 🟢 **已定档** | 30.2 ± 0.7 fps；FP32 天花板 ~33 fps（12 组配置验证）|
@@ -223,6 +223,7 @@ src/
 |---|---|
 | `README.md` | 项目门面 + 验证状态表 |
 | `PROJECT_NOTES.md` | 完整开发史、实测数据、踩坑记录、逐条设计决策 |
+| `docs/READING_MAP.md` | **[新增] 文件级阅读地图**：文件 ↔ 架构层次 ↔ 运行周期（全 73 个 `src/` 文件的职责、真实日志串、线程/队列映射、变更影响表）|
 | `PROJECT_NOTES.md` §20.12–§20.15 | 性能工程与收尾对账（本文的账目来源）|
 | `docker/docker-compose.yml` | 一键拉起 MySQL + C++ 网关 + Python Web 网关 |
 | `scripts/schema.sql` | 数据库表结构（与 `docker/init_db.sql` 等价）|
