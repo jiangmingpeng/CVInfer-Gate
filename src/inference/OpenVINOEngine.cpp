@@ -127,7 +127,7 @@ bool OpenVINOEngine::infer(const cv::Mat& input, std::vector<ov::Tensor>& output
             const std::uint64_t n = g_calls.fetch_add(1, std::memory_order_relaxed) + 1;
             if (n % 100 == 0) {
                 const double k = 1e6 * static_cast<double>(n);
-                std::printf("[T35] 引擎分段/帧: 预处理=%.2fms  推理=%.2fms  (累计 %llu 帧)\n",
+                std::printf("引擎分段/帧: 预处理=%.2fms  推理=%.2fms  (累计 %llu 帧)\n",
                             static_cast<double>(g_pre_ns.load()) / k,
                             static_cast<double>(g_infer_ns.load()) / k,
                             static_cast<unsigned long long>(n));

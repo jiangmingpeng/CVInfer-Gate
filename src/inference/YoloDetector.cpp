@@ -89,7 +89,7 @@ DetectStatus YoloDetector::detect(const cv::Mat& frame,
         g_post_ns.fetch_add(ns, std::memory_order_relaxed);
         const std::uint64_t n = g_post_calls.fetch_add(1, std::memory_order_relaxed) + 1;
         if (n % 100 == 0) {
-            std::printf("[T35] 后处理耗时/帧: %.2f ms  (累计 %llu 帧)\n",
+            std::printf("后处理耗时/帧: %.2f ms  (累计 %llu 帧)\n",
                         static_cast<double>(g_post_ns.load()) / (1e6 * static_cast<double>(n)),
                         static_cast<unsigned long long>(n));
             std::fflush(stdout);
