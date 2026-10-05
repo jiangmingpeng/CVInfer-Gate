@@ -13,6 +13,25 @@
 # ============================================================
 
 models:
+
+  #   # ---- 新主模型: 图书馆占座检测 ----
+  # - name: library_detector
+  #   role: detector
+  #   xml_path: "models/library_det.xml"
+  #   bin_path: "models/library_det.bin"
+  #   labels_path: "models/library_labels.txt" # 里面写4行: person, bag, laptop, book
+  #   input_width: 640
+  #   input_height: 640
+  #   conf: 0.4
+  #   nms: 0.45
+  #   pool_size: 2
+  #   acquire_timeout_ms: 2000
+  #   device: CPU
+  #   performance_mode: latency
+  #   num_threads: 4
+
+
+
   # ---- 主模型: YOLOv8 检测器 ----
   - name: yolov8_detector
     role: detector
@@ -35,19 +54,19 @@ models:
     performance_mode: latency
     num_threads: 4
 
-  # ---- 二级模型: 安全帽/行为分类器 (role=classifier, 供级联复核使用) ----
-  # 注意: labels.txt 的类别名需与运行配置里 cascade.accept_label 对应。
-  - name: helmet_classifier
-    role: classifier
-    xml_path: models/helmet_cls.xml
-    bin_path: models/helmet_cls.bin
-    labels_path: models/helmet_labels.txt
-    input_width: 416            # 模型实际输入是 416×416
-    input_height: 416
-    pool_size: 2                # 建议 >= worker_threads(否则并发复核会 Busy -> 降级)
-    acquire_timeout_ms: 2000
-    device: CPU                 # 必填(缺省 AUTO 会触发 T33 的 NPU 段错误)
-    performance_mode: latency
-    num_threads: 2              # 分类器很轻, 别和主模型抢物理核
 
+  # # ---- 二级模型: 安全帽/行为分类器 (role=classifier, 供级联复核使用) ----
+  # # 注意: labels.txt 的类别名需与运行配置里 cascade.accept_label 对应。
+  # - name: helmet_classifier
+  #   role: classifier
+  #   xml_path: models/helmet_cls.xml
+  #   bin_path: models/helmet_cls.bin
+  #   labels_path: models/helmet_labels.txt
+  #   input_width: 416            # 模型实际输入是 416×416
+  #   input_height: 416
+  #   pool_size: 2                # 建议 >= worker_threads(否则并发复核会 Busy -> 降级)
+  #   acquire_timeout_ms: 2000
+  #   device: CPU                 # 必填(缺省 AUTO 会触发 T33 的 NPU 段错误)
+  #   performance_mode: latency
+  #   num_threads: 2              # 分类器很轻, 别和主模型抢物理核
 

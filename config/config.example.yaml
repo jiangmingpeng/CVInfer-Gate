@@ -13,7 +13,7 @@
 #       cascade  [B] 级联复核(灰区 -> 二级分类器)      video    视频源(file | rtsp)
 #       pipeline 推理 worker 数                        database 落库 + 不可用降级
 #       alert    告警去重 + webhook 外发               grpc     对外服务 + 鉴权
-#       metrics  [T43] /metrics 端点
+#       metrics  [T43] /metrics 端点                 occupancy 占座判定(规则层, 默认关闭)
 #   * 其余场景配置: config.test.yaml(开 Phase B+C+D) / config.ops.yaml(运维三件套) /
 #     config.rtsp.yaml(RTSP); 模型清单在 config/model_config.yaml(用 --model-config 单独加载)。
 #   * 旧版三段式(video/database/grpc)与旧单模型格式仍可解析, 缺的键走默认值。
@@ -140,6 +140,46 @@ alert:
     drain_timeout_ms: 5000  # 退出时最多再等多久把队列发完
     header_name: ""         # 可选自定义头(如 "x-alert-token")
     header_value: ""        # 其值(建议 "${ALERT_TOKEN:-}", 口令不进 git)
+
+# ------------------------------------------------------------
+# 占座判定(规则层): 夹在「检测」与「大模型复核」之间
+# ------------------------------------------------------------
+# 场景: 图书馆/自习室。判据 = "某个座位上放着物品, 且人已离开够久"。
+#
+# 为什么不只用模型:
+#   * 检测器没有"座位"这个概念 ==> 再加一个模型也拿不到"物品属于哪个座位";
+#   * VLM 看的是**单帧** ==> 答不出"持续了多久", 而时间维度正是占座定义的核心。
+# 所以用"静态座位 zone + 几何关系 + 时序状态机"把散落的检测框变成"某座位被长期占用"
+# 这个可解释的结论, 只有规则筛出的候选才送 VLM 复核(调用量降 1~2 个数量级),
+# 且送审时把结构化证据(物品/时长/投票情况)写进 prompt。
+#
+# ⚠ enabled=true 时: 标签命中 item_labels 的目标**不再**走"逐物体送审/告警"
+#   (改由占座事件产生告警)。否则同一场景会被报两次(且白烧 VLM 调用)。
+# ⚠ 座位必须按实际机位画: 开了占座却没画座位 => 配置校验会直接报错退不退。
+# 调参速查(完整判据见 src/occupancy/SeatOccupancyAnalyzer.h):
+#   t_occupied_ms 占座定义(多久算"长期") —— 业务口径, 上线前请业务方拍板
+#   t_grace_ms    人短暂离开的容忍窗(只**暂停**计时, 不清零)
+#   vote_m/vote_n 稳定性投票(最近 N 帧至少 M 帧命中), 用于抵抗单帧漏检/误检
+occupancy:
+  enabled: false              # 默认关闭 => 行为与改造前完全一致
+  item_labels: ["book", "bag", "laptop"]  # "构成物品"的类别(不含 person)
+  person_label: "person"
+  # 座位区(像素坐标)。两种写法:
+  #   polygon: [[x0,y0],...]  任意多边形(推荐: 贴合透视下的桌面形状)
+  #   rect:    [x, y, w, h]   矩形(内部展开为 4 个顶点)
+  seats:
+    - name: "A-12"
+      rect: [200, 320, 500, 620]
+    # - name: "A-13"
+    #   polygon: [[120, 700], [640, 700], [640, 1240], [120, 1240]]
+  item_seat_overlap: 0.5      # 物品归属座位: 底边中点在区内或包含度 >= 该值
+  item_person_overlap: 0.5    # 物品在人手上: 物品面积落在人框内的比例 >= 该值(用包含度而非 IoU)
+  person_seat_iou: 0.15       # 人在用座位: 底边中点在区内或包含度 >= 该值
+  min_person_height_px: 0     # 人框最小高度(像素): 滤远景小框/误检; 0 = 不过滤
+  t_occupied_ms: 300000       # C3 持续多久判占座(ms)。300000 = 5 分钟
+  t_grace_ms: 90000           # C4 人短暂离开容忍(ms); 超过则复位
+  vote_n: 10                  # C5 投票窗口长度(帧严格按**处理时间**计, 与抽帧率无关)
+  vote_m: 7                   # C5 窗口内至少 M 帧命中; vote_n=1 时必须=1
 
 grpc:
   port: 50051

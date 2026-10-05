@@ -26,8 +26,8 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 
 from .config import VlmConfig
-from .prompts import (NEGATIVE_LABEL, POSITIVE_LABEL, SYSTEM_PROMPT, Verdict,
-                      build_user_prompt, parse_verdict)
+from .prompts import (Scenario, Verdict, build_system_prompt, build_user_prompt,
+                      parse_verdict, resolve_scenario)
 
 
 class BackendError(RuntimeError):
@@ -39,9 +39,23 @@ class BackendError(RuntimeError):
 
 
 class VlmBackend(ABC):
-    """复核后端接口。"""
+    """复核后端接口。
+
+    后端持有**场景**(Scenario): system prompt 与 label 词表都从它来 —— 这样
+    "换业务只换场景", 而不是像以前那样把安全帽写死在每个后端的 infer 里。
+    """
 
     kind: str = "base"
+
+    def __init__(self, cfg: Optional[VlmConfig] = None):
+        # 允许 cfg=None(便于单测直接 new 一个后端); 此时用默认场景
+        self.scenario: Scenario = resolve_scenario(
+            getattr(cfg, "scenario", "") if cfg else "")
+        self._system_override: str = (getattr(cfg, "system_prompt", "") or "").strip()
+
+    def _system_prompt(self) -> str:
+        """本次送审的 system 指令(场景自带, 或被 VLM_SYSTEM_PROMPT 覆盖)。"""
+        return build_system_prompt(self.scenario, self._system_override)
 
     @property
     def model_name(self) -> str:
@@ -49,7 +63,7 @@ class VlmBackend(ABC):
 
     def ready(self) -> Tuple[bool, str]:
         """就绪性(仅用于 Health RPC, 不做网络探测以免阻塞启动)."""
-        return True, self.kind
+        return True, f"{self.kind} (scenario={self.scenario.name})"
 
     @abstractmethod
     def infer(self, jpeg: bytes, label: str, confidence: float,
@@ -88,6 +102,7 @@ class OpenAiCompatBackend(VlmBackend):
     kind = "openai"
 
     def __init__(self, cfg: VlmConfig):
+        super().__init__(cfg)
         self.base_url = cfg.base_url.rstrip("/")
         self.api_key = cfg.api_key or "EMPTY"
         self.model = cfg.model or "Qwen/Qwen2.5-VL-7B-Instruct"
@@ -101,7 +116,8 @@ class OpenAiCompatBackend(VlmBackend):
         return self.model
 
     def ready(self) -> Tuple[bool, str]:
-        return True, f"openai-compatible @ {self.base_url} (model={self.model})"
+        return True, (f"openai-compatible @ {self.base_url} "
+                      f"(model={self.model}, scenario={self.scenario.name})")
 
     def infer(self, jpeg: bytes, label: str, confidence: float,
               prompt: str, frame_seq: int) -> Verdict:
@@ -109,12 +125,13 @@ class OpenAiCompatBackend(VlmBackend):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": self._system_prompt()},
                 {"role": "user", "content": [
                     {"type": "image_url",
                      "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                     {"type": "text",
-                     "text": build_user_prompt(prompt, label, confidence)},
+                     "text": build_user_prompt(prompt, label, confidence,
+                                               self.scenario)},
                 ]},
             ],
             "max_tokens": self.max_tokens,
@@ -148,7 +165,7 @@ class OpenAiCompatBackend(VlmBackend):
             obj = json.loads(body)
         except json.JSONDecodeError as e:
             raise BackendError(f"上游返回非 JSON: {body[:200]!r}") from e
-        return parse_verdict(_extract_content(obj))
+        return parse_verdict(_extract_content(obj), self.scenario)
 
 
 # ------------------------------------------------------------------
@@ -158,6 +175,7 @@ class TransformersBackend(VlmBackend):
     kind = "transformers"
 
     def __init__(self, cfg: VlmConfig):
+        super().__init__(cfg)
         self.model_id = cfg.model or "Qwen/Qwen2.5-VL-7B-Instruct"
         self.device = cfg.device
         self.dtype = cfg.dtype
@@ -177,7 +195,8 @@ class TransformersBackend(VlmBackend):
             from transformers import AutoProcessor  # noqa: F401
         except ImportError as e:
             return False, f"缺少依赖(torch/transformers): {e}"
-        return True, f"transformers @ {self.device} (model={self.model_id})"
+        return True, (f"transformers @ {self.device} "
+                      f"(model={self.model_id}, scenario={self.scenario.name})")
 
     def _load(self):
         with self._lock:
@@ -219,10 +238,11 @@ class TransformersBackend(VlmBackend):
 
         image = Image.open(io.BytesIO(jpeg)).convert("RGB")
         messages = [
-            {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+            {"role": "system", "content": [{"type": "text", "text": self._system_prompt()}]},
             {"role": "user", "content": [
                 {"type": "image", "image": image},
-                {"type": "text", "text": build_user_prompt(prompt, label, confidence)},
+                {"type": "text", "text": build_user_prompt(prompt, label, confidence,
+                                                          self.scenario)},
             ]},
         ]
         text = self._processor.apply_chat_template(
@@ -237,7 +257,7 @@ class TransformersBackend(VlmBackend):
         out = self._processor.batch_decode(
             trimmed, skip_special_tokens=True,
             clean_up_tokenization_spaces=False)[0]
-        return parse_verdict(out)
+        return parse_verdict(out, self.scenario)
 
 
 # ------------------------------------------------------------------
@@ -247,6 +267,7 @@ class MockBackend(VlmBackend):
     kind = "mock"
 
     def __init__(self, cfg: Optional[VlmConfig] = None):
+        super().__init__(cfg)
         self.model = (cfg.model if cfg and cfg.model else "mock-vlm")
 
     @property
@@ -254,16 +275,19 @@ class MockBackend(VlmBackend):
         return self.model
 
     def ready(self) -> Tuple[bool, str]:
-        return True, "deterministic mock (frame_seq 奇偶)"
+        return True, f"deterministic mock (frame_seq 奇偶, scenario={self.scenario.name})"
 
     def infer(self, jpeg: bytes, label: str, confidence: float,
               prompt: str, frame_seq: int) -> Verdict:
+        # 确定性: frame_seq 奇偶决定"确认/否决", 与旧行为一致(便于对照 CSV)。
+        # label 取自**场景**, 所以 mock 也能模拟占座(occupied/not_occupied)。
         confirmed = (int(frame_seq) % 2) == 1
-        if confirmed:
-            return Verdict(True, POSITIVE_LABEL, 0.90,
-                           f"mock: seq={frame_seq} label={label} -> 未佩戴")
-        return Verdict(False, NEGATIVE_LABEL, 0.95,
-                       f"mock: seq={frame_seq} label={label} -> 已佩戴")
+        return Verdict(confirmed,
+                       self.scenario.positive_label if confirmed
+                       else self.scenario.negative_label,
+                       0.90 if confirmed else 0.95,
+                       f"mock: seq={frame_seq} label={label} "
+                       f"-> {'确认' if confirmed else '否决'} ({self.scenario.name})")
 
 
 # ------------------------------------------------------------------

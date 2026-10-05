@@ -21,9 +21,13 @@
 #     推 /live 却拉 /live/stream 会永远 404。推流成功后 mediamtx 日志会出现 "is publishing to path ...".
 # ============================================================
 
-log:
-  level: info
-  file: ""                # 空 = 仅输出到控制台
+# ⚠ 日志配置在 **app 段**(字段名 log_level / log_file); 写成顶层 log: 段不会被读取
+#   (ConfigParser 只认 app.*)。规则层的事件(占座/告警)要落盘网页才看得到。
+app:
+  log_level: "info"
+  log_file: "logs/cvinfer.log"   # 相对 build/; 目录不存在会自动创建
+  log_max_size_mb: 10
+  log_keep_files: 3
 
 # ============================================================
 # 视频源: 局域网 RTSP
@@ -89,32 +93,54 @@ grpc:
 cascade:
   enabled: false
 
+
+
 # ============================================================
-# Phase C: 想在 RTSP 上验复核, 把 enabled 改 true 并起 mock:
-#   python3 scripts/mock_review_server.py --port 50052 --mode auto
+# Phase C: 图书馆占座复核 (RTSP 测试)
+# 启动 mock: python3 scripts/mock_review_server.py --port 50052 --mode auto
 # ============================================================
 review:
-  enabled: false
+  enabled: true            # 想在 RTSP 上验复核, 改成 true
   endpoint: "127.0.0.1:50052"
-  timeout_ms: 1000
+  timeout_ms: 3000         # RTSP 下建议给大模型多一点时间
   queue_size: 64
   worker_threads: 2
   trigger:
-    labels: ["person"]
-    min_conf: 0.50
+    labels: ["bag", "laptop", "book"]  # ★ 核心修改：改为对“物品”触发复核
+    min_conf: 0.40
     max_conf: 1.00
   roi_padding: 0.10
-  prompt: "判断该人员是否未佩戴安全帽"
-  alert_type: "安全帽缺失"
+  prompt: "判断该座位是否被长期占座（人离开但物品仍在），注意区分短暂离开" # ★ 修改 Prompt
+  alert_type: "图书馆疑似占座违规" # ★ 修改告警类型
   alert_on_failure: true
 
-# ---- Phase D: 想在 RTSP 上验融合, 把 fusion.enabled 改 true 即可(stub 雷达) ----
-sensors:
-  - kind: radar
-    name: radar_front
-    backend: stub
-    rate_hz: 10
-    labels: ["person"]
+
+# # ============================================================
+# # Phase C: 想在 RTSP 上验复核, 把 enabled 改 true 并起 mock:
+# #   python3 scripts/mock_review_server.py --port 50052 --mode auto
+# # ============================================================
+# review:
+#   enabled: false
+#   endpoint: "127.0.0.1:50052"
+#   timeout_ms: 1000
+#   queue_size: 64
+#   worker_threads: 2
+#   trigger:
+#     labels: ["person"]
+#     min_conf: 0.50
+#     max_conf: 1.00
+#   roi_padding: 0.10
+#   prompt: "判断该人员是否未佩戴安全帽"
+#   alert_type: "安全帽缺失"
+#   alert_on_failure: true
+
+# # ---- Phase D: 想在 RTSP 上验融合, 把 fusion.enabled 改 true 即可(stub 雷达) ----
+# sensors:
+#   - kind: radar
+#     name: radar_front
+#     backend: stub
+#     rate_hz: 10
+#     labels: ["person"]
 
 fusion:
   enabled: false

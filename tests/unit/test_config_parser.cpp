@@ -11,7 +11,8 @@
 // 覆盖: 最小合法配置 + 默认值 / 缺文件 / 类型与前缀交叉校验 / 日志与队列
 // 枚举校验 / ${VAR} 与 ${VAR:-default} 展开 / 级联灰区颠倒 / 复核缺
 // endpoint / 传感器各种非法组合 / 多模型新格式 / 单模型旧格式兼容 /
-// 角色与性能模式校验。
+// 角色与性能模式校验 / 复核场景 ROI 策略(scale / min_side / dwell) /
+// 占座判定(座位两种写法 / 物品标签 / 时序与投票参数 / 各类非法组合)。
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -420,6 +421,265 @@ fusion:
     EXPECT_EQ(c.sensors[0].rate_hz, 10);
     EXPECT_TRUE(c.fusion.enabled);
     EXPECT_FLOAT_EQ(c.fusion.sensor_weight, 0.35f);
+}
+
+// ---------------------------------------------------------------- 复核 ROI 策略
+
+TEST(ConfigParserApp, ParsesReviewRoiStrategyOverrides) {
+    // YAML 里的新键必须真的被读进去(不能只是默认值恰好一致)
+    ConfigParser p;
+    ASSERT_TRUE(p.loadAppConfig(writeTempYaml("cv_ut_rev_roi_ok.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+review:
+  enabled: true
+  endpoint: "127.0.0.1:50052"
+  roi_padding: 0.25
+  roi_context_scale: 3.0
+  roi_min_side: 320
+  min_dwell_ms: 2000
+)")));
+
+    const ReviewConfig& r = p.getAppConfig().review;
+    EXPECT_FLOAT_EQ(r.roi_padding, 0.25f);
+    EXPECT_FLOAT_EQ(r.roi_context_scale, 3.0f);
+    EXPECT_EQ(r.roi_min_side, 320);
+    EXPECT_EQ(r.min_dwell_ms, 2000);
+}
+
+TEST(ConfigParserApp, ReviewRoiStrategyDefaultsKeepLegacyBehaviour) {
+    // 不写新键 => 必须与改造前行为一致: 不放大 / 不补边长 / 不做时序门。
+    // 这条是"加了旋钮但默认关掉"的保险: 一旦默认值被改, 占座之外的老业务
+    // 会静默改变送审图像内容。
+    ConfigParser p;
+    ASSERT_TRUE(p.loadAppConfig(writeTempYaml("cv_ut_rev_roi_def.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+review:
+  enabled: true
+  endpoint: "127.0.0.1:50052"
+)")));
+
+    const ReviewConfig& r = p.getAppConfig().review;
+    EXPECT_FLOAT_EQ(r.roi_context_scale, 1.0f);
+    EXPECT_EQ(r.roi_min_side, 0);
+    EXPECT_EQ(r.min_dwell_ms, 0);
+}
+
+TEST(ConfigParserApp, RejectsInvalidReviewRoiStrategy) {
+    // scale < 1 会"缩小"送审图(语义上无意义) => 拒; 负的 min_side/dwell 同理
+    ConfigParser bad_scale;
+    EXPECT_FALSE(bad_scale.loadAppConfig(writeTempYaml("cv_ut_rev_roi1.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+review:
+  enabled: true
+  endpoint: "127.0.0.1:50052"
+  roi_context_scale: 0.5
+)")));
+
+    ConfigParser bad_side;
+    EXPECT_FALSE(bad_side.loadAppConfig(writeTempYaml("cv_ut_rev_roi2.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+review:
+  enabled: true
+  endpoint: "127.0.0.1:50052"
+  roi_min_side: -10
+)")));
+
+    ConfigParser bad_dwell;
+    EXPECT_FALSE(bad_dwell.loadAppConfig(writeTempYaml("cv_ut_rev_roi3.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+review:
+  enabled: true
+  endpoint: "127.0.0.1:50052"
+  min_dwell_ms: -1
+)")));
+}
+
+// ---------------------------------------------------------------- 占座判定
+
+TEST(ConfigParserApp, OccupancyDefaultsOffWithNoSeats) {
+    // 关键默认: 不写 occupancy: 段 => 完全关闭。这是"新增能力不该改老行为"的保险。
+    ConfigParser p;
+    ASSERT_TRUE(p.loadAppConfig(writeTempYaml("cv_ut_occ_def.yaml", kMinimalAppYaml)));
+    const OccupancyConfig& o = p.getAppConfig().occupancy;
+    EXPECT_FALSE(o.enabled);
+    EXPECT_TRUE(o.seats.empty());
+    EXPECT_TRUE(o.item_labels.empty()); // 空 => 由组件用内置默认标签
+    EXPECT_EQ(o.person_label, "person");
+    EXPECT_FLOAT_EQ(o.item_seat_overlap, 0.5f);
+    EXPECT_FLOAT_EQ(o.item_person_overlap, 0.5f);
+    EXPECT_FLOAT_EQ(o.person_seat_iou, 0.15f);
+    EXPECT_EQ(o.min_person_height_px, 0);
+    EXPECT_EQ(o.t_occupied_ms, 300000); // 5 分钟(业务口径, 上线前需业务方拍板)
+    EXPECT_EQ(o.t_grace_ms, 90000);
+    EXPECT_EQ(o.vote_n, 10);
+    EXPECT_EQ(o.vote_m, 7);
+}
+
+TEST(ConfigParserApp, ParsesOccupancyOverridesWithBothSeatForms) {
+    ConfigParser p;
+    ASSERT_TRUE(p.loadAppConfig(writeTempYaml("cv_ut_occ_ok.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+occupancy:
+  enabled: true
+  item_labels: ["book", "bag"]
+  person_label: person
+  item_seat_overlap: 0.6
+  item_person_overlap: 0.4
+  person_seat_iou: 0.2
+  min_person_height_px: 80
+  t_occupied_ms: 60000
+  t_grace_ms: 10000
+  vote_n: 5
+  vote_m: 3
+  seats:
+    - name: A-12
+      rect: [100, 100, 120, 120]
+    - name: A-13
+      polygon: [[300, 300], [420, 300], [420, 420], [300, 420]]
+)")));
+
+    const OccupancyConfig& o = p.getAppConfig().occupancy;
+    EXPECT_TRUE(o.enabled);
+    ASSERT_EQ(o.item_labels.size(), 2u);
+    EXPECT_EQ(o.item_labels[0], "book");
+    EXPECT_FLOAT_EQ(o.item_seat_overlap, 0.6f);
+    EXPECT_FLOAT_EQ(o.item_person_overlap, 0.4f);
+    EXPECT_FLOAT_EQ(o.person_seat_iou, 0.2f);
+    EXPECT_EQ(o.min_person_height_px, 80);
+    EXPECT_EQ(o.t_occupied_ms, 60000);
+    EXPECT_EQ(o.t_grace_ms, 10000);
+    EXPECT_EQ(o.vote_n, 5);
+    EXPECT_EQ(o.vote_m, 3);
+
+    ASSERT_EQ(o.seats.size(), 2u);
+    EXPECT_EQ(o.seats[0].name, "A-12");
+    // rect 写法在配置层就被展开为 4 个顶点 => 运行期只需处理多边形一种形态
+    ASSERT_EQ(o.seats[0].polygon.size(), 4u);
+    EXPECT_EQ(o.seats[0].polygon[0].x, 100);
+    EXPECT_EQ(o.seats[0].polygon[0].y, 100);
+    EXPECT_EQ(o.seats[0].polygon[2].x, 220);
+    EXPECT_EQ(o.seats[0].polygon[2].y, 220);
+
+    EXPECT_EQ(o.seats[1].name, "A-13");
+    ASSERT_EQ(o.seats[1].polygon.size(), 4u);
+    EXPECT_EQ(o.seats[1].polygon[0].x, 300);
+    EXPECT_EQ(o.seats[1].polygon[0].y, 300);
+}
+
+TEST(ConfigParserApp, RejectsOccupancyEnabledWithoutSeats) {
+    // 座位靠配置画出 ---- 开了占座却没画座位, 系统会一个事件都产生不了(静默失效),
+    // 这是最难排查的一类故障 => 必须在配置层直接拦住。
+    ConfigParser p;
+    EXPECT_FALSE(p.loadAppConfig(writeTempYaml("cv_ut_occ1.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+occupancy:
+  enabled: true
+)")));
+}
+
+TEST(ConfigParserApp, RejectsOccupancyBadSeats) {
+    // 顶点不足 3 个
+    ConfigParser few_points;
+    EXPECT_FALSE(few_points.loadAppConfig(writeTempYaml("cv_ut_occ2.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+occupancy:
+  enabled: true
+  seats:
+    - name: bad
+      polygon: [[10, 10], [20, 20]]
+)")));
+
+    // 座位重名: 日志/告警/去重会互相串味
+    ConfigParser dup_names;
+    EXPECT_FALSE(dup_names.loadAppConfig(writeTempYaml("cv_ut_occ3.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+occupancy:
+  enabled: true
+  seats:
+    - name: same
+      rect: [0, 0, 10, 10]
+    - name: same
+      rect: [20, 20, 10, 10]
+)")));
+
+    // 负坐标
+    ConfigParser negative;
+    EXPECT_FALSE(negative.loadAppConfig(writeTempYaml("cv_ut_occ4.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+occupancy:
+  enabled: true
+  seats:
+    - name: neg
+      polygon: [[-5, 10], [20, 10], [20, 20]]
+)")));
+}
+
+TEST(ConfigParserApp, RejectsOccupancyBadNumbersAndLabelCollision) {
+    // vote_m > vote_n
+    ConfigParser bad_vote;
+    EXPECT_FALSE(bad_vote.loadAppConfig(writeTempYaml("cv_ut_occ5.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+occupancy:
+  enabled: true
+  vote_n: 3
+  vote_m: 5
+  seats:
+    - name: s
+      rect: [0, 0, 10, 10]
+)")));
+
+    // 重叠阈值越界
+    ConfigParser bad_overlap;
+    EXPECT_FALSE(bad_overlap.loadAppConfig(writeTempYaml("cv_ut_occ6.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+occupancy:
+  item_seat_overlap: 1.5
+)")));
+
+    // 持续时间不能为负
+    ConfigParser bad_dwell;
+    EXPECT_FALSE(bad_dwell.loadAppConfig(writeTempYaml("cv_ut_occ7.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+occupancy:
+  t_occupied_ms: -1
+)")));
+
+    // item_labels 里混进 person => 同一目标既是"物品"又是"人" => 状态机自相矛盾
+    ConfigParser label_collision;
+    EXPECT_FALSE(label_collision.loadAppConfig(writeTempYaml("cv_ut_occ8.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+occupancy:
+  person_label: person
+  item_labels: ["book", "person"]
+)")));
 }
 
 // ---------------------------------------------------------------- 模型配置

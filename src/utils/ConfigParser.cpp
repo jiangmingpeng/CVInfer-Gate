@@ -116,6 +116,11 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             app_config_.video.source_path = readStr(v, "source_path", app_config_.video.source_path);
             app_config_.video.target_fps  = v["target_fps"].as<int>(app_config_.video.target_fps);
             app_config_.video.frame_interval = v["frame_interval"].as<int>(app_config_.video.frame_interval);
+            // 可视化旋钮(可选; 不写就沿用内置值)
+            app_config_.video.box_thickness =
+                v["box_thickness"].as<int>(app_config_.video.box_thickness);
+            app_config_.video.label_scale =
+                v["label_scale"].as<double>(app_config_.video.label_scale);
             // queue 帧队列防爆配置
             if (v["queue"]) {
                 app_config_.video.queue.max_size =
@@ -209,6 +214,10 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             rcfg.queue_size       = r["queue_size"].as<std::size_t>(rcfg.queue_size);
             rcfg.worker_threads   = r["worker_threads"].as<int>(rcfg.worker_threads);
             rcfg.roi_padding      = r["roi_padding"].as<float>(rcfg.roi_padding);
+            // [占座/场景复核] 把单物体 ROI 扩成"物体所在场景"
+            rcfg.roi_context_scale = r["roi_context_scale"].as<float>(rcfg.roi_context_scale);
+            rcfg.roi_min_side      = r["roi_min_side"].as<int>(rcfg.roi_min_side);
+            rcfg.min_dwell_ms      = r["min_dwell_ms"].as<int>(rcfg.min_dwell_ms);
             rcfg.prompt           = readStr(r, "prompt", rcfg.prompt);
             rcfg.alert_type       = readStr(r, "alert_type", rcfg.alert_type);
             rcfg.alert_on_failure = r["alert_on_failure"].as<bool>(rcfg.alert_on_failure);
@@ -304,6 +313,51 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
             tc.max_age_ms  = tr["max_age_ms"].as<int>(tc.max_age_ms);
             tc.min_hits    = tr["min_hits"].as<int>(tc.min_hits);
             tc.max_tracks  = tr["max_tracks"].as<int>(tc.max_tracks);
+        }
+
+        // occupancy 占座判定(静态座位 zone + 几何关系 + 时序状态机)
+        if (config["occupancy"]) {
+            const YAML::Node o = config["occupancy"];
+            auto& oc = app_config_.occupancy;
+            oc.enabled          = o["enabled"].as<bool>(oc.enabled);
+            oc.person_label     = readStr(o, "person_label", oc.person_label);
+            oc.item_seat_overlap   = o["item_seat_overlap"].as<float>(oc.item_seat_overlap);
+            oc.item_person_overlap = o["item_person_overlap"].as<float>(oc.item_person_overlap);
+            oc.person_seat_iou     = o["person_seat_iou"].as<float>(oc.person_seat_iou);
+            oc.min_person_height_px =
+                o["min_person_height_px"].as<int>(oc.min_person_height_px);
+            oc.t_occupied_ms = o["t_occupied_ms"].as<int>(oc.t_occupied_ms);
+            oc.t_grace_ms    = o["t_grace_ms"].as<int>(oc.t_grace_ms);
+            oc.vote_n        = o["vote_n"].as<int>(oc.vote_n);
+            oc.vote_m        = o["vote_m"].as<int>(oc.vote_m);
+            if (o["item_labels"] && o["item_labels"].IsSequence()) {
+                oc.item_labels.clear();
+                for (const auto& l : o["item_labels"]) {
+                    oc.item_labels.push_back(l.as<std::string>());
+                }
+            }
+            // 座位区: 支持 polygon(顶点列表) 与 rect([x,y,w,h]) 两种写法
+            if (o["seats"] && o["seats"].IsSequence()) {
+                oc.seats.clear();
+                for (const auto& s : o["seats"]) {
+                    SeatZoneConfig zc;
+                    zc.name = readStr(s, "name", zc.name);
+                    if (s["polygon"] && s["polygon"].IsSequence()) {
+                        for (const auto& pt : s["polygon"]) {
+                            if (!pt.IsSequence() || pt.size() < 2) continue;
+                            zc.polygon.push_back(SeatPoint{pt[0].as<int>(), pt[1].as<int>()});
+                        }
+                    } else if (s["rect"] && s["rect"].IsSequence() && s["rect"].size() >= 4) {
+                        const int x = s["rect"][0].as<int>();
+                        const int y = s["rect"][1].as<int>();
+                        const int w = s["rect"][2].as<int>();
+                        const int h = s["rect"][3].as<int>();
+                        zc.polygon = {SeatPoint{x, y}, SeatPoint{x + w, y},
+                                      SeatPoint{x + w, y + h}, SeatPoint{x, y + h}};
+                    }
+                    oc.seats.push_back(std::move(zc));
+                }
+            }
         }
 
         std::cout << "[ConfigParser] 系统配置加载成功: " << filepath << std::endl;
@@ -406,6 +460,12 @@ bool ConfigParser::validate() const {
         fail("review.trigger.min_conf 不能大于 max_conf");
     if (rv.roi_padding < 0.0f)
         fail("review.roi_padding 不能为负");
+    if (rv.roi_context_scale < 1.0f)
+        fail("review.roi_context_scale 必须 >= 1.0 (1 = 不放大, 保持原行为)");
+    if (rv.roi_min_side < 0)
+        fail("review.roi_min_side 不能为负(0 = 不补最小边长)");
+    if (rv.min_dwell_ms < 0)
+        fail("review.min_dwell_ms 不能为负(0 = 不做时序门)");
     if (rv.enabled && rv.endpoint.empty())
         fail("review.enabled=true 时 review.endpoint 不能为空");
     if (rv.max_message_size_mb < 1)
@@ -504,6 +564,52 @@ bool ConfigParser::validate() const {
         fail("tracking.min_hits 必须 >= 1");
     if (tc.max_tracks < 1)
         fail("tracking.max_tracks 必须 >= 1");
+
+    // 占座判定
+    const auto& oc = app_config_.occupancy;
+    if (oc.item_seat_overlap < 0.0f || oc.item_seat_overlap > 1.0f)
+        fail("occupancy.item_seat_overlap 必须在 0..1");
+    if (oc.item_person_overlap < 0.0f || oc.item_person_overlap > 1.0f)
+        fail("occupancy.item_person_overlap 必须在 0..1");
+    if (oc.person_seat_iou < 0.0f || oc.person_seat_iou > 1.0f)
+        fail("occupancy.person_seat_iou 必须在 0..1");
+    if (oc.min_person_height_px < 0)
+        fail("occupancy.min_person_height_px 不能为负(0 = 不过滤)");
+    if (oc.t_occupied_ms < 0)
+        fail("occupancy.t_occupied_ms 不能为负(毫秒)");
+    if (oc.t_grace_ms < 0)
+        fail("occupancy.t_grace_ms 不能为负(毫秒)");
+    if (oc.vote_n < 1)
+        fail("occupancy.vote_n 必须 >= 1");
+    if (oc.vote_m < 1)
+        fail("occupancy.vote_m 必须 >= 1");
+    if (oc.vote_m > oc.vote_n)
+        fail("occupancy.vote_m 不能大于 vote_n(最近 N 帧中至少 M 帧)");
+    if (oc.person_label.empty())
+        fail("occupancy.person_label 不能为空");
+    {
+        std::set<std::string> names;
+        for (const auto& s : oc.seats) {
+            const std::string who = s.name.empty() ? std::string("(未命名)") : s.name;
+            if (s.polygon.size() < 3)
+                fail("occupancy.seats[" + who + "] 至少需要 3 个顶点(polygon: [[x,y],...] 或 rect: [x,y,w,h])");
+            // 座位是"静态常量": 名字重复会让日志/告警/去重互相串味 => 直接拦下
+            if (!s.name.empty() && !names.insert(s.name).second)
+                fail("occupancy.seats 名称重复: " + s.name);
+            for (const auto& p : s.polygon) {
+                if (p.x < 0 || p.y < 0)
+                    fail("occupancy.seats[" + who + "] 顶点坐标为负: (" +
+                         std::to_string(p.x) + "," + std::to_string(p.y) + ")");
+            }
+        }
+        if (oc.enabled && oc.seats.empty())
+            fail("occupancy.enabled=true 但未配置 seats:(座位靠配置画出 —— 检测器没有\"座位\"这个概念)");
+        // 物品标签若与 person 标签撞车, 同一目标会既是"物品"又是"人", 状态机必然自相矛盾
+        for (const auto& l : oc.item_labels) {
+            if (l == oc.person_label)
+                fail("occupancy.item_labels 不能包含 person_label: " + l);
+        }
+    }
 
     return ok;
 }

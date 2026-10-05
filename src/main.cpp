@@ -39,6 +39,7 @@
 #include "utils/AlertGate.h"
 #include "utils/Metrics.h"
 #include "tracking/TargetTracker.h"
+#include "occupancy/SeatOccupancyAnalyzer.h"
 #include "alert/AlertNotifier.h"
 #include "inference.grpc.pb.h" // --health-check 探针要用的 Health RPC 存根
 
@@ -78,6 +79,13 @@
 // (a) 告警可推 webhook(alert.push): 有界队列 + 重试退避, 不阻塞流水线;
 // (b) /metrics 指标端点(metrics.enabled) + 日志文件轮转(app.log_max_size_mb);
 // (c) gRPC Health RPC + `--health-check` 探针, 供容器 healthcheck / systemd 判活。
+// 13) 占座判定(occupancy): 在"检测"与"大模型复核"之间补上一层**规则层** ——
+// 静态座位 zone + 几何关系(物品属于哪个座位? 人在不在用?) + 时序状态机
+// ("物品在且人不在"持续了多久?), 把散落的检测框变成"某座位被长期占用"
+// 这个**可解释**的结论。规则层完成"筛"之后, 只有候选才送 VLM 复核
+// (调用量降 1~2 个数量级), 且送审时带上结构化证据(物品/时长/投票情况),
+// 让 VLM 从"看图猜场景"变成"对证据做裁判"。
+// 规则本身**不依赖模型**, 因此可脱离模型/视频做确定性单测。
 
 namespace {
 
@@ -118,6 +126,36 @@ std::string resolvePath(int argc, char** argv, const char* flag, const char* env
         if (*e) return e;
     }
     return default_path;
+}
+
+// 占座告警的标签/类型标识。同时用作告警去重的 key —— 座位是静态的, 用座位框做
+// 几何去重最精确("同一座位在冷却窗内只报一次"正是想要的语义)。
+constexpr const char* kOccupancyLabel = "seat_occupancy";
+
+// 把字符串列表拼成 "a, b, c"(仅用于启动日志; 空列表表示"用组件内置默认")
+std::string joinStrings(const std::vector<std::string>& v) {
+    if (v.empty()) return "(内置默认)";
+    std::string s;
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        if (i) s += ", ";
+        s += v[i];
+    }
+    return s;
+}
+
+// 配置里的座位(纯坐标, 见 ConfigParser.h 不引入 OpenCV 的说明)
+// -> 运行期的座位区域(cv::Point 多边形; rect 写法已在配置层展开为 4 个顶点)
+std::vector<occupancy::SeatZone> buildSeatZones(const std::vector<SeatZoneConfig>& zones) {
+    std::vector<occupancy::SeatZone> out;
+    out.reserve(zones.size());
+    for (const auto& z : zones) {
+        occupancy::SeatZone sz;
+        sz.name = z.name;
+        sz.polygon.reserve(z.polygon.size());
+        for (const auto& p : z.polygon) sz.polygon.emplace_back(p.x, p.y);
+        out.push_back(std::move(sz));
+    }
+    return out;
 }
 
 void printUsage(const char* argv0) {
@@ -375,6 +413,13 @@ int main(int argc, char** argv) {
             if (!review_scheduler->init(app_cfg.review, reviewer, on_outcome)) {
                 CVLOG_WARN << "复核调度器初始化失败, 告警回退为本地规则。";
                 review_scheduler.reset();
+            } else {
+                // 把"送审的那张小图到底包含什么"写进日志 —— 占座/场景类复核
+                // 出问题时, 这一行往往是第一个要看的(只裁物体 vs 裁场景)。
+                CVLOG_INFO << "复核 ROI: padding=" << app_cfg.review.roi_padding
+                           << " context_scale=" << app_cfg.review.roi_context_scale
+                           << " min_side=" << app_cfg.review.roi_min_side
+                           << " min_dwell=" << app_cfg.review.min_dwell_ms << "ms";
             }
         }
     }
@@ -484,6 +529,68 @@ int main(int argc, char** argv) {
         CVLOG_INFO << "目标跟踪: 已禁用(告警去重将退回几何重叠判定)";
     }
 
+    // 4.7 占座判定: 静态座位 zone + 几何关系 + 时序状态机
+    //   位置: 与 tracker 一样放在 sink 内 —— 它**有状态**(累计时长/投票窗口),
+    //   必须按 frame_seq 递增顺序调用(同一 sink 线程, 天然串行)。
+    //   为什么不在"检测"层做: "属于哪个座位"(空间关系)与"持续了多久"(时序)
+    //   都超出单帧检测器的表达能力, 而这两件事正是"占座"的定义;
+    //   为什么不在 VLM 里做: 单帧小图既看不到座位全貌, 也答不了"持续多久"。
+    std::unique_ptr<occupancy::SeatOccupancyAnalyzer> occupancy_analyzer;
+    if (app_cfg.occupancy.enabled) {
+        occupancy::Config oc_cfg;
+        oc_cfg.enabled              = true;
+        oc_cfg.item_labels          = app_cfg.occupancy.item_labels; // 空 => 组件内置默认
+        oc_cfg.person_label         = app_cfg.occupancy.person_label;
+        oc_cfg.item_seat_overlap    = app_cfg.occupancy.item_seat_overlap;
+        oc_cfg.item_person_overlap  = app_cfg.occupancy.item_person_overlap;
+        oc_cfg.person_seat_iou      = app_cfg.occupancy.person_seat_iou;
+        oc_cfg.min_person_height_px = app_cfg.occupancy.min_person_height_px;
+        oc_cfg.t_occupied_ms        = app_cfg.occupancy.t_occupied_ms;
+        oc_cfg.t_grace_ms           = app_cfg.occupancy.t_grace_ms;
+        oc_cfg.vote_n               = app_cfg.occupancy.vote_n;
+        oc_cfg.vote_m               = app_cfg.occupancy.vote_m;
+
+        occupancy_analyzer = std::make_unique<occupancy::SeatOccupancyAnalyzer>(
+            oc_cfg, buildSeatZones(app_cfg.occupancy.seats));
+
+        const auto& eff = occupancy_analyzer->config();
+        CVLOG_INFO << "占座判定: 已启用 (座位数=" << occupancy_analyzer->seats().size()
+                   << ", 物品类别=[" << joinStrings(eff.item_labels) << "]"
+                   << ", t_occupied=" << eff.t_occupied_ms / 1000 << "s"
+                   << ", t_grace=" << eff.t_grace_ms / 1000 << "s"
+                   << ", vote=" << eff.vote_m << "/" << eff.vote_n << ")";
+        for (const auto& z : occupancy_analyzer->seats()) {
+            const cv::Rect r = z.boundingRect();
+            CVLOG_INFO << "  座位 [" << z.name << "] 区域=" << r.width << "x" << r.height
+                       << "@(" << r.x << "," << r.y << ") 顶点数=" << z.polygon.size();
+            // 防呆: 座位区超出画面 ⇒ 判定基本失效。这是**换视频/换机位后最容易踩的坑**:
+            // 坐标是按旧分辨率标的, 换了源就成了空转。
+            // 为什么单靠下游那句"ROI 无效"告警拦不住: 那句只在座位区**完全**落在画面外时
+            // 才触发; 部分超出时 ROI 仍非空(被裁到画面内), 于是静默地照常判定 ——
+            // 实测 720x1280 -> 544x592 就是这么踩的(78% 面积在画面外, 却毫无提示)。
+            if (video_width > 0 && video_height > 0 &&
+                (r.x < 0 || r.y < 0 || r.x + r.width > video_width ||
+                 r.y + r.height > video_height)) {
+                const int vis_w = std::max(0, std::min(r.x + r.width, video_width) - std::max(r.x, 0));
+                const int vis_h = std::max(0, std::min(r.y + r.height, video_height) - std::max(r.y, 0));
+                const double vis = r.area() > 0
+                    ? static_cast<double>(vis_w) * vis_h / static_cast<double>(r.area())
+                    : 0.0;
+                CVLOG_WARN << "  座位 [" << z.name << "] 区域超出画面 " << video_width << "x"
+                           << video_height << ", 仅 " << static_cast<int>(vis * 100.0 + 0.5)
+                           << "% 面积可见 —— 占座判定基本失效, 请按当前分辨率重标 occupancy.seats";
+            }
+        }
+        // 交互提醒: 物品类标签已改由占座事件产生告警, 逐物体送审对它们自动失效。
+        // 若这不符合预期(比如既想要"书"告警又想要"占座"告警), 应把该标签从
+        // occupancy.item_labels 里拿掉, 或关闭 occupancy.enabled。
+        CVLOG_INFO << "占座判定: 标签 [" << joinStrings(eff.item_labels)
+                   << "] 的逐物体送审已抑制, 改由占座事件产生告警;"
+                   << " 告警类型沿用 review.alert_type=" << app_cfg.review.alert_type;
+    } else {
+        CVLOG_INFO << "占座判定: 已禁用(occupancy.enabled=false)";
+    }
+
     // 5. T5: 构造三阶段流水线 (sink 回调负责画框/写视频/异步落库)
     VideoPipeline::Config pipe_cfg;
     pipe_cfg.target_fps = app_cfg.video.target_fps;
@@ -517,18 +624,35 @@ int main(int argc, char** argv) {
             }
             const std::vector<DetectionResult>& dets = *dets_ptr;
 
+            // (0.8) 占座判定: 每帧都要跑(累计时长靠它推进), **必须在"无检测早退"
+            // 之前** —— "本帧什么都没检出"恰恰是状态机需要的输入(物品被收走)。
+            // 本帧"刚刚判占座"的座位才返回事件(上升沿), 不会每帧刷。
+            std::vector<occupancy::OccupancyEvent> occ_events;
+            if (occupancy_analyzer) {
+                occ_events = occupancy_analyzer->update(dets, nowMs());
+            }
+
             // (1) 画框 / 写视频: 用本地(主筛+二级[+融合])结果, 实时输出, 不等复核
             if (video_writer.isOpened()) {
                 cv::Mat annotated = frame.clone();
+                // 线宽/字号走配置(video.box_thickness / video.label_scale):
+                // 同一个值在不同分辨率的源上观感差很多, 写死必然有一边难受。
+                const int box_thickness = app_cfg.video.box_thickness;
+                const double label_scale = app_cfg.video.label_scale;
                 for (const auto& det : dets) {
-                    cv::rectangle(annotated, det.box, cv::Scalar(0, 255, 0), 2);
+                    if (box_thickness > 0) {
+                        cv::rectangle(annotated, det.box, cv::Scalar(0, 255, 0), box_thickness);
+                    }
                     // 带上 track_id: 肉眼可验证"同一个人是否只有一个 id"
-                    const std::string text =
-                        (det.track_id >= 0 ? "#" + std::to_string(det.track_id) + " " : "") +
-                        det.label + " " +
-                        std::to_string(static_cast<int>(det.confidence * 100)) + "%";
-                    cv::putText(annotated, text, cv::Point(det.box.x, det.box.y - 5),
-                                cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
+                    if (label_scale > 0.0) {
+                        const std::string text =
+                            (det.track_id >= 0 ? "#" + std::to_string(det.track_id) + " " : "") +
+                            det.label + " " +
+                            std::to_string(static_cast<int>(det.confidence * 100)) + "%";
+                        cv::putText(annotated, text, cv::Point(det.box.x, det.box.y - 5),
+                                    cv::FONT_HERSHEY_SIMPLEX, label_scale,
+                                    cv::Scalar(0, 255, 0), 1);
+                    }
                 }
                 video_writer.write(annotated);
             }
@@ -543,6 +667,15 @@ int main(int argc, char** argv) {
             // 未启用   -> 保持原本地规则(person>0.8 立即告警)。
             const bool review_on = (review_scheduler && review_scheduler->enabled());
             for (const auto& det : dets) {
+                // 占座模式下的分流: 标签命中 occupancy.item_labels 的目标**不再**走
+                // "逐物体送审/告警" —— "桌上有一本书"本身不是问题, "书在桌上而人
+                // 已离开 5 分钟"才是。两条路径都发会让同一个场景报两次, 而且白烧
+                // VLM 调用。看人不看物(物品只是判占座的**证据**)。
+                if (occupancy_analyzer &&
+                    occupancy::SeatOccupancyAnalyzer::isItemLabel(
+                        det.label, occupancy_analyzer->config().item_labels)) {
+                    continue;
+                }
                 const bool candidate =
                     review_on ? isReviewCandidate(det, app_cfg.review)
                               : (det.label == "person" && det.confidence > 0.8f);
@@ -554,9 +687,27 @@ int main(int argc, char** argv) {
                 // 本地规则路径打在**写告警处**。
                 // 有 track_id 时闸门**以身份为准**(与框怎么移动无关)。
                 if (review_on) {
+                    // [占座] 时序门: 只送审"已在画面里停留够久"的目标。
+                    // 占座 = 长期占用 => 刚出现/刚建轨的物品先观望(省算力 + 减误报)。
+                    // 拿不到 track_id(未开跟踪 / 轨迹尚未确认)时不拦, 保持宽容。
+                    if (app_cfg.review.min_dwell_ms > 0 && tracker) {
+                        const auto* tr =
+                            (det.track_id >= 0) ? tracker->find(det.track_id) : nullptr;
+                        if (tr && tr->dwellMs() < app_cfg.review.min_dwell_ms) {
+                            CVLOG_DEBUG << "[review] 停留不足 " << tr->dwellMs() << "ms < "
+                                        << app_cfg.review.min_dwell_ms << "ms, 暂不送审: "
+                                        << det.label << " frame=" << frame_seq;
+                            continue;
+                        }
+                    }
                     ReviewRequest job;
                     job.frame_seq = frame_seq;
-                    job.roi = roi_utils::crop(frame, det.box, app_cfg.review.roi_padding);
+                    // 场景 ROI: 不再只裁"物体本身"(那样大模型看不到桌面/座位/周围的人),
+                    // 而是以目标为中心扩大一块"物体所在场景"(见 ConfigParser 注释)。
+                    job.roi = roi_utils::cropContext(frame, det.box,
+                                                     app_cfg.review.roi_padding,
+                                                     app_cfg.review.roi_context_scale,
+                                                     app_cfg.review.roi_min_side);
                     job.class_id = det.class_id;
                     job.label = det.label;
                     job.confidence = det.confidence;
@@ -589,6 +740,53 @@ int main(int argc, char** argv) {
                                     std::to_string(det.confidence),
                                 frame_seq, det.label, det.confidence, det.track_id);
                 }
+            }
+
+            // (4) 占座事件 -> 送审 / 告警
+            // 规则层已经完成"筛"(哪个座位 / 持续多久 / 证据是什么), VLM 只做"判"。
+            // 送审提示词里带上结构化证据 => 模型回答的是"这算不算占座", 而不是
+            // "这张图里有什么"(后者正是 VLM 答不好的那些问题)。
+            for (const auto& ev : occ_events) {
+                // 座位是静态的 => 用座位框做几何去重最精确(与 track_id 无关):
+                // "同一个座位在冷却窗内只报一次"正是这里想要的语义。
+                if (!alert_gate.allow(kOccupancyLabel, ev.box, nowMs())) {
+                    CVLOG_DEBUG << "[占座] 座位 " << ev.seat << " 在冷却窗内, 不重复告警";
+                    continue;
+                }
+                const std::string desc = ev.evidence.describe();
+                CVLOG_INFO << "[占座] " << desc;
+
+                if (!review_on) {
+                    // 未启用复核: 规则判定即结论, 直接告警(类型沿用 review.alert_type)
+                    raise_alert(app_cfg.review.alert_type, desc, frame_seq, kOccupancyLabel,
+                                ev.evidence.confidence(), -1);
+                    continue;
+                }
+
+                ReviewRequest job;
+                job.frame_seq = frame_seq;
+                // 座位 zone 本身就是"场景"(人为画定的语义区域), 故不再做中心放大:
+                // 想要更大视野就把 zone 画大一点 —— "所见即所判", 不引入隐藏的缩放。
+                job.roi = roi_utils::crop(frame, ev.box, 0.0f);
+                job.class_id = 0;
+                job.label = kOccupancyLabel;
+                job.confidence = ev.evidence.confidence();
+                job.prompt = app_cfg.review.prompt;
+                if (!job.prompt.empty()) job.prompt += "\n";
+                job.prompt += "【规则引擎证据】" + desc;
+
+                if (job.roi.empty()) {
+                    // 座位区完全落在画面外(配置画错) => 按兜底策略处理
+                    CVLOG_WARN << "[占座] 座位 " << ev.seat
+                               << " 的 ROI 无效(座位区在画面外? 请核对 occupancy.seats), 证据: "
+                               << desc;
+                    if (app_cfg.review.alert_on_failure) {
+                        raise_alert(app_cfg.review.alert_type, desc, frame_seq, kOccupancyLabel,
+                                    ev.evidence.confidence(), -1);
+                    }
+                    continue;
+                }
+                review_scheduler->submit(std::move(job));
             }
         });
             
@@ -672,6 +870,13 @@ int main(int argc, char** argv) {
         if (tracker) {
             reg.addCollector("cvinfer_tracks_active", metrics::Type::Gauge, "当前活跃轨迹数",
                              [&tracker] { return static_cast<double>(tracker->stats().active); });
+        }
+        if (occupancy_analyzer) {
+            reg.addCollector("cvinfer_occupancy_events_total", metrics::Type::Counter,
+                             "判定为占座的次数(座位级, 上升沿)",
+                             [&occupancy_analyzer] {
+                                 return static_cast<double>(occupancy_analyzer->stats().events);
+                             });
         }
 
         metrics::HttpServer::Config mcfg;
@@ -764,6 +969,16 @@ int main(int argc, char** argv) {
                    << " active=" << ts.active
                    << " matched=" << ts.matched
                    << " longest_dwell=" << tracker->longestDwellMs() << "ms";
+    }
+
+    // 占座统计: 每个座位最后的状态 —— 运维最常问的就是"现在哪些座位被判占了"
+    if (occupancy_analyzer) {
+        const auto os = occupancy_analyzer->stats();
+        CVLOG_INFO << "占座统计: frames=" << os.frames << " seats=" << os.seats
+                   << " occupied_events=" << os.events;
+        for (const auto& ev : occupancy_analyzer->snapshot()) {
+            CVLOG_INFO << "  [占座] " << ev.describe();
+        }
     }
 
     // 告警推送: 排空队列(有超时)后再关库;

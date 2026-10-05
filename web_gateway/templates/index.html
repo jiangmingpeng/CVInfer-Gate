@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CVInfer-Gate · 高性能 AI 推理网关</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="brand">
+        <div class="logo">CV</div>
+        <div>
+          <h1>CVInfer-Gate</h1>
+          <div class="sub">高性能 AI 推理网关 · C++17 + OpenVINO</div>
+        </div>
+      </div>
+      <div class="badge" id="badge"><span class="dot"></span><span id="badgeText">检测中…</span></div>
+    </header>
+
+    <!-- 项目特色：帧的一生（推理流水线） -->
+    <section class="hero">
+      <div class="pipeline">
+        <span class="stage">视频源<em>File / RTSP</em></span>
+        <span class="arrow">→</span>
+        <span class="stage">解码<em>FFmpeg · OpenCV</em></span>
+        <span class="arrow">→</span>
+        <span class="stage">有界队列<em>背压 · 丢旧帧</em></span>
+        <span class="arrow">→</span>
+        <span class="stage">worker × N<em>多线程</em></span>
+        <span class="arrow">→</span>
+        <span class="stage core">OpenVINO 推理<em>引擎池</em></span>
+        <span class="arrow">→</span>
+        <span class="stage">NMS 后处理<em>手写</em></span>
+        <span class="arrow">→</span>
+        <span class="stage">告警 / 落库<em>MySQL · webhook</em></span>
+        <span class="arrow">→</span>
+        <span class="stage">gRPC<em>{{ grpc_server }}</em></span>
+      </div>
+      <div class="tags">
+        <span class="tag">C++17</span>
+        <span class="tag">OpenVINO</span>
+        <span class="tag">gRPC / Protobuf</span>
+        <span class="tag">OpenCV</span>
+        <span class="tag">FFmpeg</span>
+        <span class="tag">MySQL</span>
+        <span class="tag">Docker</span>
+        <span class="tag ok">纯 CPU · 30.2 FPS</span>
+      </div>
+    </section>
+
+    <div class="grid">
+      <!-- 左：上传 -->
+      <section class="card">
+        <h2>① 选择图片</h2>
+        <div class="drop" id="drop">
+          <div class="icon">📷</div>
+          <p>点击选择，或把图片拖进来</p>
+          <small>支持 PNG / JPG，建议 &lt; {{ max_msg_mb }}MB</small>
+        </div>
+        <input type="file" id="file" accept="image/*" hidden>
+        <div class="preview" id="previewWrap">
+          <img id="preview" alt="预览">
+        </div>
+        <div class="row">
+          <button class="btn-primary" id="detectBtn" disabled>开始检测</button>
+          <button class="btn-ghost" id="resetBtn" type="button">重置</button>
+        </div>
+        <div class="banner err" id="banner"></div>
+      </section>
+
+      <!-- 右：结果 -->
+      <section class="card">
+        <h2>② 检测结果</h2>
+        <div class="result-empty" id="resultEmpty">
+          上传一张图片并点击「开始检测」，结果会显示在这里。
+        </div>
+        <div class="result" id="resultBody" style="display:none">
+          <div class="result-img-wrap" id="resultImgWrap" title="点击放大">
+            <img id="resultImg" alt="检测结果">
+            <div class="hl" id="hl"></div>
+          </div>
+          <div class="stats">
+            <div class="stat"><b id="statCount">0</b><span>目标数</span></div>
+            <div class="stat"><b id="statTime">-</b><span>往返耗时</span></div>
+          </div>
+          <div class="result-toolbar">
+            <div class="hint">提示：点击下方列表可在图中高亮对应目标；点击图片可放大查看</div>
+            <button class="btn-ghost btn-sm" id="downloadBtn" type="button">下载结果图</button>
+          </div>
+          <table>
+            <thead>
+              <tr><th>#</th><th>类别</th><th>置信度</th><th>框 (w×h)</th></tr>
+            </thead>
+            <tbody id="detBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- ③ 流水线结果：跑完视频后，"最后输出"在这里看 -->
+    <section class="card result-card">
+      <h2>③ 流水线结果（C++ 程序跑完后看这里）</h2>
+      <div class="result-toolbar">
+        <div class="hint" id="resHint">正在读取结果目录…</div>
+        <div class="toolbar-btns">
+          <a class="btn-ghost btn-sm" id="resRaw" href="/api/result-video-raw" download>下载原始 AVI</a>
+          <button class="btn-ghost btn-sm" id="resRefresh" type="button">刷新</button>
+        </div>
+      </div>
+
+      <div class="res-files" id="resFiles"></div>
+
+      <div class="video-wrap" id="videoWrap" style="display:none">
+        <video id="resVideo" controls preload="metadata" playsinline></video>
+        <div class="video-note" id="videoNote">首次播放会自动转码（MJPEG→MP4），大视频请稍候…</div>
+      </div>
+
+      <h3 class="res-sub">画面示意 · 座位区（事件到底发生在画面的哪一块）</h3>
+      <div class="scene" id="scene" style="display:none">
+        <div class="scene-stage">
+          <img id="sceneImg" alt="画面示意（结果视频首帧）">
+          <svg id="sceneSvg" class="scene-svg" preserveAspectRatio="none"></svg>
+        </div>
+        <div class="scene-meta">
+          <div class="scene-legend" id="sceneLegend"></div>
+          <div class="muted" id="sceneHint" style="font-size:11.5px"></div>
+        </div>
+      </div>
+      <div class="muted" id="sceneEmpty" style="font-size:12.5px;display:none"></div>
+
+      <h3 class="res-sub">占座 / 告警事件（从日志抽出，点击可在上方画面中定位）</h3>
+      <div class="events" id="events"><div class="muted" style="font-size:12.5px">正在读取…</div></div>
+    </section>
+
+    <div class="foot">
+      BFF: Flask (HTTP) ⇄ C++ (gRPC {{ grpc_server }}){% if auth_enabled %} · Bearer 鉴权已启用{% endif %} · 消息上限 {{ max_msg_mb }}MB
+    </div>
+  </div>
+
+  <div class="lightbox" id="lightbox">
+    <img id="lightboxImg" alt="放大查看">
+    <div class="lightbox-hint">点击任意处 / 按 Esc 关闭</div>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

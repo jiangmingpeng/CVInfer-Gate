@@ -198,6 +198,9 @@ endif()
 #   ConfigParser       解析 + 校验 + ${VAR:-default} 环境变量展开(不需要外部文件)
 #   ThreadSafeQueue    DropOldest/Block/close/统计/超时(纯内存)
 #   RoiUtils           外扩 + 裁剪(级联与复核共用)
+#   SeatOccupancy     占座判定: 几何归属 + 时序状态机 + 投票(纯逻辑, 不需要模型/视频)
+#                     —— 这是"座位算不算被占"这类**业务口径**的回归锁:
+#                     它不依赖模型/RTSP/MySQL, 所以能给出真正的确定性断言。
 #
 # 为什么不测整条流水线: 主干的瓶颈是**外部依赖**(模型/RTSP/MySQL), 单测强依赖
 # 它们只会变成摆设; 主干回归交给 phase_selftest + 人工链路验收。
@@ -234,6 +237,7 @@ if(CV_BUILD_TESTS)
             tests/unit/test_target_tracker.cpp
             tests/unit/test_sensor_fusion.cpp
             tests/unit/test_config_parser.cpp
+            tests/unit/test_seat_occupancy.cpp
             tests/unit/test_yolo_post_processor.cpp
             tests/unit/test_auth_guard.cpp
             # [T43] 运维面: 指标 / 日志轮转 / 告警推送
@@ -248,6 +252,7 @@ if(CV_BUILD_TESTS)
             src/utils/HttpClient.cpp       # [T43] 告警推送传输层
             src/service/MetricsServer.cpp  # [T43] /metrics 端点
             src/alert/AlertNotifier.cpp    # [T43] 告警推送
+            src/occupancy/SeatOccupancyAnalyzer.cpp # [占座] 规则判定状态机
             src/inference/YoloPostProcessor.cpp
         )
         target_include_directories(cv_unit_tests PRIVATE

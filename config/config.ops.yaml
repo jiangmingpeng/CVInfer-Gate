@@ -29,7 +29,7 @@ sensors:
     labels: ["person"]
 
 fusion:
-  enabled: true
+  enabled: false
   level: decision
   time_tolerance_ms: 50
   match_iou: 0.30
@@ -38,17 +38,31 @@ fusion:
   adopt_sensor_label: false
   buffer_capacity: 256
 
+
 review:
-  enabled: true                  # 没有复核服务端 => unavailable => 兜底告警(演示用)
+  enabled: true                  # 保持 true，没服务端 => unavailable => 兜底告警(完美测试 T43 外发)
   endpoint: "127.0.0.1:50052"
   timeout_ms: 1000
   queue_size: 64
   worker_threads: 2
-  trigger: { labels: ["person"], min_conf: 0.50, max_conf: 1.00 }
+  trigger: { labels: ["bag", "laptop", "book"], min_conf: 0.40, max_conf: 1.00 } # ★ 改为物品触发
   roi_padding: 0.10
-  prompt: "判断该人员是否未佩戴安全帽"
-  alert_type: "安全帽缺失"
+  prompt: "判断该座位是否被长期占座（人离开但物品仍在），注意区分短暂离开" # ★ 改为占座
+  alert_type: "图书馆疑似占座违规" # ★ 改为占座告警
   alert_on_failure: true
+
+
+# review:
+#   enabled: true                  # 没有复核服务端 => unavailable => 兜底告警(演示用)
+#   endpoint: "127.0.0.1:50052"
+#   timeout_ms: 1000
+#   queue_size: 64
+#   worker_threads: 2
+#   trigger: { labels: ["person"], min_conf: 0.50, max_conf: 1.00 }
+#   roi_padding: 0.10
+#   prompt: "判断该人员是否未佩戴安全帽"
+#   alert_type: "安全帽缺失"
+#   alert_on_failure: true
 
 video:
   source_type: "file"

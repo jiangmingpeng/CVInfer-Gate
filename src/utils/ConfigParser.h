@@ -32,6 +32,11 @@ struct VideoConfig {
     std::string source_path; // 视频文件 / RTSP 地址
     int target_fps = 0; // 抽帧目标帧率, 0 = 不限速
     int frame_interval = 1; // 每 N 帧取 1 帧
+    // 结果视频上的可视化(纯观感旋钮, 不影响判定/落库/告警)
+    // 由来: 线宽原来写死 2px —— 在 720x1280 上还行, 换到 544x592 这种小分辨率源
+    // 就显得又粗又糊(MJPG 编码还会把 2px 糊成 ~3px), 密集框下很挡目标。
+    int box_thickness = 1; // 框线宽(px); <=0 = 不画框
+    double label_scale = 0.45; // 框上标签字号; <=0 = 不写字
     QueueConfig queue;
 };
 
@@ -103,6 +108,17 @@ struct ReviewConfig {
     float min_conf = 0.5f; // 触发下界(含)
     float max_conf = 1.0f; // 触发上界(不含)
     float roi_padding = 0.10f; // ROI 外扩比例(相对目标宽高)
+    // [占座/场景复核] 送 VLM 前把"单物体框"扩成"物体所在场景":
+    //   只裁"一本书"(可能不到 120x120)大模型无法判断"占座/场景", 需要看到桌面/
+    //   座位与周围环境。roi_context_scale: 以框中心为基准再放大多少倍(>=1; 1 = 不放大)
+    //   roi_min_side:      放大后仍不足该边长(像素)时补到该边长(0 = 不补)
+    // 两者都为默认值时行为与改造前**完全一致**。
+    float roi_context_scale = 1.0f;
+    int roi_min_side = 0;
+    // [占座] 时序门: 只有"已在画面里停留够久"的目标才送审(ms; 0 = 关闭)。
+    //   占座的定义是"长期占用" => 刚出现/刚建轨的物品先观望, 既省算力又减误报。
+    //   依赖 tracking.enabled(拿不到 track_id 时不拦, 保持宽容)。
+    int min_dwell_ms = 0;
     // 业务/策略
     std::string prompt; // 透传给复核服务的业务提示(可空)
     std::string alert_type = "安全帽缺失"; // 确认后写入的告警类型
@@ -203,7 +219,66 @@ struct TrackingConfig {
     int max_tracks = 256; // 轨迹上限(有界, 防长时间运行无界增长)
 };
 
-// 系统运行配置(聚合)
+// 座位区域(配置里的坐标, 刻意不用 cv::Point —— utils 不引入 OpenCV 依赖,
+// 由 main 在装配时转成 occupancy::SeatZone)
+struct SeatPoint {
+    int x = 0;
+    int y = 0;
+};
+
+struct SeatZoneConfig {
+    std::string name;
+    // 顶点(像素坐标)。两种写法都支持:
+    //   polygon: [[x0,y0],[x1,y1],[x2,y2],[x3,y3]]   任意凸多边形(推荐, 贴合透视)
+    //   rect:    [x, y, w, h]                        矩形(内部展开为 4 个顶点)
+    std::vector<SeatPoint> polygon;
+};
+
+// 占座判定配置  [新增]
+// ---------------------------------------------------------------------------
+// 定位: 卡在「检测」与「大模型复核」**之间**的规则层 —— 用静态座位 zone + 几何关系
+// + 时序状态机, 把"画面里散落着几个 book/bag"变成
+// "A-12 号桌 上物品在、人不在, 已持续 412 秒" 这个**可解释的结论**。
+//
+// 为什么不能省掉这一层(两个常见误解):
+//   ① "再加一个检测器就能判占座" —— 不能。检测器没有"座位"这个概念, 再多模型
+//      也只是多检出几类**物品**, 拿不到"物品属于哪个座位"的空间关系。
+//   ② "让 VLM 看图判占座" —— 单帧图给不出"持续了多久", 而时间维度恰恰是
+//      "占座"定义的核心(坐了 1 分钟 vs 占了 1 小时)。
+//
+// 本层判定后, 只有规则筛出的占座候选才送 VLM 复核 => VLM 调用量降 1~2 个数量级,
+// 且送审时带上结构化证据(describe() 文案), VLM 从"看图猜场景"变成"对证据做裁判"。
+//
+// 默认 enabled=false => 不启用, 行为与改造前完全一致(逐物体送审照旧)。
+// ⚠ 交互: enabled=true 时, 标签命中 item_labels 的目标**不再**走"逐物体送审/告警"
+//    链路(改由占座事件产生告警), 否则会出现"书本告警"与"占座告警"重复上报。
+// 判据 C1~C7 的完整说明见 src/occupancy/SeatOccupancyAnalyzer.h。
+struct OccupancyConfig {
+    bool enabled = false;
+    std::vector<SeatZoneConfig> seats; // 座位区(静态: 机位固定则座位是常量)
+    std::vector<std::string> item_labels; // 构成"物品"的类别; 空 = 用内置默认
+    std::string person_label = "person";
+    // C1 物品归属座位: 底边中点在区内 **或** 与座位区包含度 >= 该值
+    float item_seat_overlap = 0.5f;
+    // C1b 物品在人手上: 物品面积落在 person 框内的比例 >= 该值且中心也在人框内
+    //     => 随身物品, 不算放在桌上(用包含度而非 IoU, 理由见 SeatOccupancyAnalyzer.h)
+    float item_person_overlap = 0.5f;
+    // C2 人在使用座位: 底边中点在区内 **或** 包含度 >= 该值
+    float person_seat_iou = 0.15f;
+    // C2 人框最小高度(像素): 滤掉远景小框/误检; 0 = 不过滤
+    int min_person_height_px = 0;
+    // C3 判占座的持续时间(ms): "物品在 ∧ 人不在"累计够久才判占座。
+    //    这是**业务口径** —— 建议先按 300000(5 分钟)上线, 再由业务方拍板。
+    int t_occupied_ms = 300000;
+    // C4 短暂离开容忍(ms): 人短暂出现(不足该时长)**暂停**计时而不清零;
+    //    人稳定在场 >= 该时长才复位。用于滤掉"起身接水/有人路过被误检"。
+    int t_grace_ms = 90000;
+    // C5 稳定性投票: 最近 vote_n 帧中至少 vote_m 帧满足才算数(去抖动)。
+    //    vote_n=1 时 vote_m 必须为 1 => 等价于逐帧判定。
+    int vote_n = 10;
+    int vote_m = 7;
+};
+
 struct AppConfig {
     LogConfig log;
     VideoConfig video;
@@ -216,6 +291,7 @@ struct AppConfig {
     FusionConfig fusion; // [新增/T25-T26] 多模态决策级融合
     AlertConfig alert; // [新增/T39] 告警去重
     TrackingConfig tracking; // [新增/T40] 目标跟踪(track_id)
+    OccupancyConfig occupancy; // [新增] 占座判定(静态座位 zone + 规则状态机)
     MetricsConfig metrics; // [新增/T43] 指标端点(Prometheus)
 };
 

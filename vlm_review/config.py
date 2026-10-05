@@ -69,7 +69,14 @@ class VlmConfig:
     max_new_tokens: int = 160
 
     # ---- 业务语义 ----
-    default_prompt: str = "判断该人员是否未佩戴安全帽"
+    # default_prompt: C++ 侧 review.prompt 为空时的兜底任务描述;
+    # 留空则用场景自带的 default_task(见 prompts.Scenario)。
+    default_prompt: str = ""
+    # 业务场景: 决定 system prompt / label 词表 / 关键词兜底表。
+    # 可选值见 prompts.scenario_names(); 未知值会**回退默认**(仅告警, 不报错)。
+    scenario: str = "helmet"
+    # 非空 = 直接覆盖场景自带的 system prompt(用于临时自定义业务, 不推荐的长期做法)
+    system_prompt: str = ""
 
     # ---- 观测 ----
     log_every: int = 1                   # 每 N 个请求打印一行(1 = 全部)
@@ -92,6 +99,8 @@ class VlmConfig:
             dtype=_env("VLM_DTYPE", cls.dtype),
             max_new_tokens=_env_int("VLM_MAX_NEW_TOKENS", cls.max_new_tokens),
             default_prompt=_env("VLM_PROMPT", cls.default_prompt),
+            scenario=_env("VLM_SCENARIO", cls.scenario),
+            system_prompt=_env("VLM_SYSTEM_PROMPT", cls.system_prompt),
             log_every=_env_int("VLM_LOG_EVERY", cls.log_every),
         )
         headers = os.environ.get("VLM_EXTRA_HEADERS")

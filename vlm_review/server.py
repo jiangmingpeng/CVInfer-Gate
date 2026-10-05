@@ -38,6 +38,7 @@ from concurrent import futures
 
 from .backends import BackendError, build_backend
 from .config import VlmConfig
+from .prompts import SCENARIOS, resolve_scenario, scenario_names
 
 
 def _repo_root() -> str:
@@ -75,6 +76,10 @@ def build_parser(cfg: VlmConfig) -> argparse.ArgumentParser:
     ap.add_argument("--base-url", dest="base_url", default=cfg.base_url,
                     help="openai 后端: OpenAI 兼容 /v1 地址")
     ap.add_argument("--api-key", dest="api_key", default=cfg.api_key, help="openai 后端: API Key")
+    ap.add_argument("--scenario", default=cfg.scenario,
+                    help="业务场景(决定 system prompt / label 词表), 如 seat_occupancy")
+    ap.add_argument("--system-prompt", dest="system_prompt", default=cfg.system_prompt,
+                    help="非空 = 直接覆盖场景自带的 system prompt")
     ap.add_argument("--max-workers", dest="max_workers", type=int, default=cfg.max_workers,
                     help="gRPC 线程池大小")
     ap.add_argument("--max-tokens", dest="max_tokens", type=int, default=cfg.max_tokens)
@@ -180,6 +185,11 @@ def serve(cfg: VlmConfig, max_rpcs: int = 0) -> int:
         return 2
 
     backend = build_backend(cfg)
+    # 场景: 决定 system prompt / label 词表 / 关键词兜底。未知值回退默认(仅告警)。
+    scenario = resolve_scenario(cfg.scenario)
+    if cfg.scenario and cfg.scenario.strip().lower() not in SCENARIOS:
+        print(f"[vlm] 警告: 未知场景 VLM_SCENARIO={cfg.scenario!r}, 已回退 "
+              f"{scenario.name}; 可选: {', '.join(scenario_names())}", file=sys.stderr)
     ready, detail = backend.ready()
     if not ready:
         print(f"[vlm] 警告: 后端未就绪({detail}); 仍会启动, 但复核可能失败。", file=sys.stderr)
@@ -198,7 +208,8 @@ def serve(cfg: VlmConfig, max_rpcs: int = 0) -> int:
             n = next_no()
             seq = int(request.frame_seq)
             jpeg = bytes(request.image_jpeg)
-            prompt = request.prompt or cfg.default_prompt
+            # 任务文本优先级: C++ 侧 review.prompt > 服务端 VLM_PROMPT > 场景默认任务
+            prompt = request.prompt or cfg.default_prompt or scenario.default_task
 
             if not jpeg:
                 context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
@@ -226,10 +237,14 @@ def serve(cfg: VlmConfig, max_rpcs: int = 0) -> int:
 
             latency_ms = int((time.perf_counter() - t0) * 1000)
             if cfg.log_every > 0 and (n % cfg.log_every == 0):
+                # 注意: roi_meta 由客户端拼好("roi=WxH"), 这里**不要**再加前缀
+                #       (曾写成 roi={roi_meta} => 日志里出现 "roi=roi=107x135")。
+                roi_txt = request.roi_meta or "roi=-"
                 print(f"[vlm] #{n:<4} seq={seq:<6} label={request.label:<8} "
-                      f"conf={request.confidence:.2f} roi={request.roi_meta:<12} "
-                      f"-> confirmed={verdict.confirmed} ({verdict.label}, "
-                      f"{verdict.confidence:.2f}) {latency_ms}ms", flush=True)
+                      f"conf={request.confidence:.2f} {roi_txt:<12} "
+                      f"-> confirmed={verdict.confirmed} label={verdict.label} "
+                      f"conf={verdict.confidence:.2f} "
+                      f"reason={verdict.reason!r} {latency_ms}ms", flush=True)
             return pb.ReviewResponse(ok=True, confirmed=verdict.confirmed,
                                      label=verdict.label, confidence=verdict.confidence,
                                      reason=verdict.reason, model=backend.model_name,
@@ -254,6 +269,9 @@ def serve(cfg: VlmConfig, max_rpcs: int = 0) -> int:
     #       不 flush 会导致"服务已起但仍看不到日志"的排查噩梦(已踩过)。
     print(f"[vlm] 复核服务已启动: {addr}", flush=True)
     print(f"[vlm] backend={backend.kind} model={backend.model_name} | {detail}", flush=True)
+    print(f"[vlm] 场景: {scenario.name} — {scenario.description}"
+          f"{' (system prompt 已被 VLM_SYSTEM_PROMPT 覆盖)' if cfg.system_prompt else ''}",
+          flush=True)
     # [T41] 鉴权状态必须打出来: "以为开了其实没开"是排查噩梦
     if cfg.auth_token:
         print("[vlm] 鉴权: 已开启(要求 authorization: Bearer <token>; Health 也要带)", flush=True)
@@ -292,6 +310,8 @@ def main(argv=None) -> int:
     cfg.max_tokens = args.max_tokens
     cfg.request_timeout_s = args.request_timeout_s
     cfg.pb2_dir = args.pb2_dir
+    cfg.scenario = args.scenario
+    cfg.system_prompt = args.system_prompt
     return serve(cfg, max_rpcs=args.max_rpcs)
 
 

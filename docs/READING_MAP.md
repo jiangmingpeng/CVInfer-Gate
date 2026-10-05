@@ -1,7 +1,7 @@
 # CVInfer-Gate 阅读地图（文件 ↔ 架构层次 ↔ 运行周期）
 
 > **定位**：`docs/OVERVIEW.md` 讲"系统长什么样"；本文讲"**每个文件在什么时候、对谁、起什么作用**"。
-> **口径**：文件规模/符号取自本机实测（`src/` **73 文件 / 8 655 行**；`tests/` 3 167 行）；每个文件的作用引自**源码文件头的 banner**（**代码里已删除 `[Tn]` 标号**：T 号现在只在本套文档中使用，2025 清理），未读到的细节不臆造。
+> **口径**：文件规模/符号取自本机实测（`src/` **75 文件 / 9 605 行**；`tests/` 4 022 行）；每个文件的作用引自**源码文件头的 banner**（**代码里已删除 `[Tn]` 标号**：T 号现在只在本套文档中使用，2025 清理），未读到的细节不臆造。
 > **本文不含代码改动**。编号术语（T / Phase A–D / § / R）见 `OVERVIEW.md` §0。
 
 ---
@@ -32,12 +32,12 @@
    │  utils/ConfigParser │      worker 线程 ×N         │      metrics→pipeline→fusion │
    │  utils/Logger       │      inference/ 借引擎推理   │      →alert(排空)→db(flush)  │
    │  utils/Lifecycle…   │            ▼               │      →signal                  │
-   │  database/DBWriter  │      sink 线程: 融合→跟踪    │                              │
+   │  database/DBWriter     │    sink 线程: 融合→跟踪→占座  │                              │
    │  alert/AlertNotifier│      →去重→落库/画框/告警    │                              │
    │  inference/ 引擎池   │            ▼               │                              │
    │  review/ 客户端      │   ┌────────┴──────────┐    │                              │
    │  sensor/+fusion/     │   ▼        ▼          ▼    │                              │
-   │  tracking/           │ database/  alert/   service/│                              │
+   │  tracking/ occupancy/│ database/  alert/   service/│                              │
    │  service/Metrics…    │ (MySQL/CSV)(webhook) (gRPC) │                              │
    └──────────────────┬──────────────────────────────────────────────────────────────┘
                       │
@@ -48,7 +48,7 @@
    │ L4 调度      pipeline/（VideoPipeline 3 线程 · MultiSensorPipeline 轮询+融合编排）     │
    │ L5 推理      inference/（IModel IInferenceEngine 池 工厂 OV 实现 Yolo 后处理 级联）│
    │ L6 能力      PhaseB=CascadeEngine+BehaviorClassifier · PhaseC=review/ · PhaseD=fusion/ │
-   │ L7 规则/状态 tracking/（TargetTracker）+ utils/AlertGate.h                        │
+   │ L7 规则/状态 tracking/（TargetTracker）· occupancy/（SeatOccupancyAnalyzer）· utils/AlertGate.h │
    │ L8 出口      database/（DBWriter+ConnectionPool） · alert/（AlertNotifier）        │
    │ L9 服务      service/（DetectionServiceImpl GrpcServerSetup AuthGuard MetricsServer）+ main.cpp │
    │ 外围         config/ docker/ scripts/ web_gateway/ vlm_review/ .github/ docs/     │
@@ -57,7 +57,7 @@
 
 ---
 
-## 2. 分层文件总表（`src/` 全 73 个文件）
+## 2. 分层文件总表（`src/` 全 75 个文件）
 
 > 读法：**作用**列=它是什么；**上游调用者**=谁碰它（用来判断改它的影响范围）；**T 号**=它在哪一轮引入（细节查 `PROJECT_NOTES.md`）。
 
@@ -65,14 +65,14 @@
 
 | 文件 | 行 | 作用 | 上游调用者 |
 |---|---|---|---|
-| `ConfigParser.h/.cpp` | 272 / 578 | **系统运行配置**：新版分组结构（旧扁平结构仍可解析）+ `${VAR}` 环境变量展开 + **启动即校验**（非法配置拒绝启动） | `main.cpp`、所有单测的 config 部分 |
+| `ConfigParser.h/.cpp` | 342 / 678 | **系统运行配置**：新版分组结构（旧扁平结构仍可解析）+ `${VAR}` 环境变量展开 + **启动即校验**（非法配置拒绝启动） | `main.cpp`、所有单测的 config 部分 |
 | `Logger.h/.cpp` | 99 / 186 | 分级日志（trace..error）+ 文件落盘 + **[T43] 按大小轮转**（`log_max_size_mb`/`log_keep_files`，0=不轮转） | 全项目（`Logger::instance()`） |
 | `LifecycleCoordinator.h/.cpp` | 87 / 149 | **[T6] 生命周期协调器**：`sigaction` + self-pipe 收 SIGTERM/SIGINT；子对象 `registerChild()`；提供"该退出了"的唯一信号源 | `main.cpp`、`VideoPipeline`、`DBWriter`、`ReviewScheduler`、`MultiSensorPipeline` |
 | `ThreadSafeQueue.h` | 177 | **[T3] 有界队列**：容量 + 丢弃策略（`drop_oldest`/`block`）+ 统计 + 超时等待。**header-only 模板**，是"背压"这条不变量的唯一落点 | `VideoPipeline`、`DBWriter`、`AlertNotifier`、`ReviewScheduler`、`MultiSensorPipeline` |
 | `Metrics.h/.cpp` | 82 / 165 | **[T43] 指标注册表**：counter/gauge/labelled/拉式采集器 4 种形态 + Prometheus 文本格式渲染 | `main.cpp`、`DetectionServiceImpl`、`AlertNotifier`、`ReviewScheduler`、`TargetTracker`、`MetricsServer` |
 | `HttpClient.h/.cpp` | 37 / 201 | **[T43] 极简 HTTP/1.1 客户端**（仅为 webhook；带超时的 connect 是"连不上"最常见卡点） | `AlertNotifier` |
 | `AlertGate.h` | 143 | **[T39] 告警去重**：IoU 判定同一目标 + 冷却窗 + 有界记忆（`max_entries`）；**身份优先**（有 `track_id` 时按身份去重）。header-only | `main.cpp`（sink 回调） |
-| `RoiUtils.h` | 41 | **[T16/T22] ROI 外扩与裁剪**：给二级分类器/复核送"带上下文的目标图" | `CascadeEngine`、`main.cpp`（复核提交） |
+| `RoiUtils.h` | 106 | **[T16/T22] ROI 外扩与裁剪** + **`cropContext()`**（占座/场景复核：以目标为中心扩成"物体所在场景"，而不是只裁一本书） | `CascadeEngine`、`main.cpp`（复核提交） |
 
 ### 2.2 L3 采集：`video/`（5 / 519）与 `sensor/`（8 / 560）
 
@@ -125,6 +125,7 @@
 
 | 文件 | 行 | 作用 | 上游调用者 |
 |---|---|---|---|
+| `occupancy/SeatOccupancyAnalyzer.h/.cpp` | 189 / 354 | **占座判定（规则层）**：静态座位 zone + 几何关系（物品归属/人在不在用）+ 时序状态机（累计/暂停/复位/上升沿）+ M-of-N 投票；**纯逻辑、不依赖模型**，可确定性单测 | `main.cpp`（sink 回调，紧跟跟踪） |
 | `tracking/TargetTracker.h` | 262 | **[T40] 目标跟踪**：IoU + 质心兜底关联、滑行/退休、`track_id` **单调递增且永不复用**（复用会让去重误判）。header-only | `main.cpp`（sink 回调，紧跟融合） |
 | `database/ConnectionPool.h/.cpp` | 70 / 115 | **[T9] 连接池**（`database.pool_size`） | `DBWriter` |
 | `database/DBWriter.h/.cpp` | 134 / 450 | **[T9/T11/T36] 异步批量落库**：攒 `batch_size` 或 `flush_interval_ms` 冲刷；**不可用→`fallback_path` CSV 降级 + 按 `reconnect_interval_ms` 回连 + 恢复后回传**；启动只做 1 次快速连库（不再阻塞） | `main.cpp` |
@@ -138,7 +139,7 @@
 | `service/GrpcServerSetup.h/.cpp` | 24 / 50 | **[T8] 服务端装配**：超时/消息上限（16MB）/keepalive/线程数 + 注册服务 + **[T42] 挂鉴权拦截器** | `main.cpp` |
 | `service/AuthGuard.h` | 134 | **[T42] 主服务(50051)鉴权**：校验 `authorization: Bearer <token>`，未授权回 `UNAUTHENTICATED`（实测退出码/指标可见）；token 空=不鉴权 | `GrpcServerSetup` |
 | `service/MetricsServer.h/.cpp` | 63 / 195 | **[T43] 指标端点**：极简 HTTP/1.1，只服务 `/metrics` 与 `/healthz`；`bind`+`port` 可配（默认 `0.0.0.0:9100`，无鉴权） | `main.cpp` |
-| `main.cpp` | 792 | **唯一的装配中心 + 生命周期 + 业务规则中枢**：解析参数（含 **`--health-check` 探针就实现在这里**，不是单独文件）→ 按固定顺序 init 各子系统 → sink 回调内的处理顺序（§4.2）→ 按固定顺序停机 + 打印各阶段统计 | 进程入口 |
+| `main.cpp` | 980 | **唯一的装配中心 + 生命周期 + 业务规则中枢**：解析参数（含 **`--health-check` 探针就实现在这里**，不是单独文件）→ 按固定顺序 init 各子系统 → sink 回调内的处理顺序（§4.2）→ 按固定顺序停机 + 打印各阶段统计 | 进程入口 |
 
 ### 2.8 外围（不在 `src/`，但决定"能不能跑/怎么跑"）
 
@@ -146,9 +147,9 @@
 |---|---|---|
 | `proto/inference.proto` | 47 | 主服务契约：`Detect`、`Health`（`DetectionService`） |
 | `proto/review.proto` | 50 | 复核服务契约：`Review`、`Health`（`ReviewService`） |
-| `config/config.example.yaml` | 161 | **唯一模板**（不含口令，`${VAR}` 占位）：11 段 184 键（**含 `cascade:`**）；注意其 `video.source_type` 默认是 **rtsp** |
+| `config/config.example.yaml` | 201 | **唯一模板**（不含口令，`${VAR}` 占位）：11 段（**含 `cascade:` / `occupancy:`**）；注意其 `video.source_type` 默认是 **rtsp** |
 | `config/config.ops.yaml` | 108 | **[T43] 运维向**：file 源 + `metrics` 开 + `alert.push` 指向脚本；不依赖 MySQL/复核 |
-| `config/config.rtsp.yaml` / `config.test.yaml` | 127/138 | RTSP 实时流 / **打开 Phase B+C+D** 的真实链路 |
+| `config/config.rtsp.yaml` / `config.test.yaml` | 149/219 | RTSP 实时流 / **打开 Phase B+C+D + 占座** 的真实链路（`config.test.yaml` 默认开 `occupancy` 并带一个可跑的座位） |
 | `config/config.yaml` | 106 | 本机默认配置（**被 `.gitignore`，不在仓库**：必须自己 `cp`） |
 | `config/model_config.yaml` | 53 | **模型清单**（每项带 `role`）——Phase A 的输入 |
 | ~~`config/{cascade,review,sensors}.example.yaml`~~ | — | 原有三个**分段模板**（35/57/60 行），2026-10-02 已合并进 `config.example.yaml` 并删除 |
@@ -158,9 +159,9 @@
 | `scripts/alert_receiver.py` | 131 | **[T43] 伪下游**：收 webhook 并逐条打印（验证告警外发） |
 | `scripts/mock_review_server.py` | 176 | 规则版复核服务端（跑通 Phase C 不花钱） |
 | `scripts/{bench,stack_probe,thread_probe}.sh` | 80/73/78 | 性能基准 / 栈探测 / 线程探测（T35 性能工程遗留工具） |
-| `web_gateway/app.py` (+`*_pb2*.py`) | 136 (+142 生成) | Flask BFF：HTTP ⇄ gRPC（含 [T42] token 透传） |
+| `web_gateway/`（`app.py` + `templates/index.html` + `static/{style.css,app.js}` + 生成桩 `*_pb2*.py`） | —（app.py + 2 静态资源 + 模板） | Flask BFF：HTTP ⇄ gRPC（含 [T42] token 透传）。前端为独立模板/静态资源：页面走 `POST /api/detect`（JSON：带框图 dataURL + 检测列表）、`GET /api/status`（TCP 探活徽标）；旧 `POST /detect`（带框 JPEG）保留兼容 |
 | `vlm_review/*.py` | 1 070 | Phase C 服务端（OpenAI 兼容 / 本地 transformers / mock 三后端 + 鉴权拦截器 + 自测） |
-| `tests/unit/*.cpp`（12 个） | 2 291 | 单测（见 §6） |
+| `tests/unit/*.cpp`（13 个） | 3 147 | 单测（见 §6） |
 | `tests/phase_selftest.cpp` | 584 | 零依赖自检（**52 项**，秒级；ctest 记得它 1 项）|
 | `tests/test_grpc_client.cpp` / `test_review_client.cpp` | 119/173 | 真连服务的联调客户端 |
 | `.github/workflows/ci.yml` | 105 | 编译 + `ctest`（纯文档改动跳过） |
@@ -184,9 +185,10 @@
 | `metrics` | `enabled`、`bind`、`port` | `service/MetricsServer` |
 | `review` | `endpoint`、`timeout_ms`、`worker_threads`、`trigger{}`、`roi_padding`、`prompt`、`alert_type`、`alert_on_failure` | `ReviewScheduler`、`GrpcLlmReviewer`、`main.cpp` |
 | `sensors[]` / `fusion` | `kind/backend/rate_hz/labels` / `time_tolerance_ms/match_iou/sensor_weight/...` | `SensorSourceFactory`、`MultiSensorPipeline`、`SensorFusion` |
+| `occupancy` | `enabled`、`seats[]`(name/polygon/rect)、`item_labels`、`t_occupied_ms`、`t_grace_ms`、`vote_n/vote_m`、`item_seat_overlap`、`item_person_overlap`、`person_seat_iou`、`min_person_height_px` | `occupancy/SeatOccupancyAnalyzer`、`main.cpp` |
 | `tracking` | `iou`、`min_hits`、`max_age_ms` | `TargetTracker` |
 
-> **开关清单（"默认关"的三个 + 两个默认开的）**：`alert.push.enabled=false`、`metrics.enabled=false`、`tracking/dedup` 默认关或等价旧行为；`fusion.enabled`、`review.enabled` 在 **示例** 里是 true（为演示 Phase C/D，注意这与"内部默认"不同）。
+> **开关清单（"默认关"的四个 + 两个默认开的）**：`alert.push.enabled=false`、`metrics.enabled=false`、`occupancy.enabled=false`、`tracking/dedup` 默认关或等价旧行为；`fusion.enabled`、`review.enabled` 在 **示例** 里是 true（为演示 Phase C/D，注意这与"内部默认"不同）。
 
 ### 3.2 数据契约 `inference/DetectionResult.h`（13 字段，谁写谁读）
 
@@ -223,7 +225,7 @@
 | `[health-check] OK addr=… version=… uptime_ms=… <detail>` | `main.cpp:192`（`--health-check`）|
 | `[RtspVideoSource] RTSP 流打开成功: <url>` / `读流中断(…), 开始重连...` / `重连尝试 #N` / `重连成功(累计 N)` | `video/RtspVideoSource.cpp` |
 | `[DBWriter][T36] 数据库不可用, 以【降级模式】启动: 记录先落本地 <path>` | `database/DBWriter.cpp:41` |
-| **关闭时的汇总（`main.cpp:716~790`；稳态期没有任何心跳日志 —— 这是"可观测性 65%"的字面含义）**：`流水线统计: decoded/dropped/processed/emitted`、`级联统计: primary/triggered`、`复核统计: submitted/dropped`、`融合统计: frames/…`、`告警去重统计: allowed/suppressed`、`目标跟踪统计: frames/spawned/retired/active/matched/longest_dwell`、`告警推送统计: pushed/sent/failed/dropped/retried[ last_error=…]`、`结果视频已保存至 output.avi`、`日志轮转次数: N` | `main.cpp` |
+| **关闭时的汇总（`main.cpp:716~790`；稳态期没有任何心跳日志 —— 这是"可观测性 65%"的字面含义）**：`流水线统计: decoded/dropped/processed/emitted`、`级联统计: primary/triggered`、`复核统计: submitted/dropped`、`融合统计: frames/…`、`告警去重统计: allowed/suppressed`、`目标跟踪统计: frames/spawned/retired/active/matched/longest_dwell`、`占座统计: frames/seats/occupied_events` + 逐座位快照、`告警推送统计: pushed/sent/failed/dropped/retried[ last_error=…]`、`结果视频已保存至 output.avi`、`日志轮转次数: N` | `main.cpp` |
 
 指标→注册点的真相：20 组指标在 `main.cpp:615~676` 用 `reg.addCollector(...)` **集中注册**（lambda 去拉各模块的值）；唯一例外是 `cvinfer_grpc_requests_total`，由 `service/DetectionServiceImpl.cpp:19` 直接 `Registry::instance().inc(name, labels)` 累加。`/metrics` 的渲染回调在 `main.cpp:681` 交给 `MetricsServer`。
 
@@ -244,7 +246,7 @@
 | 6 | 322 | 模型与引擎池（=`worker_threads`） | `inference/*` | `模型配置加载成功 (模型数=N)`、`使用检测器: …` |
 | 7 | 352/374 | 复核客户端 + 调度器（若开） | `review/*` | 探活结果 |
 | 8 | 405/411 | 传感器 + 融合编排（若开） | `sensor/*`、`pipeline/MultiSensorPipeline` | `融合统计` 启动行 |
-| 9 | 477 | 目标跟踪（若开） | `tracking/TargetTracker` | — |
+| 9 | 507/577 | 目标跟踪 + 占座判定（若开） | `tracking/TargetTracker`、`occupancy/SeatOccupancyAnalyzer` | `占座判定: 已启用 (座位数=N, 物品类别=[…], t_occupied=…s, t_grace=…s, vote=m/n)` + 逐座位区域 |
 | 10 | 678 | 指标端点（若开） | `service/MetricsServer` | `[指标] /metrics 端点已启动, 端口 9100` |
 | 11 | 687 | gRPC 服务线程 | `service/GrpcServerSetup`+`AuthGuard`+`DetectionServiceImpl` | `gRPC 服务已启动, 监听: <addr>`（同行附 `auth=on\|off`）|
 | 12 | 694 | **流水线启动（此后开始出帧）** | `pipeline/VideoPipeline` | `服务就绪, 按 Ctrl+C 退出。`（**稳态期无心跳日志**；统计只在关闭时汇总打印）|
@@ -262,6 +264,7 @@ video/Rtsp·File  ──►  VideoPipeline::decodeLoop   （frame_interval/targe
                     VideoPipeline::sinkLoop   ──►  main.cpp 的业务回调（**顺序即语义**）：
                           (0)  fusion/MultiSensorPipeline::fuse()   ← 需要融合时（拷贝后改写）
                           (0.5) tracking/TargetTracker::update()    ← 融合之后（传感器补的目标也有 id）
+                          (0.8) occupancy/SeatOccupancyAnalyzer::update()  ← 有状态, 且**必须在"无检测早退"之前**（累计时长靠它推进）
                           (1)  画框/写 output.avi（不等复核，实时）
                           (2)  review/ReviewScheduler::submit()     ← 灰区目标异步复核
                           (3)  utils/AlertGate::allow()             ← 去重（身份优先）
@@ -315,11 +318,12 @@ video/Rtsp·File  ──►  VideoPipeline::decodeLoop   （frame_interval/targe
 
 ---
 
-## 6. 测试 ↔ 被测文件（`tests/unit/` 12 文件 / 128 例 + 3 个端到端工具）
+## 6. 测试 ↔ 被测文件（`tests/unit/` 13 文件 / 179 例 + 3 个端到端工具）
 
 | 测试文件 | 例 | 被测文件 |
 |---|---|---|
-| `test_config_parser.cpp` | 561 | `utils/ConfigParser`（含校验/`${VAR}`/降级） |
+| `test_config_parser.cpp` | 821 | `utils/ConfigParser`（含校验/`${VAR}`/降级） |
+| `test_seat_occupancy.cpp` | 513 | `occupancy/SeatOccupancyAnalyzer`（几何判据 C1/C1b/C2 + 时序状态机 C3/C4/C5/C6 + 时基不变量） |
 | `test_alert_gate.cpp` | 191 | `utils/AlertGate` |
 | `test_sensor_fusion.cpp` | 308 | `fusion/SensorFusion` |
 | `test_target_tracker.cpp` | 201 | `tracking/TargetTracker` |
@@ -343,7 +347,7 @@ video/Rtsp·File  ──►  VideoPipeline::decodeLoop   （frame_interval/targe
 ./build/phase_selftest                 # 期望末行: ===== 结果: 52 项通过, 0 项失败 ===== ，退出码 0
 
 # ② 单元测试 —— 最快的"行为规格书"
-cd build && ctest --output-on-failure  # 期望: 129/129 通过
+cd build && ctest --output-on-failure  # 期望: 180/180 通过
 
 # ③ 真跑一条链路 + 看可观测面（不需要 MySQL / 复核服务）
 python3 scripts/alert_receiver.py --port 8899            # 终端A: 期望打印监听信息
@@ -362,6 +366,7 @@ curl -s http://127.0.0.1:9100/metrics | head -40         # 期望: 20 组 cvinfe
 | 换/加检测模型 | `config/model_config.yaml` | —（`role` 决定装配） | 跑 `phase_selftest` + `ctest` |
 | 改 NMS/阈值 | `inference/YoloPostProcessor.*` | 配置默认值 | `test_yolo_post_processor.cpp` |
 | 加一条**告警规则**（如"停留>30s"） | `main.cpp` 的 sink 回调（规则判断处） | `utils/AlertGate`（去重键）、`config` 增加阈值段、`ConfigParser` 默认值+校验 | 新单测；`PROJECT_NOTES` 记一笔 |
+| 加/改**座位 zone** 或占座判据 | `config` 的 `occupancy.seats` + 阈值 | `src/occupancy/SeatOccupancyAnalyzer.*`（判据 C1~C7） | `test_seat_occupancy.cpp`；**zone 别画到"人坐的地方"**（否则永远命中 C2、永不判占座） |
 | 改**告警出口**（钉钉/企业微信） | `alert/AlertNotifier.*`（`Transport` 或载荷） | `README` 载荷契约、`scripts/alert_receiver.py` | `test_alert_notifier.cpp` |
 | 改**落库字段/表** | `database/DBWriter.cpp`、`scripts/schema.sql`+`docker/init_db.sql` | `utils/ConnectionPool`（批量 SQL） | 两个 SQL 要同步改 |
 | 加**指标** | `utils/Metrics.h`（注册处+名字） | 采集点所在文件、`docker/prometheus.example.yml`、README 指标清单 | 名字前缀统一 `cvinfer_` |

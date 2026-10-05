@@ -1,6 +1,6 @@
 # CVInfer-Gate 全流程 Runbook
 
-> **一条命令链跑通完整链路**：file 源 → 推理 → Phase B 级联 → 真 VLM 复核 → Phase D 融合 → 跟踪去重 → 落库 / 告警外发 → 可观测 → 优雅退出。
+> **一条命令链跑通完整链路**：file 源 → 推理 → Phase B 级联 → 真 VLM 复核 → Phase D 融合 → 跟踪去重 → **占座规则层** → 落库 / 告警外发 → 可观测 → 优雅退出。
 > 标注：🧰 所需环境/工具　▶ 命令　👀 启动后应看到的效果。
 > 实测环境：g++ 15.2 · CMake 4.2.3 · OpenVINO 2026.4.0 · OpenCV 4.10 · gRPC++ 1.51 · MySQL Connector 1.1.12 · Python 3.14。
 
@@ -37,7 +37,7 @@ cmake .. && make -j$(nproc)
 冒烟自检（零外部依赖，秒级）：
 
 ```bash
-ctest --output-on-failure   # 期望 129/129
+ctest --output-on-failure   # 期望 180/180
 ./phase_selftest            # 期望 52 项通过, 0 项失败（退出码 0）
 ```
 
@@ -77,6 +77,7 @@ python3 -m grpc_tools.protoc -I proto \
 | `fusion` | `enabled` | `true` | Phase D（stub 雷达，无需硬件） |
 | `alert.push` | `enabled` | `true`（可选） | 告警 webhook 外发 |
 | `metrics` | `enabled` | `true`（可选） | `/metrics` 端点 |
+| `occupancy` | `enabled` | `true` | **占座判定（规则层）**；座位写法 `seats[].rect: [x,y,w,h]` 或 `polygon: [[x,y],…]`。⚠️ **zone 别画到“人坐的地方”**：命中 C2（人在使用）就永远不判占座；先用临时多座位网格探针看物品/人到底落在哪 |
 
 ⚠️ 改**源码**的 `config/*.yaml`，别改 `build/config/`（构建时会被源码覆盖）。
 
@@ -145,6 +146,9 @@ ALERT_TOKEN=demotoken ./CVInfer-Gate --config /home/jmp/CVInfer-Gate/config/conf
 [ModelPoolManager] 初始化完成, 模型数: 2
 使用检测器: cascade (级联模式)          ← Phase B 唯一判据；出不来 = 静默退化为单模型
 目标跟踪: 已启用 (iou=0.3, max_age=1000ms)
+告警去重: 已启用 (iou=0.3, cooldown=5000ms)
+占座判定: 已启用 (座位数=1, 物品类别=[book, bag, laptop], t_occupied=2s, t_grace=5s, vote=7/10)
+占座判定: 标签 [book, bag, laptop] 的逐物体送审已抑制, 改由占座事件产生告警   ← 开了占座就不会再报“书本告警”
 gRPC 服务已启动, 监听: 0.0.0.0:50051
 [指标] /metrics 端点已启动, 端口 9100
 服务就绪, 按 Ctrl+C 退出。
@@ -163,10 +167,30 @@ gRPC 服务已启动, 监听: 0.0.0.0:50051
 | 指标 | `curl -s http://127.0.0.1:9100/metrics \| head -40` | 20 组 `cvinfer_*` |
 | 健康探针 | `./CVInfer-Gate --config <cfg> --health-check` | `[health-check] OK addr=127.0.0.1:50051 version=1.0.0 … detector=…`，退出码 `0` |
 | gRPC | `./grpc_client` | `检测到目标数量: N`，退出码 `0` |
-| Web | `cd web_gateway && cp env.example .env && python3 app.py` | 浏览器 `localhost:8080` 上传图片 → 返回带框图 |
+| Web | `bash web_gateway/run.sh`（一键：自动用/建 `.venv`、缺依赖自动装、缺桩文件自动生成）<br>或手动 `cd web_gateway && source ../.venv/bin/activate && python app.py` | 浏览器 `localhost:8080` 上下两块：① **单图检测** —— 拖拽/选择图片 → 无刷新出带框图 + 检测列表；右上角 C++ 服务在线徽标；点击列表行高亮对应框、点击结果图放大（Esc 关闭）、一键下载结果图；② **③ 流水线结果** —— 在线播带框视频（首次自动转码）+ 占座/告警事件时间线 + 产物文件清单 |
 | 复核直连 | `./review_client 127.0.0.1:50052 /tmp/frame.jpg "判断该人员是否未佩戴安全帽"` | 打印 backend + 结论行 |
 
-运行中产物：`build/output.avi`（带框视频）、`build/logs/cvinfer.log`（若开 + 轮转）、MySQL `cv_infer.detections / alerts`、伪下游逐条打印告警。
+**检测结果到底去哪看？（按“直不直观”排序）**
+
+| 产物 | 位置 / 怎么看 | 直观程度 |
+|---|---|---|
+| **带框结果视频** | `build/output.avi`（C++ 写出的 MJPEG）—— 可**直接在网页看**：`localhost:8080` → 「③ 流水线结果」；后端按需用 ffmpeg 转 H.264 mp4（100MB 约 6s）并缓存，支持拖进度条；也可点「下载原始 AVI」本地播 | 🟢 最直观 |
+| **占座/告警事件** | 控制台实时输出 + `build/logs/cvinfer.log`；网页「占座/告警事件」把它拉成时间线（`GET /api/events`），并把座位/物品/已持续时长/投票拆成结构化字段 | 🟢 可直接读 |
+| **事件在画面哪里** | 网页「画面示意 · 座位区」：底图 = 结果视频首帧，蓝框 = 配置里的 `occupancy.seats`（`GET /api/scene` + `/api/scene-frame`）；点事件行即高亮对应座位区（A-12 到底是画面哪一块，一眼就知道） | 🟢 一眼定位 |
+
+> ⚠ **网页事件时间线老是空的？** 九成是日志配置没生效。日志相关键全在 **`app` 段**
+> （`app.log_level` / `app.log_file` / `app.log_max_size_mb` / `app.log_keep_files`），
+> **不是**顶层的 `log:` 段 —— ConfigParser 只读 `app.*`；写成顶层 `log: {level, file}`
+> 是**静默失效**的（文件不生成，也不报错，很容易查半天）。
+> 自检：启动日志里应该有这行 ——
+> `[Logger] 日志轮转已开启: logs/cvinfer.log (...)`；没有就说明 `log_file` 根本没被读到。
+> `log_file` 相对 **CWD**（从 `build/` 启动 ⇒ `build/logs/cvinfer.log`，正好是网页默认读的位置），
+> 也可用环境变量 `RESULT_LOG` 指到别处。
+| **单张图片实时推理** | 网页上半部分（`POST /api/detect`，走 gRPC）—— 上传即出带框图 + 列表。⚠️ 它和视频流水线是**两条独立链路**（这条不读 `output.avi`） | 🟢 立即可见 |
+| **结构化检测记录** | MySQL `cv_infer.detections` / `alerts`（需写 SQL）；库不可用时降级到 `build/db_fallback.csv` | 🟡 要查库 |
+| 指标 / 探针 | `/metrics`、`--health-check` | 🟡 给监控/编排用，不是给人看结果的 |
+
+其它产物：`build/logs/cvinfer.log`（若开 + 轮转）、伪下游逐条打印告警；`build/output.web.mp4` 是网页播放用的转码缓存（源视频更新后自动重转，可直接删）。
 
 实测 `/metrics` 关键行（对照数字是否合理）：
 
@@ -194,6 +218,8 @@ pkill -TERM -f './CVInfer-Gate --config'
 融合统计: frames=… samples=… matched=…
 告警去重统计: allowed=… suppressed=…
 目标跟踪统计: frames=… active=… longest_dwell=…ms
+占座统计: frames=1332 seats=1 occupied_events=2           ← 每次占用只计一次（上升沿）
+  [占座] 座位 A-12: 检出物品 [laptop], 已连续 3 秒「有物品且无人使用」, 最近一次检测到人在座位上是 5 秒前   ← 逐座位快照（运维最常问的“现在哪个座位被判占了”）
 告警推送统计: pushed=… sent=… failed=… dropped=… retried=…
 结果视频已保存至 output.avi
 已安全退出。
@@ -210,3 +236,5 @@ pkill -TERM -f './CVInfer-Gate --config'
 5. **级联静默退化**：`cascade.secondary` 必须与 `model_config.yaml` 模型名完全一致。
 6. **复核全 `unavailable`**：上游 VLM 没起 / `--base-url` 不对 / 两端 token 不一致。
 7. **RTSP**：`source_type` 与 `source_path` 两个键都要改；抽帧用 `frame_interval`，别用 `target_fps`。
+8. **`python app.py` 报 `ModuleNotFoundError: No module named 'flask'` ⇒ 不是代码坏了**：依赖装在仓库根的 `.venv` 里，你用的是系统 Python。用 `bash web_gateway/run.sh`（一键），或先 `source .venv/bin/activate`。`app.py` 现已把「缺什么 / 用错了解释器 / 怎么装」打成中文提示（退出码 2），不再只丢一句英文堆栈。
+9. **网页「流水线结果」显示“还没有结果视频”**：说明还没跑过 C++ 主程序（没产出 `output.avi`），或 `RESULT_DIR` 不是它在写的位置（默认 `<仓库根>/build`，可用环境变量覆盖）。

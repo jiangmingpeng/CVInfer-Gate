@@ -106,6 +106,7 @@ src/
 ├── sensor/     Phase D: 传感器统一抽象（视频 / 雷达 / 红外）
 ├── fusion/     Phase D: 时间对齐 + 目标关联 + 加权置信度融合
 ├── tracking/   [T40] 目标跟踪（IoU+质心兜底关联，输出 track_id）
+├── occupancy/  [占座] 占座判定（静态座位 zone + 几何判据 + 时序状态机；**纯逻辑、不依赖模型**，可确定性单测）
 └── utils/      线程安全队列、配置解析、LifecycleCoordinator(信号处理)、AlertGate(去重)、
                [T43] Logger(轮转) / Metrics(注册表) / HttpClient
 ```
@@ -123,7 +124,7 @@ src/
 |---|---|
 | `config/config.yaml` | 本地默认（file 源）|
 | `config/config.rtsp.yaml` | RTSP 实时流 |
-| `config/config.test.yaml` | 打开 Phase B/C/D 跑真实链路（`cascade` / `review` / `fusion` 三段 enabled 均为 true；复核需先起 `vlm_review/` 或 `scripts/mock_review_server.py`）|
+| `config/config.test.yaml` | 打开 Phase B/C/D + **占座** 跑真实链路（`cascade` / `review` / `fusion` / `occupancy` 均开启；复核需先起 `vlm_review/` 或 `scripts/mock_review_server.py`）|
 | `config/config.ops.yaml` | **[T43] 运维向**：file 源 + `metrics` 端点开启 + `alert.push` 指向 `scripts/alert_receiver.py`；不依赖 MySQL / 复核服务，用于验证可观测性与告警外发 |
 
 ---
@@ -153,17 +154,18 @@ src/
 | Phase D 融合(stub) | 🟢 **可信** | 端到端 `matched=66` |
 | MySQL 落库 | 🟢 **可信** | 表已建，正常写入，不再产生 `db_fallback.csv` |
 | 自检 | 🟢 52/52 | `phase_selftest`，零外部依赖、秒级 |
-| 单元测试 / CI | 🟢 **[T38+T39+T40+T42+T43] 新增** | `ctest` = `cv_unit_tests`(gtest 128 例) + `phase_selftest`，共 129 项全绿；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过）|
+| 单元测试 / CI | 🟢 **[T38+T39+T40+T42+T43+占座] 新增** | `ctest` = `cv_unit_tests`(gtest 179 例) + `phase_selftest`，共 180 项全绿；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过）|
 | 可观测性 / 告警外发 | 🟢 **[T43] 新增** | `/metrics` 20 组指标（Prometheus 文本格式）+ `--health-check`（退出码 0/2/3/4/5）+ 告警 webhook 外发（实测 5/5 投递；死端口 `failed=3 retried=6` 不影响主链路）+ 日志按大小轮转；均默认关闭 |
 | 性能 | 🟢 **已定档** | 30.2 ± 0.7 fps；FP32 天花板 ~33 fps（12 组配置验证）|
 | Phase B 级联 | 🟡 **能跑通 / 精度未回归** | `helmet_classifier` 已注册并启用；缺的是精度回归 |
 | Phase C 复核 | 🟡 **两端已就位** | [T37] `vlm_review/` 已提供；真 VLM 结论未实测 |
-| `web_gateway` | 🟡 **未联调** | 需 `cp web_gateway/env.example web_gateway/.env` |
+| `web_gateway` | 🟡 **未联调** | 需 `cp web_gateway/env.example web_gateway/.env`；前端为独立 `templates/` + `static/`（拖拽上传 / 无刷新结果 / 检测列表 / `GET /api/status` 在线徽标），页面数据走 `POST /api/detect` |
 | T29 输出视频 | 🟡 **未回归** | 且只能在 RTSP 实时源下验证 |
 | 数据库不可用 | 🟢 **[T36] 已修** | 改为降级：写 `db_fallback.csv` + 后台按 `reconnect_interval_ms` 自动回连并在恢复后回传（启动只做 1 次快速连库）|
 | RTSP 断流/关闭 | 🟢 **[T36] 已修** | `interrupt_callback` 打断 `av_read_frame` + 读循环内指数退避重连（0.5s→8s），对上层透明 |
 | **主干自动化测试** | 🔴 **未覆盖** | [T38] 补了 NMS/融合/配置/队列/ROI/去重/跟踪的单测，但**流水线 / 落库 / gRPC 服务**仍无自动化 |
 | **目标跟踪 / 告警去重** | 🟡 **均已实现 / 无外观特征** | [T39] 去重 + [T40] `track_id`（IoU + 质心兼底，滑行/退休，**身份优先去重**）⇒ 逐帧重复告警基本消除；但无 re-ID 特征 ⇒ 遮挡/交叉后 ID switch 仍会重复一次，轨迹预测与停留/徘徊**告警规则**未做 |
+| **占座判定（规则层）** | 🟡 **已实现 / 座位静态** | [占座] `src/occupancy/`：静态座位 zone + 几何判据（物品底边中点/包含度）+ 时序状态机（累计/暂停/复位/上升沿）+ M-of-N 投票，把"散落的 book/bag 框"变成"A-12 号座位：物品在、人不在，已持续 412 秒"的可解释结论，送 VLM 时带结构化证据；实测 `config.test.yaml`（图书馆视频）`occupied_events=2` → `submitted=2`，33 条单测。⚠️ 座位 zone **是静态的**（机位会动则需先标定）、时基是**墙钟**（非帧时间戳）、无跨机位去重 |
 
 **一句话账目：架构完备度高，真实资源验证覆盖率低。**
 
@@ -180,10 +182,10 @@ src/
 |---|---|---|
 | 架构设计 | 🟢 85% | 分层/抽象/可插拔，多数同类项目做不到 |
 | 代码组织 | 🟢 80% | 目录清晰、职责分明 |
-| 功能完整度 | 🟡 85% | 四层都在，B 有真分类器、C 两端齐全，[T39] 去重 + [T40] 目标跟踪（`track_id`）；**仍缺行为规则（停留/徘徊）与轨迹预测** |
+| 功能完整度 | 🟡 85% | 四层都在，B 有真分类器、C 两端齐全，[T39] 去重 + [T40] 目标跟踪（`track_id`）+ **[占座] 业务规则层（“物品在 ∧ 人不在”持续多久 → 占座证据）**；**仍缺行为规则（停留/徘徊）与轨迹预测** |
 | 文档 | 🟢 90% | 少见的好（含实测数据与踩坑记录）|
 | 性能工程 | 🟢 80% | 已量化到天花板，知道"该停" |
-| **测试自动化** | 🟡 60% ⬆️[T38+T39+T40+T42+T43] | 已补 gtest 单测(NMS/融合/配置/队列/ROI/告警去重/目标跟踪/鉴权语义/**[T43] 指标+告警推送重试丢弃+日志轮转**，128 例) + ctest + GitHub Actions；**主干（流水线 / 落库 / gRPC 服务）仍靠人工验收** |
+| **测试自动化** | 🟡 60% ⬆️[T38+T39+T40+T42+T43+占座] | 已补 gtest 单测(NMS/融合/配置/队列/ROI/告警去重/目标跟踪/鉴权语义/**[T43] 指标+告警推送重试丢弃+日志轮转**/**占座规则状态机**，179 例) + ctest + GitHub Actions；**主干（流水线 / 落库 / gRPC 服务）仍靠人工验收** |
 | **可观测性** | 🟡 65% ⬆️[T43] | 结构化日志 + 落盘 + **[T43] 按大小轮转**；**[T43] `/metrics`（20 组指标）+ `--health-check` 探针 + 告警 webhook 外发（有界队列/重试退避/统计）**；仍缺：tracing / Grafana 面板 / 指标端点鉴权 |
 | **容错健壮性** | 🟢 70% ⬆️[T36] | DB 降级+自动回连、RTSP 断流重连、复核不可用兜底；剩余：结果视频无大小上限 |
 | **部署运维** | 🟡 60% ⬆️[T43] | 有 compose + CI + **[T43] 容器 healthcheck（`--health-check`）+ Prometheus 抓取示例**；仍缺：secrets 集中管理 / 资源限制 / 日志收集（ELK/Loki） |
@@ -223,11 +225,11 @@ src/
 |---|---|
 | `README.md` | 项目门面 + 验证状态表 |
 | `PROJECT_NOTES.md` | 完整开发史、实测数据、踩坑记录、逐条设计决策 |
-| `docs/READING_MAP.md` | **[新增] 文件级阅读地图**：文件 ↔ 架构层次 ↔ 运行周期（全 73 个 `src/` 文件的职责、真实日志串、线程/队列映射、变更影响表）|
+| `docs/READING_MAP.md` | **[新增] 文件级阅读地图**：文件 ↔ 架构层次 ↔ 运行周期（全 75 个 `src/` 文件的职责、真实日志串、线程/队列映射、变更影响表）|
 | `PROJECT_NOTES.md` §20.12–§20.15 | 性能工程与收尾对账（本文的账目来源）|
 | `docker/docker-compose.yml` | 一键拉起 MySQL + C++ 网关 + Python Web 网关 |
 | `scripts/schema.sql` | 数据库表结构（与 `docker/init_db.sql` 等价）|
 | `vlm_review/` | Phase C 复核服务端（OpenAI 兼容 / 本地 transformers / mock 三后端）|
 | `config/config.ops.yaml` + `scripts/alert_receiver.py` + `docker/prometheus.example.yml` | [T43] 可观测性三件套：开箱即跑的运维配置 / 伪下游接收端 / Prometheus 抓取配置 |
-| `tests/unit/` | [T38] gtest 单元测试：NMS / 多模态融合 / 配置校验 / 线程安全队列 / ROI / 告警去重（[T39]）/ 目标跟踪（[T40]）/ 鉴权语义（[T42]） |
+| `tests/unit/` | [T38] gtest 单元测试：NMS / 多模态融合 / 配置校验 / 线程安全队列 / ROI / 告警去重（[T39]）/ 目标跟踪（[T40]）/ 鉴权语义（[T42]）/ 占座规则状态机（[占座]） |
 | `.github/workflows/ci.yml` | [T38] CI：编译 + `ctest`（push / PR；纯文档改动跳过，同分支旧跑自动取消）|

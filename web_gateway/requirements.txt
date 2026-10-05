@@ -1,6 +1,18 @@
+# web_gateway（Flask BFF）依赖
+#
+# 安装（任选）：
+#   A) 一键： bash web_gateway/run.sh
+#   B) 手动： source .venv/bin/activate && pip install -r web_gateway/requirements.txt
+#
+# ⚠ 装完要用同一个解释器跑 app.py（否则报 ModuleNotFoundError: No module named 'flask'）
 flask
+# gRPC 运行库
+# grpcio-tools 用于生成 inference_pb2*.py 桩文件
+
 grpcio
 grpcio-tools
+# OpenCV headless：容器/无桌面环境也能用（不依赖 libGL）
 opencv-python-headless
 numpy
+# 可选：自动加载 web_gateway/.env（没装也不影响，app.py 里是 try/except）
 python-dotenv
