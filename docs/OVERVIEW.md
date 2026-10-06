@@ -230,7 +230,7 @@ src/
 | `PROJECT_NOTES.md` | 完整开发史、实测数据、踩坑记录、逐条设计决策 |
 | `docs/READING_MAP.md` | **[新增] 文件级阅读地图**：文件 ↔ 架构层次 ↔ 运行周期（全 75 个 `src/` 文件的职责、真实日志串、线程/队列映射、变更影响表）|
 | `PROJECT_NOTES.md` §20.12–§20.15 | 性能工程与收尾对账（本文的账目来源）|
-| `docker/docker-compose.yml` | 一键拉起 MySQL + C++ 网关 + Python Web 网关 |
+| `docker/docker-compose.yml` + `docker/.env.example` + `config/config.docker.yaml` | **一键复现**：`cp docker/.env.example docker/.env`(填口令) + 仓库根放 `test.mp4` + `cd docker && docker compose up -d --build` ⇒ MySQL + C++ 网关(:50051) + Web 网关(:8080)；口令走 `.env` → yaml 里的 `${VAR}`，结果产物落 `cvinfer-output` 命名卷(gate 写 / web 读) |
 | `scripts/schema.sql` | 数据库表结构（与 `docker/init_db.sql` 等价）|
 | `vlm_review/` | Phase C 复核服务端（OpenAI 兼容 / 本地 transformers / mock 三后端）|
 | `config/config.ops.yaml` + `scripts/alert_receiver.py` + `docker/prometheus.example.yml` | 可观测性三件套：开箱即跑的运维配置 / 伪下游接收端 / Prometheus 抓取配置 |

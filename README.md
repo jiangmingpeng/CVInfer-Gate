@@ -1,7 +1,7 @@
 # CVInfer-Gate: 基于 C++ 与 OpenVINO 的高性能 AI 推理网关
 
 ![C++](https://img.shields.io/badge/C++-17-blue.svg)
-![OpenVINO](https://img.shields.io/badge/OpenVINO-2026.4.0-green.svg)
+![OpenVINO](https://img.shields.io/badge/OpenVINO-2025.4.0-green.svg)
 ![Docker](https://img.shields.io/badge/Docker-Enabled-blue.svg)
 ![gRPC](https://img.shields.io/badge/gRPC-Supported-orange.svg)
 
@@ -133,41 +133,67 @@ CVInfer-Gate/
 </details>
 
 
-**2. 准备配置与测试视频**（模型已随仓库入库，无需准备）
+**2. 填写 docker/.env（口令）**
+
+```bash
+cp docker/.env.example docker/.env
+# 编辑 docker/.env：至少把 MYSQL_ROOT_PASSWORD 与 DB_PASSWORD 填成**同一个**口令,
+# 否则 mysql:8.0 会因空口令初始化失败、网关连不上库而降级写 CSV。
+```
+
+**3. 放一段测试视频**（模型已随仓库入库，无需准备）
 
 **模型**：`models/` 下的 IR（`yolov8n.*` 检测 + `library_det.*` 图书馆场景检测 + `helmet_cls.*` 分类器样例）与标签**已入库**，
 clone 即可用（[决策 a] 目标 = “clone 就能跑”）。
 
-**配置**：主配置不入库（避免口令进 git），从模板生成：
-```bash
-cp config/config.example.yaml config/config.yaml
-export DB_PASSWORD=<你的 MySQL 口令>   # docker 跑时与 docker/.env 的 MYSQL_ROOT_PASSWORD 一致
-export VLM_TOKEN=<复核 token>          # 可选；设了则必须等于服务端 VLM_AUTH_TOKEN
-export GRPC_AUTH_TOKEN=<主服务 token>  # 可选；服务端/网关/grpc_client 必须一致
-export ALERT_PUSH_URL=<webhook 地址>    # 可选；如 http://127.0.0.1:8899/alert
-export ALERT_TOKEN=<webhook token>      # 可选；与接收端校验的 x-alert-token 一致
-```
-（`ConfigParser::expandEnv` 会展开 yaml 里的 `${VAR}`，所以口令不必写回文件。）
+**配置**：Docker **不需要** `config/config.yaml` —— 它用仓库里已入库的 **`config/config.docker.yaml`**（Docker 专用），
+容器内由 `CVINFER_CONFIG` 指定；`config/` 是挂载进去的 ⇒ 改完 `docker compose restart cv-infer-gate` 即生效。
+口令 / 视频源等全部走环境变量（见上一步 `docker/.env`），`ConfigParser::expandEnv` 会展开 yaml 里的 `${VAR}`。
 
-**测试视频**：`test.mp4` 需自备（体积大，不入库）——
-**本地直接跑放 `build/`**（程序按当前工作目录解析相对路径），**docker 跑放项目根目录**（compose 已挂载 `../test.mp4`）。
+**测试视频**：`test.mp4` 需自备（体积大，不入库）——Docker 放到**仓库根目录**
+（compose 把 `../test.mp4` 挂到容器 `/app/test.mp4`；**缺失时 compose 会明确报错**，不会静默建目录）。
+想用 RTSP 源：改 `config/config.docker.yaml` 的 `video.source_type` / `source_path`（容器内指向 `host.docker.internal`）。
 
-**3. 一键启动**
+**4. 一键启动**
 
 ```bash
 cd docker
-docker compose build
-docker compose up -d
+docker compose up -d --build
 ```
 
-**4. 验证服务**
+首次会拉 OpenVINO / 编译 C++（约 5~10 分钟）。会依次拉起三个服务：
+`mysql-db`（建表）→ `cv-infer-gate`（C++ 推理网关 :50051）→ `web-gateway`（Flask BFF :8080）。
+
+**5. 验证**
 
 ```bash
-docker compose logs -f cv-infer-gate
+cd docker
+docker compose ps                     # cv-infer-gate 应显示 (healthy)
+docker compose logs -f cv-infer-gate  # 看推理日志(找 "原视频分辨率" / FPS 统计)
 ```
 
-浏览器访问 `http://localhost:8080`：上半部分拖拽/选择图片即可实时看到带框结果与检测列表；下半部分「③ 流水线结果」可直接在线播放带框结果视频，并列出占座/告警事件。
-或使用 gRPC 客户端：`./build/grpc_client`
+浏览器打开 **http://localhost:8080**：上半部分拖拽/选择图片即可实时看到带框结果与检测列表；
+下半部分「③ 流水线结果」可直接在线播放带框结果视频，并列出占座/告警事件。
+也可用 gRPC 客户端：`./build/grpc_client`。
+
+> **结果产物**：落在命名卷 `cvinfer-output`（`output.avi` + `logs/cvinfer.log` + 连不上库时的 `db_fallback.csv`），
+> `cv-infer-gate` 与 `web-gateway` 共享该卷 ⇒ 网页才能读到结果视频与事件时间线。
+> 宿主机查看：`docker run --rm -v docker_cvinfer-output:/v alpine ls -l /v`。
+
+### 非 Docker（本地直接跑）
+
+本地不读 `config.docker.yaml`，仍用 `config/config.yaml`（从模板生成）+ 环境变量注入口令：
+
+```bash
+cp config/config.example.yaml config/config.yaml
+export DB_PASSWORD=<你的 MySQL 口令>     # 与本地 MySQL 一致
+export GRPC_AUTH_TOKEN=<主服务 token>    # 可选；服务端/网关/grpc_client 必须一致
+export VLM_TOKEN=<复核 token>            # 可选；设了则必须等于服务端 VLM_AUTH_TOKEN
+export ALERT_PUSH_URL=<webhook 地址>      # 可选；如 http://127.0.0.1:8899/alert
+export ALERT_TOKEN=<webhook token>        # 可选；与接收端校验的 x-alert-token 一致
+```
+（`ConfigParser::expandEnv` 会展开 yaml 里的 `${VAR}`，口令不必写回文件。）
+`test.mp4` 放 `build/`（程序按当前工作目录解析相对路径）。
 
 
 ## 本地开发与阶段自检
@@ -260,9 +286,9 @@ kill -TERM <pid>
 > 提示：CMake 的 POST_BUILD 会用源码目录的 `config/` 覆盖 `build/config/`，所以不要改 `build/config/config.yaml`；
 > 要改就改源码 `config/config.yaml`，或用 `--config` 指向另一个文件。
 
-## 验证状态（本项目“结尾”时的账目）
+## 验证状态
 
-**一句话：架构完备度高，真实资源验证覆盖率低。**
+**架构完备度可以，真实资源验证覆盖率低**
 
 | 层 | 状态 | 说明 |
 |---|---|---|
@@ -279,7 +305,7 @@ kill -TERM <pid>
 | 可观测性 / 告警外发 | 🟢 **新增** | `/metrics` 20 组指标（Prometheus 文本格式，实测 5 条真告警全部投递到 webhook、死端口场景 `failed=3 retried=6` 且不影响主链路）+ `--health-check` 探针（实测 0/4 退出码）+ 日志文件按大小轮转（5 条单测）；均默认关闭 |
 | 占座判定（规则层） | 🟢 端到端实测 | `config/config.test.yaml`（图书馆场景 test.mp4）实测 `占座统计: frames=1332 seats=1 occupied_events=2`，并 `复核统计: submitted=2`（带结构化证据送审）；33 条确定性单测；退出时逐座位快照（运维最常问的“现在哪些座位被判占了”） |
 
-**已知限制（剩余）**：
+**已知限制**：
 1. 结果视频无大小上限；RTSP 重连后若分辨率变化，sink 端 `VideoWriter` 不会自动重建（换流请重启进程）。
 2. **告警去重现在是「身份优先」的**：默认启用跟踪 ⇒ 同一 `track_id` 即使框移开也只告警一次（快速移动目标不再重复）。但**无外观(re-ID)特征**，遮挡/交叉后可能换 id（ID switch），那之后仍可能重新告警一次；`tracking.enabled=false` 则退回纯几何去重。另外 `track_id` **未落库**（`detections` 表无该列，需 schema 迁移），gRPC 响应也没带它。
 3. **告警外发/指标是后续新增的**，且各带边界：`/metrics` **无鉴权**（只应暴露在受信网络）、webhook 只支持**明文 http**、推送队列**不落盘**（`kill -9` 时未发出的通知会丢，账在 DB）—— 详见下面的「已知边界」。
@@ -420,7 +446,7 @@ kill -TERM <pid>
 |---|---|---|
 | **INT8 量化**（唯一剩下的性能杠杆） | 1.5~2.5×（本机 AVX-VNNI；SPR/Xeon 带 AMX 收益更大） | **拿精度换速度**，必须与 FP32 做同视频一致率对比后再上 |
 | 更小 / 更专的检测器 | 直接抬高 FPS 天花板 | 场景专用检测器已入库（`models/library_det.*`），可继续剪枝 / 蒸馏 |
-| ~~OpenVINO 异步推理~~ | **实测不会提速** | 推理侧已饱和，加并发只是多烧 CPU（PROJECT_NOTES §20.13/§20.14）。列在这里是为了**避免重复踩坑** |
+| ~~OpenVINO 异步推理~~ | **实测不会提速** | 推理侧已饱和，加并发只是多烧 CPU（PROJECT_NOTES §20.13/§20.14）。**避免重复踩坑** |
 
 ### 精度与评测（当前最大的空白）
 

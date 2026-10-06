@@ -293,6 +293,13 @@ struct AppConfig {
     TrackingConfig tracking; // 目标跟踪(track_id)
     OccupancyConfig occupancy; // [新增] 占座判定(静态座位 zone + 规则状态机)
     MetricsConfig metrics; // 指标端点(Prometheus)
+
+    // 结果视频输出路径(带框视频)。相对路径按**当前工作目录**解析(与旧行为一致),
+    // 也可写绝对路径。默认 "output.avi" = 改造前行为, 零影响。
+    // 动机: Docker 部署时把它指到挂载卷(如 /app/output/output.avi), 宿主机/侧车
+    // (web_gateway) 才拿得到结果视频; 这是唯一原先写死、无法配置的产物路径。
+    // 配置写法: app.output_path: "output.avi" (支持 ${VAR} 环境变量展开)。
+    std::string output_path = "output.avi";
 };
 
 // 模型推理配置

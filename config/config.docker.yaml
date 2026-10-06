@@ -1,0 +1,82 @@
+# ============================================================
+# Docker 专用运行配置 —— 给 docker/docker-compose.yml 里的 cv-infer-gate 用
+# ------------------------------------------------------------
+# 目的: 让 "clone -> docker compose up" 开箱即跑, 不必手改共享的 config.yaml。
+# 与 config/config.example.yaml 的差异(都是"容器内才成立"的取值):
+#   * 相对路径全部改成**容器内绝对路径**: 产物写进挂载卷 /app/output,
+#     宿主机与侧车 web_gateway 才拿得到(见 docker-compose 的 cvinfer-output 卷)。
+#   * 视频源默认 file + /app/test.mp4 (compose 把仓库根 test.mp4 挂到该路径);
+#     想用 RTSP 请改 source_type=rtsp 并把地址指向 host.docker.internal。
+#   * 数据库指向 compose 服务名 mysql-db (容器内的 127.0.0.1 是它自己)。
+#   * 需要外部依赖的可选阶段(级联/复核/融合/占座/指标/告警推送)默认关闭,
+#     保证"零外部依赖"即可跑通主链路; 要用哪个再单独打开。
+# 口令/密钥全部走 ${VAR} 环境变量(ConfigParser::expandEnv 展开), 不进 git。
+# ============================================================
+
+app:
+  log_level: "info"
+  log_file: "/app/output/logs/cvinfer.log"   # 写进挂载卷 => 网页可读事件时间线
+  log_max_size_mb: 64                         # 卷里长跑要轮转, 否则无限增长
+  log_keep_files: 3
+  # 带框结果视频输出路径(本项目唯一原先写死的产物路径; 现已可配)。
+  # 指向挂载卷 => web_gateway 能在线播放, 宿主机也能直接取走 output.avi。
+  output_path: "${RESULT_VIDEO_PATH:-/app/output/output.avi}"
+
+video:
+  source_type: "file"
+  source_path: "${VIDEO_PATH:-/app/test.mp4}" # compose 挂载 ../test.mp4 到此
+  target_fps: 0
+  frame_interval: 1
+  queue:
+    max_size: 24
+    policy: "drop_oldest"
+
+pipeline:
+  worker_threads: 2
+
+database:
+  host: "${DB_HOST:-tcp://mysql-db:3306}"     # 容器网络内按 compose 服务名连
+  user: "root"
+  password: "${DB_PASSWORD:-}"
+  dbname: "cv_infer"
+  fallback_path: "/app/output/db_fallback.csv" # 降级文件也落进卷, 便于排查
+
+# [Phase B] 级联: 默认关(占座链路用不到)
+cascade:
+  enabled: false
+  primary: yolov8_detector
+  secondary: helmet_classifier
+  accept_label: "safety_helmet"
+
+# [Phase C] 大模型复核: 默认关 —— 快速复现不需要外部 VLM。
+#   要玩 Phase C: 置 enabled=true, 起 `docker compose --profile vlm up -d vlm-review`
+#   (或宿主机跑 `python3 -m vlm_review.server --backend mock`), 并保证两端 token 一致。
+review:
+  enabled: false
+  endpoint: "vlm-review:50052"                # 容器网络内按服务名; 宿主机则改 127.0.0.1:50052
+  auth_token: "${VLM_TOKEN:-}"
+
+# [Phase D] 多模态融合: 默认关(无传感器硬件时保持纯视觉链路)
+fusion:
+  enabled: false
+  level: decision
+
+# 占座判定(规则层): 默认关(座位 zone 需按实际机位标定)
+occupancy:
+  enabled: false
+
+alert:
+  dedup:
+    enabled: true
+  push:
+    enabled: false                             # 要 webhook 外发再开并配 ALERT_PUSH_URL
+
+# 指标端点: 默认关(容器内 expose 等 Prometheus 抓, 未发布到宿主机)
+metrics:
+  enabled: false
+  bind: "0.0.0.0"
+  port: 9100
+
+grpc:
+  port: 50051
+  auth_token: "${GRPC_AUTH_TOKEN:-}"

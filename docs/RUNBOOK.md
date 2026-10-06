@@ -2,7 +2,7 @@
 
 > **一条命令链跑通完整链路**：file 源 → 推理 → Phase B 级联 → 真 VLM 复核 → Phase D 融合 → 跟踪去重 → **占座规则层** → 落库 / 告警外发 → 可观测 → 优雅退出。
 > 标注：🧰 所需环境/工具　▶ 命令　👀 启动后应看到的效果。
-> 实测环境：g++ 15.2 · CMake 4.2.3 · OpenVINO 2026.4.0 · OpenCV 4.10 · gRPC++ 1.51 · MySQL Connector 1.1.12 · Python 3.14。
+> 统一基线：OpenVINO **2025.4.0**（CI 与 Docker 镜像均以此版本复现；本机/更新的 2026.x 亦验证可用）。实测环境：g++ 15.2 · CMake 4.2.3 · OpenCV 4.10 · gRPC++ 1.51 · MySQL Connector 1.1.12 · Python 3.14。
 
 ---
 
@@ -11,7 +11,7 @@
 | 依赖 | 版本 / 位置 | 用在哪 |
 |---|---|---|
 | g++ / CMake | C++17 / ≥ 3.16 | 编译 |
-| OpenVINO Runtime | 2026.4.0（默认 `/opt/intel/openvino_2026.4.0`） | CPU 推理 |
+| OpenVINO Runtime | **统一 2025.4.0**（Docker/CI 基线；本机亦可 2026.4.0） | CPU 推理 |
 | OpenCV 4 / FFmpeg | 4.10 | 解码、画框 |
 | gRPC++ / protobuf | 1.51 | 对外接口 |
 | yaml-cpp / MySQL Connector/C++ | 1.1.12 | 配置解析 / 落库 |

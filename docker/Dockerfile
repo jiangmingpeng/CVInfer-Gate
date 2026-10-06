@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     libgrpc++-dev protobuf-compiler-grpc libprotobuf-dev \
     libmysqlcppconn-dev \
     libyaml-cpp-dev \
+    libgtest-dev \
     wget gnupg curl tar \
     && rm -rf /var/lib/apt/lists/*
 
@@ -37,9 +38,16 @@ RUN rm -rf build && mkdir -p build && cd build \
 
 
 
-# 6. 暴露 gRPC 端口
+# 6. 默认配置路径(指向**运行时挂载**的 /app/config, 见 docker-compose)。
+#    这样改宿主机 config/*.yaml 无需重建镜像; 且 --health-check 探针与主进程
+#    共用同一套 CVINFER_CONFIG 解析, 不会出现"探针与服务端两份环境对不上"。
+#    (models/ 已由 CMake POST_BUILD 拷进 /app/build/models, 按 CWD 相对路径可用。)
+ENV CVINFER_CONFIG=/app/config/config.docker.yaml
+ENV CVINFER_MODEL_CONFIG=/app/config/model_config.yaml
+
+# 7. 暴露 gRPC 端口
 EXPOSE 50051
 
-# 7. 启动服务
+# 8. 启动服务(CWD=/app/build; 配置由上面的 CVINFER_CONFIG 决定)
 WORKDIR /app/build
 CMD ["./CVInfer-Gate"]

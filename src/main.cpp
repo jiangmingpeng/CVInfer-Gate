@@ -477,17 +477,18 @@ int main(int argc, char** argv) {
     cv::VideoWriter video_writer; // 延迟 open(尺寸未知时保持关闭, 不触发后端探测)
     if (video_width > 0 && video_height > 0) {
         std::cout << "原视频分辨率: " << video_width << "x" << video_height << std::endl;
-        video_writer.open("output.avi",
+        video_writer.open(app_cfg.output_path,
                           cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
                           fps, cv::Size(video_width, video_height));
         wrote_video = video_writer.isOpened();
         if (!wrote_video) {
             // 不再 return -1: 编码器不可用时降级为“不写结果视频”, 其余照常
-            CVLOG_WARN << "无法初始化 VideoWriter(output.avi), 继续运行(仅不写结果视频)。";
+            CVLOG_WARN << "无法初始化 VideoWriter(" << app_cfg.output_path
+                       << "), 继续运行(仅不写结果视频)。";
         }
     } else if (video_ok) {
         CVLOG_WARN << "视频源未提供分辨率(source_type=" << app_cfg.video.source_type
-                   << "), 本次不写结果视频(output.avi)。";
+                   << "), 本次不写结果视频(" << app_cfg.output_path << ")。";
     }
     // (!video_ok 时前面已 warn 过“视频源打开失败”, 此处不重复刷屏)
 
@@ -999,7 +1000,7 @@ int main(int argc, char** argv) {
     video_writer.release();
     video_source->close();
     // 只有真的写过结果视频才宣告(降级运行时不误导)
-    if (wrote_video) CVLOG_INFO << "结果视频已保存至 output.avi";
+    if (wrote_video) CVLOG_INFO << "结果视频已保存至 " << app_cfg.output_path;
     CVLOG_INFO << "日志轮转次数: " << Logger::instance().rotations();
     CVLOG_INFO << "已安全退出。";
     signal_watcher.stop();

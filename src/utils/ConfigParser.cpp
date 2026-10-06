@@ -98,7 +98,7 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
     try {
         YAML::Node config = YAML::LoadFile(filepath);
 
-        // app: 日志
+        // app: 日志 / 结果视频路径
         if (config["app"]) {
             app_config_.log.level = readStr(config["app"], "log_level", app_config_.log.level);
             app_config_.log.file  = readStr(config["app"], "log_file",  app_config_.log.file);
@@ -107,6 +107,9 @@ bool ConfigParser::loadAppConfig(const std::string& filepath) {
                 config["app"]["log_max_size_mb"].as<int>(app_config_.log.max_size_mb);
             app_config_.log.keep_files =
                 config["app"]["log_keep_files"].as<int>(app_config_.log.keep_files);
+            // 结果视频输出路径(默认 "output.avi" = 旧行为; 支持 ${VAR} 展开)
+            app_config_.output_path =
+                readStr(config["app"], "output_path", app_config_.output_path);
         }
 
         // video

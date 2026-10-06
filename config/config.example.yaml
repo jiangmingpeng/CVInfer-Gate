@@ -25,6 +25,10 @@ app:
   # ---- 日志文件轮转(仅当 log_file 非空且 log_max_size_mb > 0 时生效) ----
   log_max_size_mb: 0      # 0 = 不轮转(一直追加); 建议 10 或 64
   log_keep_files: 3       # 保留的归档数(app.log.1 ... app.log.N); 0 = 只留当前文件
+  # 带框结果视频输出路径(相对路径=按**启动目录**解析; 也可写绝对路径)。默认 "output.avi"。
+  #   Docker 部署见 config/config.docker.yaml: 指向挂载卷 /app/output/output.avi,
+  #   这样 web_gateway 才能读到结果视频。支持 ${VAR} 环境变量展开。
+  output_path: "output.avi"
 
 # [Phase D] 只列**非视频**传感器: 视频仍由 video: 段描述, 并自动作为融合的时间基准。
 #   雷达(无像素框) => 融合走"标签关联"; 红外(带热目标框) => 走"IoU 关联"。

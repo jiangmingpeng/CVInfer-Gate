@@ -1,15 +1,14 @@
 
 # ============================================================
-# [P0-2] 所有口令/密钥走环境变量 —— 在本目录建 docker/.env(.gitignore 已忽略):
+# 一键复现编排: MySQL + C++ 推理网关 + Python Web 网关
+# ------------------------------------------------------------
+# 口令/密钥走环境变量 —— 在本目录建 docker/.env(模板见 .env.example):
 #     MYSQL_ROOT_PASSWORD=<MySQL root 口令>
-#     DB_PASSWORD=<C++ 网关连库口令, 一般同上>
+#     DB_PASSWORD=<C++ 网关连库口令, 与上面一致>
+#     GRPC_AUTH_TOKEN=<主服务(50051) token; 留空 = 不鉴权>
+#                     web_gateway 会用**同一个**值(compose 已透传)
 #     VLM_AUTH_TOKEN=<复核服务端/客户端共享 token; 留空 = 不鉴权>
-#     GRPC_AUTH_TOKEN=<主服务(50051) token; 留空 = 不鉴权。
-#                     网关(宿主机跑的 web_gateway)要用**同一个**值>
 #     ALERT_PUSH_URL/ALERT_TOKEN=<告警 webhook 地址/自定义头 token>
-#                     接收端跑在宿主机时: ALERT_PUSH_URL=http://host.docker.internal:8899/alert
-#                     (本服务的 extra_hosts 已把该名字指向宿主机)
-# 不建 .env 也能起, 但 MySQL 会因空口令初始化失败 / 网关连库失败降级写 CSV。
 # ============================================================
 
 services:
@@ -49,32 +48,33 @@ services:
     depends_on:
       mysql-db:
         condition: service_healthy # 等 mysql-db 健康检查通过后再启动
-    # depends_on:
-    #   - mysql-db
     networks:
       - cv-network
-    # [P0-2] 口令/密钥走环境变量: compose 自动读同目录 docker/.env。
-    # 之所以能生效: config/ 里的 yaml 写的是 ${VAR}, ConfigParser::expandEnv 会展开,
-    # 所以 config.yaml 用 `password: "${DB_PASSWORD:-}"`、`review.auth_token: "${VLM_TOKEN:-}"`
-    # 就能被这里的变量注入 —— 不需要改代码(旧注释说的"需要在代码里支持环境变量"已不准确)。
+    # 配置：镜像内已设 CVINFER_CONFIG=/app/config/config.docker.yaml,
+    # 主进程与 --health-check 探针共用同一套解析(不会"两份环境对不上")。
+    # 这里只注入口令/token; config 里的 ${VAR} 由 ConfigParser::expandEnv 展开。
     environment:
       DB_PASSWORD: ${DB_PASSWORD:-}
       VLM_TOKEN: ${VLM_AUTH_TOKEN:-}      # 与 vlm-review 的 VLM_AUTH_TOKEN 配对
       GRPC_AUTH_TOKEN: ${GRPC_AUTH_TOKEN:-}  # 主服务鉴权; config 里写 "${GRPC_AUTH_TOKEN:-}" 即生效
-      DB_HOST: tcp://mysql-db:3306        # 仅当 config.yaml 的 database.host 写成 ${DB_HOST:-...} 才生效
+      DB_HOST: tcp://mysql-db:3306        # config.docker.yaml 里 database.host 即指向它
       ALERT_PUSH_URL: ${ALERT_PUSH_URL:-} # 告警 webhook(空 => 用 config 里的默认值)
       ALERT_TOKEN: ${ALERT_TOKEN:-}       # 推送自定义头 x-alert-token 的值(空 => 不带头)
     volumes:
+      # config: 挂进来后改宿主机 config/*.yaml 即生效(无需重建镜像)
       - ../config:/app/config
-      - ../models:/app/models
-      - ../test.mp4:/app/test.mp4 
-      - ../output:/app/output  # 拿到处理后的视频
+      # test.mp4: 默认 file 源; 缺失则 compose 会**明确报错**(不会静默建目录)
+      - type: bind
+        source: ../test.mp4
+        target: /app/test.mp4
+        read_only: true
+        bind:
+          create_host_path: false
+      # 结果卷: 结果视频 / 日志 / 降级 CSV 都写这里, 与 web_gateway 共享
+      - cvinfer-output:/app/output
     # ==========================================================
     # 健康检查: 直接问 gRPC 的 Health RPC(不加载模型/不连库, 秒级返回)
-    #   为什么不 curl /metrics: 指标端点默认只在容器内网; 而且"进程在跑"
-    #   不等于"gRPC 在服务" —— 探针要测的是后者。
-    #   注意: 不要额外传 --config(让探针与服务端用**同一套**配置解析,
-    #   包括 GRPC_AUTH_TOKEN / CVINFER_CONFIG), 否则口令或端口可能对不上。
+    #   探针与主进程共用 CVINFER_CONFIG, 故口令/端口一定一致。
     #   start_period 要盖住"模型加载 + 引擎池预热"的时间。
     # ==========================================================
     healthcheck:
@@ -86,6 +86,40 @@ services:
     # 让容器能回访宿主机(告警 webhook 常跑在宿主机的 8899 上)
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # ==========================================================
+  # Python Web 网关(Flask BFF: HTTP :8080 <-> gRPC :50051)
+  # ----------------------------------------------------------
+  # 与 cv-infer-gate 共享结果卷: 网页能在线播放带框视频(output.avi)、
+  # 并读取占座/告警事件时间线(logs/cvinfer.log)。
+  # ==========================================================
+  web-gateway:
+    build:
+      context: ..
+      dockerfile: web_gateway/Dockerfile
+    container_name: cv_infer_web
+    ports:
+      - "8080:8080"
+    depends_on:
+      - cv-infer-gate
+    networks:
+      - cv-network
+    environment:
+      GRPC_SERVER: cv-infer-gate:50051   # 容器网络内按服务名连
+      GRPC_TIMEOUT_MS: "5000"
+      GRPC_MAX_MSG_MB: "16"
+      GRPC_AUTH_TOKEN: ${GRPC_AUTH_TOKEN:-}  # 与服务端保持一致(空 = 不鉴权)
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: "8080"
+      RESULT_DIR: /app/output            # 与 cv-infer-gate 共享卷
+      RESULT_VIDEO: output.avi
+      # 同一份 C++ 配置: 页面从 occupancy.seats 读座位区来标注"事件发生在哪一块"
+      CVINFER_CONFIG: /app/config/config.docker.yaml
+    volumes:
+      - cvinfer-output:/app/output
+      - ../config:/app/config:ro
+    restart: unless-stopped
 
   # ==========================================================
   # Phase C 复核服务(真 VLM) —— 可选, 隔离在 profile 内
@@ -96,10 +130,8 @@ services:
   # 本容器只做 gRPC↔HTTP 适配, 上游 VLM 由 VLM_BASE_URL 指向
   # (宿主机上的 vLLM/Ollama/云 API, 用 host.docker.internal 回访宿主机)。
   #
-  # ⚠️ 让 C++ 网关用上它: 需把 config.yaml 的 review.endpoint 从
-  #    127.0.0.1:50052 改成容器网络内的 vlm-review:50052。
-  #    (config/ 是挂载进去的, 改宿主机文件即可, 但注意 127.0.0.1 在
-  #     容器内指向容器自身, 不会命中本服务。)
+  # ⚠️ 让 C++ 网关用上它: 把 config.docker.yaml 的 review.enabled 改 true
+  #    (endpoint 已是容器网络内的 vlm-review:50052)。
   # ==========================================================
   vlm-review:
     build:
@@ -126,3 +158,8 @@ services:
 networks:
   cv-network:
     driver: bridge
+
+# 结果卷: cv-infer-gate 写(output.avi / logs / db_fallback.csv),
+#         web-gateway 读。命名卷由 docker 管理, 无需宿主机预建目录。
+volumes:
+  cvinfer-output:
