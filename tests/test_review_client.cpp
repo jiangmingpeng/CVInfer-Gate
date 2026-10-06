@@ -8,7 +8,7 @@
 //
 // 用法:
 // ./review_client [addr] [image_path] [prompt] [label] [conf] [timeout_ms]
-// ./review_client 127.0.0.1:50052 test_frame.jpg "判断该人员是否未佩戴安全帽"
+// ./review_client 127.0.0.1:50052 test_frame.jpg "判断该座位是否被长期占座"
 // 省略 image_path 时会生成一张合成图(无需任何素材即可冒烟)。
 //
 // 鉴权: 环境变量 REVIEW_AUTH_TOKEN 非空时, 每个 RPC(含 Health)都带
@@ -51,7 +51,7 @@ void addAuth(grpc::ClientContext& ctx, const std::string& token) {
 int main(int argc, char** argv) {
     const std::string addr       = argOr(argc, argv, 1, "127.0.0.1:50052");
     const std::string image_path = argOr(argc, argv, 2, "");
-    const std::string prompt     = argOr(argc, argv, 3, "判断该人员是否未佩戴安全帽");
+    const std::string prompt     = argOr(argc, argv, 3, "判断该座位是否被长期占座");
     const std::string label      = argOr(argc, argv, 4, "person");
     const float confidence       = static_cast<float>(std::atof(argOr(argc, argv, 5, "0.72").c_str()));
     const int timeout_ms         = (argc > 6) ? std::atoi(argv[6]) : 20000;

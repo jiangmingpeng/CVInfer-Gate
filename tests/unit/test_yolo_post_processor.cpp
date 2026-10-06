@@ -50,7 +50,7 @@ void setScore(ov::Tensor& t, std::size_t i, std::size_t class_id, float score) {
     t.data<float>()[(4 + class_id) * kBoxes + i] = score;
 }
 
-std::vector<std::string> labels() { return {"person", "helmet"}; }
+std::vector<std::string> labels() { return {"person", "book"}; }
 
 constexpr float kConf = 0.25f;
 constexpr float kNms = 0.45f;
@@ -68,7 +68,7 @@ TEST(YoloPostProcessor, DecodesSingleBoxAndAttachesLabel) {
     ASSERT_EQ(dets.size(), 1u);
     EXPECT_EQ(dets[0].class_id, 1);
     EXPECT_FLOAT_EQ(dets[0].confidence, 0.9f);
-    EXPECT_EQ(dets[0].label, "helmet");
+    EXPECT_EQ(dets[0].label, "book");
     // cxcywh(320,320,100,100) -> xyxy(270,270)-(370,370); 原图 640 -> 缩放 1.0
     EXPECT_EQ(dets[0].box, cv::Rect(270, 270, 100, 100));
 }
@@ -116,7 +116,7 @@ TEST(YoloPostProcessor, KeepsOverlappingBoxesOfDifferentClasses) {
     setBox(t, 1, 325.0f, 325.0f, 100.0f, 100.0f);
     setScore(t, 1, 1, 0.80f);
 
-    // NMS 只在**同类别**内做, 否则"人"会把"安全帽"吃掉
+    // NMS 只在**同类别**内做, 否则"人"会把"书"吃掉
     EXPECT_EQ(pp.process(t, cv::Size(640, 640), labels()).size(), 2u);
 }
 

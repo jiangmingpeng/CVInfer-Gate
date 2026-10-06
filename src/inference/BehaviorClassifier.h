@@ -17,7 +17,7 @@
 // 借引擎超时 -> Busy; 推理/后处理无效 -> Failed; 成功 -> Ok
 //
 // 用途: 作为级联(CascadeEngine)的二级模型, 对主模型的"灰区"目标做细分类
-// (如 安全帽佩戴/行为识别)。pool_size 来自 ModelConfig::pool_size。
+// (如 细分类/行为识别)。pool_size 来自 ModelConfig::pool_size。
 class BehaviorClassifier : public IClassifier {
 public:
     BehaviorClassifier() = default;

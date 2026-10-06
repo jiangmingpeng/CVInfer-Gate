@@ -136,13 +136,13 @@ public:
         switch (req.frame_seq % 4) {
             case 0:
                 out.confirmed = true;
-                out.label = "no_helmet";
+                out.label = "occupied";
                 out.confidence = 0.88f;
                 out.reason = "scripted:confirmed";
                 return ReviewStatus::Ok;
             case 1:
                 out.confirmed = false;
-                out.label = "with_helmet";
+                out.label = "vacant";
                 out.confidence = 0.93f;
                 out.reason = "scripted:rejected";
                 return ReviewStatus::Ok;
@@ -197,7 +197,7 @@ void phaseB() {
     cfg.min_conf = 0.40f; // 灰区下界(含)
     cfg.max_conf = 0.90f; // 灰区上界(不含)
     cfg.roi_padding = 0.10f;
-    cfg.accept_label = "with_helmet";
+    cfg.accept_label = "vacant";
     cfg.accept_conf = 0.50f;
     cfg.drop_rejected = true;
     cfg.boost_on_confirm = false;
@@ -229,7 +229,7 @@ void phaseB() {
 
     // B1: 二级"确认" -> 保留 + 回写 sub_*
     secondary->status = DetectStatus::Ok;
-    secondary->cls = Classification{1, 0.91f, "with_helmet"};
+    secondary->cls = Classification{1, 0.91f, "vacant"};
     std::vector<DetectionResult> out1;
     check(cascade.detect(frame, out1) == DetectStatus::Ok, "级联 detect() 返回 Ok");
     check(out1.size() == 3, "确认: 目标全部保留 (3 个)");
@@ -237,10 +237,10 @@ void phaseB() {
         bool ok = false;
         for (const auto& d : out1) {
             if (near(d.confidence, 0.52f)) {
-                ok = d.reviewed && d.sub_label == "with_helmet" && near(d.sub_confidence, 0.91f);
+                ok = d.reviewed && d.sub_label == "vacant" && near(d.sub_confidence, 0.91f);
             }
         }
-        check(ok, "确认: 灰区目标带 reviewed=true / sub_label=with_helmet / sub_conf=0.91");
+        check(ok, "确认: 灰区目标带 reviewed=true / sub_label=vacant / sub_conf=0.91");
     }
     check(secondary->calls == 1, "只对 1 个灰区目标做了二级推理(非灰区不浪费算力)");
     check(primary->calls == 1, "主模型只被调用 1 次(每个目标仅复核 1 次)");
@@ -252,7 +252,7 @@ void phaseB() {
     }
 
     // B2: 二级"否决" + drop_rejected=true -> 丢弃
-    secondary->cls = Classification{1, 0.12f, "no_helmet"};
+    secondary->cls = Classification{1, 0.12f, "occupied"};
     std::vector<DetectionResult> out2;
     cascade.detect(frame, out2);
     check(out2.size() == 2, "否决: 灰区目标被丢弃 (3 -> 2)");

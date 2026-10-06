@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS detections (
 -- ---- 告警记录表 (DBWriter::writeAlert -> Row::Type::Alert) ----
 CREATE TABLE IF NOT EXISTS alerts (
     id          INT AUTO_INCREMENT PRIMARY KEY,
-    alert_type  VARCHAR(50)  NOT NULL,                   -- 如 "安全帽缺失"
+    alert_type  VARCHAR(50)  NOT NULL,                   -- 如 "图书馆疑似占座违规"
     description VARCHAR(255) DEFAULT NULL,               -- 详细描述(可含中文)
     alert_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_alerts_time (alert_time),

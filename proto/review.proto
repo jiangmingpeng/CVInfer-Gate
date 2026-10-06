@@ -18,14 +18,14 @@ message ReviewRequest {
     string label      = 2;   // 主模型标签(如 "person")
     float  confidence = 3;   // 主模型置信度
     uint64 frame_seq  = 4;   // 帧序号(上层按此回收结果)
-    string prompt     = 5;   // 业务提示(可空), 如"判断该人员是否未佩戴安全帽"
+    string prompt     = 5;   // 业务提示(可空), 如"判断该座位是否被长期占座"
     string roi_meta   = 6;   // 可选: ROI 像素框等元数据(仅留痕/调试, 可空)
 }
 
 message ReviewResponse {
     bool   ok         = 1;   // 复核服务是否成功处理该请求
     bool   confirmed  = 2;   // 是否确认(确认 = 应告警)
-    string label      = 3;   // 复核标签(如 "no_helmet")
+    string label      = 3;   // 复核标签(如 "occupied")
     float  confidence = 4;   // 复核置信度
     string reason     = 5;   // 复核理由(可空, 便于留痕)
     string model      = 6;   // 观测: 实际产出该结论的模型名(可空)

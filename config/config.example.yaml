@@ -59,10 +59,10 @@ review:                    # Phase C：没有复核服务端也有效
   timeout_ms: 1000
   queue_size: 64
   worker_threads: 2
-  trigger: { labels: ["person"], min_conf: 0.50, max_conf: 1.00 }
+  trigger: { labels: ["bag", "laptop", "book"], min_conf: 0.50, max_conf: 1.00 }
   roi_padding: 0.10
-  prompt: "判断该人员是否未佩戴安全帽"
-  alert_type: "安全帽缺失"
+  prompt: "判断该座位是否被长期占座"
+  alert_type: "图书馆疑似占座违规"
   alert_on_failure: true   # 无服务时走兜底告警 → 落到 db_fallback.csv
   # ---- 接真 VLM(OpenAI 兼容服务 / 本地 Qwen2.5-VL)时的传输与鉴权 ----
   max_message_size_mb: 16  # ROI JPEG 较大, 默认 4MB 会超限
@@ -73,12 +73,13 @@ review:                    # Phase C：没有复核服务端也有效
 # [Phase B] 级联复核: 主模型只把**灰区**目标(置信度落在 [min_conf, max_conf) 且类别命中)
 #   裁 ROI 交二级分类器二次确认。确认 => 保留并回写 sub_label/sub_confidence;
 #   否决 => 按 drop_rejected 决定是否丢弃; 二级不可用(繁忙/失败) => 保留主结果(降级, 不误杀)。
+#   ⚠ 占座业务用不到这一段(靠 占座规则层 + VLM 复核), 保持 enabled=false 即可。
 #   ⚠ secondary 必须与 config/model_config.yaml 里的模型名**完全一致**, 否则静默退化为单模型。
-#   ⚠ accept_label 要与该分类器 labels 文件里的类别名对齐(本仓库 = safety_helmet)。
+#   ⚠ accept_label 要与该分类器 labels 文件里的类别名对齐(样例分类器见 model_config.yaml 注释块)。
 cascade:
   enabled: false                 # 置 true 才构建 CascadeEngine; false = 单模型直通
   primary: yolov8_detector       # 主筛模型名(留空 = 首个 detector)
-  secondary: helmet_classifier   # 二级分类器(需在 model_config.yaml 里以 role=classifier 注册)
+  secondary: helmet_classifier   # 二级分类器(需在 model_config.yaml 里以 role=classifier 注册; 此为样例名)
   trigger:
     labels: ["person"]           # 只对这些类别触发复核(留空 = 所有类别)
     min_conf: 0.40               # 灰区下界(含)

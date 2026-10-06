@@ -15,7 +15,7 @@
     python3 -m vlm_review.server --backend mock
 
 随后用联调客户端验证:
-    ./build/review_client 127.0.0.1:50052 frame.jpg "判断该人员是否未佩戴安全帽"
+    ./build/review_client 127.0.0.1:50052 frame.jpg "判断该座位是否被长期占座"
 
 再把 C++ 侧 config.yaml 的 review.endpoint 指到本服务即可(流水线零改动)。
 

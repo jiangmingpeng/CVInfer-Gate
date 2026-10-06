@@ -73,8 +73,9 @@ class VlmConfig:
     # 留空则用场景自带的 default_task(见 prompts.Scenario)。
     default_prompt: str = ""
     # 业务场景: 决定 system prompt / label 词表 / 关键词兜底表。
+    # 默认 = 本仓库当前业务: 图书馆/自习室占座。
     # 可选值见 prompts.scenario_names(); 未知值会**回退默认**(仅告警, 不报错)。
-    scenario: str = "helmet"
+    scenario: str = "seat_occupancy"
     # 非空 = 直接覆盖场景自带的 system prompt(用于临时自定义业务, 不推荐的长期做法)
     system_prompt: str = ""
 

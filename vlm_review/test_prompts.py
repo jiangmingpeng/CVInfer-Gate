@@ -10,7 +10,7 @@
 
 为什么值得单独测 —— 这里每一个用例都对应一个**真实踩过的坑**:
   1) 场景没跟着业务走: C++ 侧 review.prompt 写"占座", 服务端 system 还停在
-     "安全帽", 模型只能编一个 long_time_use 的假 label 且 confirmed 恒为 false
+     别的历史业务, 模型只能编一个 long_time_use 的假 label 且 confirmed 恒为 false
      => "看起来接了 VLM, 其实一句都对不上"。故断言 seat 场景的 system 里必须
      出现"占座"与 occupied|not_occupied。
   2) 关键词包含关系: 'occupied' 是 'not occupied'/'unoccupied' 的子串, 旧实现
@@ -27,7 +27,7 @@ import sys
 # 支持 `python3 vlm_review/test_prompts.py` 直接跑
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from vlm_review.prompts import (HELMET_SCENARIO, SEAT_OCCUPANCY_SCENARIO,  # noqa: E402
+from vlm_review.prompts import (SEAT_OCCUPANCY_SCENARIO,  # noqa: E402
                                 build_system_prompt, build_user_prompt,
                                 parse_verdict, resolve_scenario, scenario_names)
 
@@ -44,16 +44,16 @@ def check(name, cond, extra=""):
 
 # ---------------- 场景解析 ----------------
 def case_resolve_scenario():
-    check("缺省 -> helmet", resolve_scenario("").name == "helmet")
-    check("None -> helmet", resolve_scenario(None).name == "helmet")
+    check("缺省 -> seat_occupancy(默认场景)", resolve_scenario("").name == "seat_occupancy")
+    check("None -> seat_occupancy", resolve_scenario(None).name == "seat_occupancy")
     check("seat_occupancy", resolve_scenario("seat_occupancy").name == "seat_occupancy")
     check("别名 seat", resolve_scenario("seat").name == "seat_occupancy")
+    check("别名 occupancy", resolve_scenario("occupancy").name == "seat_occupancy")
     check("大小写/空格容错", resolve_scenario("  SEAT_OCCUPANCY  ").name == "seat_occupancy")
     # 未知场景回退默认(故意不抛异常: 环境变量拼错不该让旁路服务起不来)
-    check("未知 -> 回退 helmet", resolve_scenario("no_such_scenario").name == "helmet")
+    check("未知 -> 回退 seat_occupancy", resolve_scenario("no_such_scenario").name == "seat_occupancy")
     names = scenario_names()
-    check("scenario_names 含两个业务场景",
-          "helmet" in names and "seat_occupancy" in names, f"got={names}")
+    check("scenario_names 含 seat_occupancy", "seat_occupancy" in names, f"got={names}")
 
 
 # ---------------- system / user prompt ----------------
@@ -63,10 +63,6 @@ def case_prompts():
     check("seat 的 system 约束 label 取值", "occupied|not_occupied" in seat_sp)
     check("seat 的 system 要求严格 JSON", "JSON" in seat_sp)
     check("seat 的 system 给出'信息不足=>不确认'的退出路径", "confirmed=false" in seat_sp)
-
-    helmet_sp = build_system_prompt(HELMET_SCENARIO)
-    check("helmet 的 system 仍是安全帽语义", "安全帽" in helmet_sp)
-    check("helmet 的 system 约束 label 取值", "no_helmet|with_helmet" in helmet_sp)
 
     # override 优先
     check("override 覆盖场景",
@@ -105,11 +101,11 @@ def case_parse_json():
     check("缺 confirmed => label 关键词兜底(否定)", (not v.confirmed) and v.label == "not_occupied",
           f"got={v}")
 
-    # 安全帽场景: 与改造前行为一致
-    v = parse_verdict('{"confirmed": true, "label": "no_helmet", "confidence": 0.9}', HELMET_SCENARIO)
-    check("helmet 正例不变", v.confirmed and v.label == "no_helmet", f"got={v}")
-    v = parse_verdict('{"confirmed": true, "label": "未戴安全帽"}', HELMET_SCENARIO)
-    check("helmet 中文脏 label 归一", v.label == "no_helmet", f"got={v}")
+    # 中文脏 label: 模型的自由中文表述也要归一到场景词表
+    v = parse_verdict('{"confirmed": true, "label": "该座位占座"}', SEAT_OCCUPANCY_SCENARIO)
+    check("中文脏 label + confirmed => 归一到 occupied", v.label == "occupied", f"got={v}")
+    v = parse_verdict('{"confirmed": false, "label": "没有占座"}', SEAT_OCCUPANCY_SCENARIO)
+    check("中文脏 label + 未确认 => 归一到 not_occupied", v.label == "not_occupied", f"got={v}")
 
 
 # ---------------- 解析: 关键词路径(包含关系陷阱) ----------------
@@ -124,11 +120,13 @@ def case_parse_keywords():
         v = parse_verdict(text, SEAT_OCCUPANCY_SCENARIO)
         check(f"肯定短语命中: {text!r}", v.confirmed and v.label == "occupied", f"got={v}")
 
-    # 安全帽场景: '未佩戴'(3) 比 '佩戴'(2) 长 => 仍判"未佩戴"
-    v = parse_verdict("该人员未佩戴安全帽", HELMET_SCENARIO)
-    check("helmet 中文最长命中(未佩戴)", v.confirmed and v.label == "no_helmet", f"got={v}")
-    v = parse_verdict("该人员已佩戴安全帽", HELMET_SCENARIO)
-    check("helmet 中文否定(已佩戴)", (not v.confirmed) and v.label == "with_helmet", f"got={v}")
+    # 中文否定: '未占座' 里含正表 '占座', 必须靠否定翻转判成 not_occupied
+    v = parse_verdict("该座位未占座", SEAT_OCCUPANCY_SCENARIO)
+    check("中文否定(未占座) => not_occupied",
+          (not v.confirmed) and v.label == "not_occupied", f"got={v}")
+    v = parse_verdict("这里没有占座", SEAT_OCCUPANCY_SCENARIO)
+    check("中文否定(没有占座) => not_occupied",
+          (not v.confirmed) and v.label == "not_occupied", f"got={v}")
 
 
 # ---------------- 解析: 兜底 ----------------
@@ -140,9 +138,9 @@ def case_parse_fallback():
           (not v.confirmed) and v.label == "not_occupied", f"got={v}")
     check("无法解析 => reason 标注便于排查", "解析失败" in v.reason, f"got={v}")
 
-    # 默认场景 = helmet: 不传 scenario 时行为必须与改造前一致
-    v = parse_verdict("未佩戴")
-    check("默认场景 = helmet(向后兼容)", v.confirmed and v.label == "no_helmet", f"got={v}")
+    # 默认场景 = 占座: 不传 scenario 时也应走占座语义
+    v = parse_verdict("占座")
+    check("默认场景 = seat_occupancy", v.confirmed and v.label == "occupied", f"got={v}")
 
 
 def main():

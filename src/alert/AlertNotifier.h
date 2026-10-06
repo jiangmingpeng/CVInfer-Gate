@@ -25,7 +25,7 @@
 //
 // 发送内容(下游集成契约 —— 改动即破坏兼容, 已在 test_alert_notifier.cpp 钉住):
 // POST <url>   Content-Type: application/json
-// { "source":"cvinfer-gate", "alert_type":"安全帽缺失", "description":"...",
+// { "source":"cvinfer-gate", "alert_type":"图书馆疑似占座违规", "description":"...",
 // "frame_seq":123, "label":"person", "confidence":0.8700,
 // "track_id":3, "ts_ms":1730000000000 }
 // ts_ms 为 0 时由发送方补当前时间; 2xx = 送达, 其它(含 4xx/5xx)按失败重试。
@@ -36,7 +36,7 @@
 namespace alert {
 
 struct Alert {
-    std::string type; // 告警类型(如 "安全帽缺失")
+    std::string type; // 告警类型(如 "图书馆疑似占座违规")
     std::string description; // 人类可读描述(与落库字段一致)
     std::uint64_t frame_seq = 0; // 触发的帧号
     std::string label; // 目标标签(可空)

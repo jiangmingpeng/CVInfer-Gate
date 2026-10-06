@@ -6,7 +6,7 @@
 把 C++ 网关送来的 ROI 小图交给一个**真实 VLM** 复核, 并按契约返回
 ``confirmed / label / confidence / reason``。
 
-复核的"业务语义"不再写死: 由 ``prompts.Scenario`` 描述(安全帽 / 占座 / ...),
+复核的"业务语义"不再写死: 由 ``prompts.Scenario`` 描述(本仓库默认 = 图书馆/自习室占座),
 可用环境变量 ``VLM_SCENARIO`` 或 ``VLM_SYSTEM_PROMPT`` 覆盖。
 
 设计要点:

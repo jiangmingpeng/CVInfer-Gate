@@ -19,7 +19,7 @@
 | Python + venv | 3.14（PEP 668：**必须** venv） | 复核服务 / Web / 伪下游 |
 | vLLM（可选） | Qwen2.5-VL-7B | 真 VLM 复核 |
 
-仓库自带素材：`models/{yolov8n,helmet_cls}.{xml,bin}` + `models/*_labels.txt`、`test.mp4`。
+仓库自带素材：`models/{yolov8n,library_det,helmet_cls}.{xml,bin}` + `models/*_labels.txt`、`test.mp4`（`helmet_cls` 是仓库里唯一的分类器样例，仅供 Phase B 注册示例，与占座业务无关）。
 
 ---
 
@@ -72,7 +72,7 @@ python3 -m grpc_tools.protoc -I proto \
 | `video` | `source_type` / `source_path` | `file` / `../test.mp4` | 相对**启动目录**（`build/`）解析 |
 | `pipeline` | `worker_threads` | `2` | 必须 ≤ `model_config.yaml` 的 `models[].pool_size` |
 | `database` | `password` | `${DB_PASSWORD:-…}` | 口令走环境变量，不落明文 |
-| `cascade` | `enabled` | `true` | Phase B；`secondary` 必须 = `helmet_classifier` |
+| `cascade` | `enabled` | `false` | 占座链路用不到二级分类器（样例注册写法见 `config/model_config.yaml` 注释块）|
 | `review` | `enabled` / `endpoint` | `true` / `127.0.0.1:50052` | Phase C，指向 vlm_review |
 | `fusion` | `enabled` | `true` | Phase D（stub 雷达，无需硬件） |
 | `alert.push` | `enabled` | `true`（可选） | 告警 webhook 外发 |
@@ -168,7 +168,7 @@ gRPC 服务已启动, 监听: 0.0.0.0:50051
 | 健康探针 | `./CVInfer-Gate --config <cfg> --health-check` | `[health-check] OK addr=127.0.0.1:50051 version=1.0.0 … detector=…`，退出码 `0` |
 | gRPC | `./grpc_client` | `检测到目标数量: N`，退出码 `0` |
 | Web | `bash web_gateway/run.sh`（一键：自动用/建 `.venv`、缺依赖自动装、缺桩文件自动生成）<br>或手动 `cd web_gateway && source ../.venv/bin/activate && python app.py` | 浏览器 `localhost:8080` 上下两块：① **单图检测** —— 拖拽/选择图片 → 无刷新出带框图 + 检测列表；右上角 C++ 服务在线徽标；点击列表行高亮对应框、点击结果图放大（Esc 关闭）、一键下载结果图；② **③ 流水线结果** —— 在线播带框视频（首次自动转码）+ 占座/告警事件时间线 + 产物文件清单 |
-| 复核直连 | `./review_client 127.0.0.1:50052 /tmp/frame.jpg "判断该人员是否未佩戴安全帽"` | 打印 backend + 结论行 |
+| 复核直连 | `./review_client 127.0.0.1:50052 /tmp/frame.jpg "判断该座位是否被长期占座"` | 打印 backend + 结论行 |
 
 **检测结果到底去哪看？（按“直不直观”排序）**
 

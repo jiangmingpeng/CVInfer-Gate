@@ -44,7 +44,7 @@ inline const char* reviewStatusToString(ReviewStatus s) {
 // 复核结论(仅 status == Ok 时有意义)
 struct ReviewResult {
     bool confirmed = false; // 是否确认(确认 = 应告警)
-    std::string label; // 复核标签(如 "no_helmet")
+    std::string label; // 复核标签(如 "occupied")
     float confidence = 0.0f; // 复核置信度
     std::string reason; // 复核理由(可空)
 

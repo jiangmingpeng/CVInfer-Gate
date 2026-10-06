@@ -17,7 +17,7 @@
 // IInferenceEngine  —— 低层: init(ModelConfig) / infer(cv::Mat, vector<ov::Tensor>&)
 // IModel            —— 中层: 角色化模型基类 (init / name / role)
 // ├─ IDetector    —— 整图 -> 检测框 (YOLO 等)
-// └─ IClassifier  —— ROI -> 类别   (行为/安全帽分类器等)
+// └─ IClassifier  —— ROI -> 类别   (行为/细分类分类器等)
 //
 // 说明: 级联(CascadeEngine) 也实现 IDetector, 因此 VideoPipeline /
 // DetectionServiceImpl 只依赖 IDetector 即可, 无需感知级联细节。

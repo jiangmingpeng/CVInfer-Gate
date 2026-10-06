@@ -3,7 +3,7 @@
 > **用途**：记录本轮架构重构的任务、根因、修复方案与接口约定。
 > **术语**：`Tn` = 本轮改造的**任务序号**（第几个任务，T1 起）；`R-x` = 已知风险编号；`BUG-x` = 架构缺陷编号。本文是工程日志，编号即索引（对照表 / 路线图 / 交叉引用都依赖它），故正文**保留编号不做去标记处理**；代码与产品文档中的编号已清除。
 > **给新对话**：先读本文，再 `git diff` / `git log` 即可快速对齐上下文，无需从头复述。
-> 最近更新：T1–T31 完成（Phase A=T12–T15 地基；Phase B=T16–T19 级联主筛 + 二级复核；Phase C=T20–T22 大模型异步复核；Phase D=T23–T26 多模态接入与决策级融合；**T27 = 阶段自检工具 + 配置注入 + 复核服务 mock**，见第 14 节；**T28 = RTSP 真实接入；T29 = 输出视频正确性修正（容器帧率 + sink 保序）**，见第 16 节；**T30 = 推理性能旋钮配置化（device/performance_mode/num_threads）**，见第 18 节；**T31 = 视频源配置交叉校验 + VideoWriter 降噪**，见第 19 节；**T32 = 迁移本地 WSL（环境适配 + 配置审查 + “数据库启动强耦合”的发现）**；**T33 = WSL 下 `device=AUTO` 触发 NPU 插件段错误（改 `device: CPU`）**；**T34 = 修复优雅关闭完全失灵（`sigwait` → `sigaction` + self-pipe）**，见第 20 节；**T35 = 推理性能收官（缓存友好改造 + 分段计时 ⇒ FP32 天花板定量化 ~33fps）**，见 §20.14）。
+> 最近更新：T1–T31 完成（Phase A=T12–T15 地基；Phase B=T16–T19 级联主筛 + 二级复核；Phase C=T20–T22 大模型异步复核；Phase D=T23–T26 多模态接入与决策级融合；**T27 = 阶段自检工具 + 配置注入 + 复核服务 mock**，见第 14 节；**T28 = RTSP 真实接入；T29 = 输出视频正确性修正（容器帧率 + sink 保序）**，见第 16 节；**T30 = 推理性能旋钮配置化（device/performance_mode/num_threads）**，见第 18 节；**T31 = 视频源配置交叉校验 + VideoWriter 降噪**，见第 19 节；**T32 = 迁移本地 WSL（环境适配 + 配置审查 + “数据库启动强耦合”的发现）**；**T33 = WSL 下 `device=AUTO` 触发 NPU 插件段错误（改 `device: CPU`）**；**T34 = 修复优雅关闭完全失灵（`sigwait` → `sigaction` + self-pipe）**，见第 20 节；**T35 = 推理性能收官（缓存友好改造 + 分段计时 ⇒ FP32 天花板定量化 ~33fps）**，见 §20.14）；**T37 = 真 VLM 接入实测（vLLM + `Qwen2-VL-2B-Instruct-AWQ`），见 §21**）。
 > **新对话请先读第 17 节「架构总览」**（主动脉 + 四个挂载点 + 线程/关闭顺序 + 开关映射 + 验证状态），再按需下钻。
 
 ---
@@ -332,7 +332,7 @@ YoloPostProcessor(conf, nms); process(const ov::Tensor&, const cv::Size&, const 
   → 关闭: server->Shutdown → grpc join → pipeline.stop → review_scheduler.stop → fusion_stage.stop → db flush/stop
 ```
 
-业务规则：检测入库；告警——`review.enabled=false` 时沿用原版 `label=="person" && confidence>0.8` 立即写“安全帽缺失”告警，
+业务规则：检测入库；告警——`review.enabled=false` 时沿用原版 `label=="person" && confidence>0.8` 立即按配置里的 `review.alert_type` 写告警，
 `review.enabled=true` 时改为命中 `review.trigger` 的候选异步送审、**复核确认后才写告警**（失败/超时默认不告警，可用 `alert_on_failure` 兜底）；
 结果视频写 `output.avi`（MJPG，始终用本地结果，不等复核）。
 启用融合时（`fusion.enabled=true`，且 `sensors:` 非空）额外多一条：sink 最前置先 `fuse()`（在拷贝上就地改写），
@@ -351,7 +351,7 @@ cp config/config.example.yaml config/config.yaml        # 唯一全量模板(11 
 #        config/config.ops.yaml    运维三件套(file 源 + metrics + 告警外发), 不依赖 MySQL/复核
 #        config/config.rtsp.yaml   RTSP 实时流(只需改 video.source_path 一行)
 #    - 级联的二级分类器须在 config/model_config.yaml 的 models: 里以 role=classifier 注册
-#      (本仓库已注册 helmet_classifier)
+#      (本仓库的注册样例见 config/model_config.yaml 注释块)
 #    - 复核服务端需实现 proto/review.proto 的 ReviewService(mock 见 scripts/mock_review_server.py)
 #    - ⚠ 误删 config/config.yaml 时: cp build/config/config.yaml config/config.yaml 可救回
 
@@ -530,7 +530,7 @@ cmake --build . --target phase_selftest -j
 ### Phase B 遗留 / Phase C 衔接点
 - CascadeEngine 目前**只做决策级“保留/丢弃 + 标注”**；是否据此写库/告警仍由 sink 现有逻辑（`label=="person" && conf>0.8`）决定 → **T22 才接大模型复核结果**。
 - `boost_on_confirm` 若开启会把主置信度替换为二级置信度，可能影响现有 `conf>0.8` 告警阈值；默认关闭。
-- 二级分类器需真实模型才能验证（本地无 `helmet_cls` 时 `cascade.enabled` 保持 false）。
+- 二级分类器需真实模型才能验证（本地无分类器模型时 `cascade.enabled` 保持 false）。
 - ✅ 已闭环：`models:` 中声明 `role: reviewer` 现由 `ConfigParser::validateModelConfigs()` 直接报错并提示改用 `review:` 段（T20–T22），不再走到 `ModelFactory`/`init` 失败。
 
 ### Phase C（T20–T22，已完成）= 大模型异步复核
@@ -614,10 +614,10 @@ cmake --build . --target phase_selftest -j
 cascade:                          # T16–T19 (已实现; 已内置于 config/config.example.yaml)
   enabled: false
   primary: yolov8_detector
-  secondary: helmet_classifier
+  secondary: helmet_classifier   # 样例名(与占座业务无关); 换成你自己的 role=classifier 模型
   trigger: { labels: ["person"], min_conf: 0.4, max_conf: 0.9 }   # 只复核灰区
   roi_padding: 0.10
-  accept_label: "with_helmet"     # 空 = 仅按置信度判定
+  accept_label: ""                # 空 = 仅按置信度判定(非空需与该分类器 labels 对齐)
   accept_conf: 0.50
   drop_rejected: true
   boost_on_confirm: false
@@ -629,8 +629,8 @@ review:                           # T20–T22 (已实现; 已内置于 config/co
   worker_threads: 2
   trigger: { labels: ["person"], min_conf: 0.50, max_conf: 1.00 }
   roi_padding: 0.10
-  prompt: "判断该人员是否未佩戴安全帽"
-  alert_type: "安全帽缺失"
+  prompt: "判断该座位是否被长期占座"
+  alert_type: "图书馆疑似占座违规"
   alert_on_failure: false
 sensors:                          # T23–T24 (已实现; 已内置于 config/config.example.yaml)
   - { kind: radar,    name: radar_front, backend: stub, rate_hz: 10, labels: ["person"] }
@@ -991,7 +991,7 @@ ffprobe -v error -show_entries stream=avg_frame_rate,nb_frames,duration -of defa
 | `database.*` | — | 连接池 + 异步批量；失败降级 CSV 并回传 | — |
 | `grpc.*` | — | 消息上限 / keepalive / deadline | — |
 
-### 17.5 验证状态（三色）
+### 17.5 验证状态（三色）—— ⚠️ 截至 T27 的快照；T28+ 的进展见 §16 / §18 / §19 / §20 / §21
 
 **已闭环**
 - `phase_selftest` **52/52**（零依赖、秒级）
@@ -1002,7 +1002,7 @@ ffprobe -v error -show_entries stream=avg_frame_rate,nb_frames,duration -of defa
 
 **部分闭环**
 - Phase B 级联：**仅自检背书**（本仓库无 `role=classifier` 模型）
-- 复核服务端：仅 Python mock，**真 VLM 未接**
+- 复核服务端：仅 Python mock，**真 VLM 未接** ⚠️（此为 T12–T27 验收时的快照；真 VLM 已于 T37 接入并端到端跑通，见 §21）
 - MySQL：`cv_infer.detections` **表不存在** -> 一直在写 `build/db_fallback.csv`（P2-2 未做）
 - `web_gateway` 未联调；P2-1 超时分支 / P2-2 降级回传未验
 - **T29 待回归**（需按 `frame_interval: 10` 重跑）
@@ -1295,4 +1295,82 @@ T34 修好后终于拿到了 `流水线统计`（之前拿不到，就是被这�
 - 下一步（一次只改一个变量）：`performance_mode: throughput`，然后再看 `num_threads`；
 - 旁证：`unavailable=61` 是因为本机没起 mock LLM 服务(127.0.0.1:50052)，复核走兜底，**符合预期**
   （阿里云那次有 mock 服务，所以两者不可直接比）；`融合统计` 有真实对齐/关联数据
-  (aligned=53, matched=46) ⇒ T23-T26 在新机器上复现 ✅�
+  (aligned=53, matched=46) ⇒ T23-T26 在新机器上复现 ✅
+
+---
+
+## 21. [T37] 真 VLM 接入实测（vLLM + Qwen2-VL-2B-Instruct-AWQ）
+
+### 21.1 做了什么
+
+把 Phase C 的复核服务端从**规则 mock** 换成**真实 VLM**，端到端跑通：
+
+`C++ 网关(review.enabled=true) → gRPC ReviewService → vlm_review.server(--backend openai) → vLLM(/v1) → Qwen2-VL-2B-Instruct-AWQ`
+
+### 21.2 上游 VLM（vLLM）启动命令（实测可用）
+
+```bash
+VLLM_WORKER_MULTIPROC_METHOD=spawn \
+VLLM_USE_FLASHINFER_SAMPLER=0 \
+VLLM_ATTENTION_BACKEND=XFORMERS \
+HF_HUB_OFFLINE=1 \
+vllm serve ~/.cache/huggingface/hub/models--Qwen--Qwen2-VL-2B-Instruct-AWQ/snapshots/4f6ea6d22fcf0f8c1ed64d1d2a3d722d4d7bbcea \
+  --host 0.0.0.0 --port 8000 \
+  --quantization awq \
+  --gpu-memory-utilization 0.7 \
+  --max-model-len 2048 \
+  --enforce-eager \
+  --served-model-name Qwen/Qwen2-VL-2B-Instruct-AWQ
+```
+
+- 环境：独立虚拟环境（`venv_qwen`）；模型走**本地 HF 缓存**（`HF_HUB_OFFLINE=1`）。
+- **WSL / 老驱动的坑**（上面几行就是为"能起"加的）：
+  - `VLLM_ATTENTION_BACKEND=XFORMERS` + `VLLM_USE_FLASHINFER_SAMPLER=0`：绕开 FlashInfer 采样器；
+  - `VLLM_WORKER_MULTIPROC_METHOD=spawn`：规避 fork 相关问题；
+  - `--enforce-eager`：先保证能起，不做 CUDA graph 捕获；
+  - `--max-model-len 2048` + `--gpu-memory-utilization 0.7`：压显存占用。
+
+### 21.3 复核服务端接真模型
+
+```bash
+# 复核服务端（OpenAI 兼容后端，指向上面的 vLLM）
+VLM_BACKEND=openai \
+VLM_BASE_URL=http://127.0.0.1:8000/v1 \
+VLM_MODEL=Qwen/Qwen2-VL-2B-Instruct-AWQ \
+python3 -m vlm_review.server --port 50052
+
+# 网关：config 里 review.enabled=true, review.endpoint="127.0.0.1:50052"
+```
+
+### 21.4 结果（口述实录）
+
+- vLLM **成功启动**，OpenAI 兼容 `/v1` 可用；
+- 复核服务端启动正常，**运行期可见逐个复核请求的日志反馈**；
+- **VLM 侧有 token 速率输出** ⇒ 真实模型确实在推理（不是 mock 的确定性返回值）；
+- 结论：**真 VLM 端到端接入跑通** ✅
+
+### 21.5 证据等级（诚实标注）
+
+| | 内容 |
+|---|---|
+| ✅ 可证 | 真模型被真实调用；链路（网关 → 复核服务 → VLM）跑通；模型确实在推理（token 速率）|
+| ⚠️ 未证 | **结论质量/准确率**（无标注集对照）；`复核统计` 的 `confirmed/rejected/timeout` 分布 |
+| 📌 说明 | 本次**未留存日志**，以上为运行者口述实录。想升级成"可引用数字"，补跑一次（约 60 秒）即可 |
+
+补证据（可选）：
+
+```bash
+# 终端 1：复核服务端（顺手留日志）
+python3 -m vlm_review.server --port 50052 2>&1 | tee /tmp/vlm_review.log
+# 终端 2：网关跑 test 配置，退出时把这一段贴回本节：
+#   [INFO ] 复核统计: submitted=.. dropped=.. reviewed=.. confirmed=.. rejected=.. timeout=.. unavailable=.. failed=..
+```
+
+### 21.6 与规则 mock 的分工（两者都要）
+
+| | 规则 mock（`scripts/mock_review_server.py` / `--backend mock`）| 真 VLM |
+|---|---|---|
+| 结论来源 | 按 `frame_seq` 奇偶（`vlm_review/backends.py`）| Qwen2-VL-2B-AWQ 真实视觉推理 |
+| 能验什么 | 链路闭环 / 告警语义 / 超时兜底（确定性，可进 CI）| 模型真的参与复核；端到端时延与吞吐 |
+| 不能验什么 | 模型准不准 | 准确率（无标注集）；也不适合做 CI 断言 |
+| 现状 | 已实测（§14.7 / §17.5）| **已跑通（本节）** |

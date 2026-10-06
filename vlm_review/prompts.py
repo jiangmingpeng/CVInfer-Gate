@@ -4,7 +4,7 @@
 
 职责边界:
   * ``Scenario``: 一个**业务场景**的完整语义包 —— system prompt、正/负标签、
-    默认任务、关键词兜底表。换业务(安全帽 / 占座 / ...)只需要换一个 Scenario,
+    默认任务、关键词兜底表。换业务(占座 / 其他业务 / ...)只需要换一个 Scenario,
     解析逻辑一行都不用动。
   * ``build_system_prompt`` / ``build_user_prompt``: 面向业务的指令, 要求 VLM
     输出**严格 JSON**, 便于稳定解析。
@@ -13,14 +13,15 @@
   * ``Verdict``: 结构化结论; ``confirmed=True`` 表示"确认异常, 应告警"。
 
 为什么要有 Scenario(踩过的坑):
-  早期 system prompt 与 label 词表被**写死成"安全帽"**, 而送往模型的 task 文本
-  来自 C++ 侧 config 的 ``review.prompt``。业务一旦换成"占座", 三者立刻互相打架:
-      system = "判断这个人有没有戴安全帽, label 只能是 no_helmet/with_helmet"
+  system prompt 与 label 词表**不能写死成某一个业务**, 而送往模型的 task 文本
+  来自 C++ 侧 config 的 ``review.prompt``。两者描述的不是同一件事时, 三者立刻互相打架:
+      system = "<历史业务的 system prompt / label 词表>"
       user   = "任务: 判断该座位是否被长期占座"
       image  = 一本书的 107x135 特写
   模型给不出任何合理答案, 只能编一个形如 ``long_time_use`` 的假 label, 且
   ``confirmed`` 恒为 false => 复核永不告警("看起来接了 VLM, 其实一句都对不上")。
   结论: 场景必须能跟着业务走, 并且能被 config / 环境变量覆盖。
+        本仓库当前业务 = 图书馆/自习室**占座**(``seat_occupancy``), 即默认场景。
 """
 from __future__ import annotations
 
@@ -50,35 +51,7 @@ class Scenario:
 
 
 # ------------------------------------------------------------------
-# 场景 1: 工地安全帽合规(默认; 与改造前行为**完全一致**, 便于回归)
-# ------------------------------------------------------------------
-HELMET_SCENARIO = Scenario(
-    name="helmet",
-    description="工地安全合规: 判断人员是否未佩戴安全帽",
-    positive_label="no_helmet",
-    negative_label="with_helmet",
-    default_task="判断该人员是否未佩戴安全帽",
-    system_prompt=(
-        "你是一个工地安全合规视觉复核助手。你会收到一张从监控画面裁剪出的"
-        "人员小图。请判断该人员**是否未佩戴安全帽**。"
-        "只依据图像内容判断, 不要臆测。"
-        "必须只输出一个 JSON 对象, 不要输出任何解释或 Markdown 代码块, 格式如下:\n"
-        '{"confirmed": true|false, "label": "no_helmet|with_helmet", '
-        '"confidence": 0.0-1.0, "reason": "不超过40字的简要依据"}'
-    ),
-    positive_phrases=(
-        "no_helmet", "no helmet", "without helmet", "not wearing", "no-hardhat",
-        "未佩戴", "沒有佩戴", "没有佩戴", "没戴", "未戴", "无安全帽", "无头盔",
-        "缺少安全帽", "未戴安全帽", "没戴安全帽", "不符合",
-    ),
-    negative_phrases=(
-        "with_helmet", "with helmet", "wearing", "has helmet", "compliant",
-        "已佩戴", "佩戴了", "佩戴安全帽", "有安全帽", "戴了", "戴有", "符合",
-    ),
-)
-
-# ------------------------------------------------------------------
-# 场景 2: 图书馆/自习室 占座(本次新增)
+# 场景: 图书馆/自习室 占座(本仓库当前业务 = 默认场景)
 # ------------------------------------------------------------------
 # 关键: system 里必须**明确"看不到人就倾向占座"与"看到人就不是占座"**,
 #       并给出"信息不足 => confirmed=false"的退出路径 —— 否则模型会对着
@@ -120,15 +93,15 @@ SEAT_OCCUPANCY_SCENARIO = Scenario(
 )
 
 SCENARIOS: Dict[str, Scenario] = {
-    HELMET_SCENARIO.name: HELMET_SCENARIO,
     SEAT_OCCUPANCY_SCENARIO.name: SEAT_OCCUPANCY_SCENARIO,
     # 别名: 便于命令行 / 环境变量随手写
-    "helmet_detection": HELMET_SCENARIO,
     "seat": SEAT_OCCUPANCY_SCENARIO,
     "occupancy": SEAT_OCCUPANCY_SCENARIO,
 }
 
-DEFAULT_SCENARIO = HELMET_SCENARIO
+# 默认场景 = 本仓库当前业务(图书馆/自习室占座)。
+# 新增业务: 再定义一个 Scenario 并登记进 SCENARIOS 即可, 解析逻辑无需改动。
+DEFAULT_SCENARIO = SEAT_OCCUPANCY_SCENARIO
 
 # 向后兼容: 旧的模块级常量(= 默认场景的取值), 供既有 import 继续使用
 POSITIVE_LABEL = DEFAULT_SCENARIO.positive_label
@@ -179,7 +152,7 @@ def build_user_prompt(task_prompt: str, label: str, confidence: float,
 
     注意: task 文本(来自 C++ 侧 review.prompt)只描述**任务**, 它**不能**改变
     system 角色的场景定义 —— 所以 system 必须由同一个 Scenario 供给, 否则就会
-    出现 "system 说安全帽、user 说占座" 的打架(见模块 docstring)。
+    出现 "system 说 A 业务、user 说 B 业务" 的打架(见模块 docstring)。
     """
     task = (task_prompt or "").strip() or (scenario or DEFAULT_SCENARIO).default_task
     return (
@@ -223,10 +196,10 @@ def _extract_json(text: str) -> Optional[dict]:
 def _is_negated(low: str, start: int) -> bool:
     """判断 low[start:] 处的短语在当前文本里是否**紧跟否定词**(被否定了)。
 
-    为什么需要它: 短语表匹配是**纯子串**的, 而中文里"未"会把后面短语的意思整个翻过来:
-        "该人员未佩戴安全帽" 同时命中正表 '未佩戴'(3) 与负表 '佩戴安全帽'(5),
-    若只看长度, 负表会因为更长而错误胜出(判成"已佩戴")。
-    同理英文 'not occupied' / 'unoccupied' 里都含有 'occupied'。
+    为什么需要它: 短语表匹配是**纯子串**的, 而否定词会把后面短语的意思整个翻过来:
+        "该座位未占座" 里含正表 '占座';
+        "not occupied" / "unoccupied" 里都含正表 'occupied'。
+    若不做否定翻转, 这些"否定结论"会被正表抢先命中, 判成"占座"(方向性错误 => 误告警)。
     所以先认出"被否定的命中", 再把它**翻转**为相反极性。
     """
     if start <= 0:
@@ -250,11 +223,11 @@ def _is_negated(low: str, start: int) -> bool:
 def _by_keywords(text: str, scenario: Optional[Scenario] = None) -> Optional[Tuple[bool, str]]:
     """关键词兜底解析: **最长命中**决定归属, 命中若被否定则**翻转极性**。
 
-    两个规则合起来才能同时兼顾两类真实文本:
-      * seat : 'not occupied' / 'not_occupied' / 'unoccupied' 里都含着正表 'occupied',
-               靠"否定翻转"把它们纠正为 not_occupied(而不是误报占座);
-      * helmet: '未佩戴安全帽' 里负表 '佩戴安全帽'(5) 比正表 '未佩戴'(3) 长,
-               靠"否定翻转"把它扭回 no_helmet(而不是误报已佩戴)。
+    两条规则合起来才能兼顾中英两类真实文本:
+      * 英文: 'not occupied' / 'not_occupied' / 'unoccupied' 里都含着正表 'occupied',
+              靠"否定翻转"把它们纠正为 not_occupied(而不是误报占座);
+      * 中文: '未占座' / '没有占座' 里也含着正表 '占座',
+              同样靠"否定翻转"扭回 not_occupied(而不是误报占座)。
     """
     sc = scenario or DEFAULT_SCENARIO
     low = (text or "").lower()

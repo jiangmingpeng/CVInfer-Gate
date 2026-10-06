@@ -6,12 +6,31 @@
 ![gRPC](https://img.shields.io/badge/gRPC-Supported-orange.svg)
 
 ## 项目简介
-CVInfer-Gate 是一个面向安防/工地场景（如安全帽检测）的高性能 AI 推理网关。针对传统 Python 后端在高并发视频流处理中存在的 GIL 锁限制和内存管理混乱问题，本项目底层完全采用 **C++17** 构建，结合 **OpenVINO** 实现高性能推理，并通过 **gRPC** 对外提供微服务接口。
 
-项目采用了 **BFF（Backend for Frontend）** 架构，核心推理由 C++ 保障极致性能，前端交互由轻量级 Python Flask 网关进行 HTTP 协议转换，实现了性能与开发效率的平衡。
+**它是什么**：一个**视频流推理网关** —— 视频进去，检测 / 复核 / 告警 / 落库出来。
+底层 **C++17 + OpenVINO** 扛性能，**gRPC** 对外提供接口，**Flask** 只负责网页那一层的协议转换（BFF 架构）。
 
-> **一句话**：底层用 **C++17 + OpenVINO** 保障推理性能，**gRPC** 对外提供微服务，**Flask BFF** 负责 HTTP 转换 —— 兼顾性能与开发效率。
-> **实测**：纯 CPU（yolov8n / 640 / FP32）**30.2 ± 0.7 FPS**，已基本压住源 29.96 FPS 的实时线。
+**为什么用 C++**：高并发视频流放在 Python 后端里，很容易卡在 GIL 和内存管理上。
+本项目把推理主链路整体放在 C++ 里 —— 实测纯 CPU（yolov8n / 640 / FP32）**30.2 ± 0.7 FPS**，基本压住 29.96 FPS 的实时线。
+
+**它和“跑个 YOLO demo”的区别**：背压、降级、复核、去重、落库、指标、探针、容器化都是现成的 ——
+少写的，正是“从能跑”到“能上”之间那几百行胶水代码。
+
+> 🎯 **一句话**：**clone 就能跑**（模型权重已入库）、**每项能力都能关**（关了就是纯视觉链路，对存量配置零影响）、**每个数字都有实测出处**。
+
+## 它怎么工作（以“图书馆占座”为例）
+
+需求很朴素：**“书在桌上、人走了很久”就该提醒管理员**。这件事拆成三步：
+
+1. **规则层（便宜，每帧都能跑）** —— 先在画面上标好“座位”区域，再回答三个问题：
+   物品在座位上吗？人在座位上吗？这个状态持续多久了？只有**连续够久**的候选才进入下一步。它的活是**筛**。
+2. **VLM 复核（贵，但会“看图讲道理”）** —— 把座位那张图 + 结构化证据（`检出物品 [laptop]，已持续 412 秒无人`）交给大模型，
+   请它回答“这算不算占座”。它的活是**判**。
+3. **告警** —— 确认后才写库 + 推 webhook；同一个座位只报一次。
+
+> **为什么要拆两步？** 因为**检测器没有“座位”这个概念**（再加一个模型也拿不到“物品属于哪个座位”），
+> 而 **VLM 只看单帧、答不出“持续了多久”** —— 可“时间”恰恰是占座定义的核心。
+> 规则层先把候选从「每帧每个目标」压到「每个座位一个事件」，**VLM 调用量直接降 1~2 个数量级**，还顺带把证据喂给了模型。
 
 ## 核心特性
 
@@ -77,7 +96,8 @@ git clone https://github.com/jiangmingpeng/CVInfer-Gate.git
 cd CVInfer-Gate
 ```
 
-> clone 后的目录结构：
+<details>
+<summary><b>clone 后的目录结构（点开看）</b></summary>
 
 ```text
 CVInfer-Gate/
@@ -110,10 +130,12 @@ CVInfer-Gate/
 └── .github/workflows # CI: 编译 + ctest + [P2-5] Python 自测
 ```
 
+</details>
+
 
 **2. 准备配置与测试视频**（模型已随仓库入库，无需准备）
 
-**模型**：`models/` 下的 IR（`yolov8n.*` 检测 + `helmet_cls.*` 安全帽分类）与标签**已入库**，
+**模型**：`models/` 下的 IR（`yolov8n.*` 检测 + `library_det.*` 图书馆场景检测 + `helmet_cls.*` 分类器样例）与标签**已入库**，
 clone 即可用（[决策 a] 目标 = “clone 就能跑”）。
 
 **配置**：主配置不入库（避免口令进 git），从模板生成：
@@ -166,6 +188,9 @@ ctest --output-on-failure            # 一次跑完 cv_unit_tests + phase_selfte
 ./cv_unit_tests --gtest_filter='YoloPostProcessor.*:SensorFusion*'   # 只跑某一块
 ```
 
+<details>
+<summary><b>单元测试覆盖清单（点开看）</b></summary>
+
 单测覆盖的正是「改动受益面最大、又最容易悄悄改坏」的那部分：
 
 | 单测文件 | 覆盖内容 |
@@ -178,6 +203,8 @@ ctest --output-on-failure            # 一次跑完 cv_unit_tests + phase_selfte
 | `test_seat_occupancy.cpp` | 占座判定（33 例）：坐标细节（底边中点 vs 框中心、包含度 vs IoU、多边形边界算“在”）、**C1b 防误判**（人拎包走过 = 随身物品；**错误的人标签不得把物品判成“在手”**）、**C2 人框高度门限一致性**（一个被滤掉的人框不得透过 C1b 把物品排除掉）、C4/C5 交互（**单帧误检暂停计时而不清零**；物品真被拿走才复位）、C6 上升沿（一个占用只出一次事件，人回来再走开可再报）、投票窗口滑出、**时基不变量（N 帧跨 T 毫秒结论不变，与抽帧率无关）**、多座位不串号、`enabled=false` 短路、证据文案可读性、无检测/空座位边界 |
 | `test_thread_safe_queue.cpp` | DropOldest 丢最旧、Block 不丢帧、close 排空后再返回 false、超时 pop、on_drop 计数 |
 | `test_roi_utils.cpp` | 外扩取整、贴边/越界裁剪、越界判空、负 padding、crop 深拷贝（跨线程送审的安全前提） |
+
+</details>
 
 > CI（`.github/workflows/ci.yml`）在每次 push/PR 上跑同一套命令，`-DCV_TESTS_REQUIRE_GTEST=ON` 保证「测试没跑」不会被当成「测试通过」。
 
@@ -192,12 +219,15 @@ pip install -r vlm_review/requirements.txt
 python3 -m vlm_review.server --backend openai \
     --base-url http://127.0.0.1:8000/v1 --model Qwen/Qwen2.5-VL-7B-Instruct
 #   单独联调（不启动流水线；proto 首次会自动生成）：
-./build/review_client 127.0.0.1:50052 frame.jpg "判断该人员是否未佩戴安全帽"
+./build/review_client 127.0.0.1:50052 frame.jpg "判断该座位是否被长期占座"
 
 # 主程序：把 cascade / review / sensors+fusion / occupancy 逐段打开（改 config/config.test.yaml 的 enabled）
 # 注：config.test.yaml 已默认开启 **占座判定**（座位 A-12），会把“[占座] 座位 A-12: ……证据”写进日志
 cd build && ./CVInfer-Gate --config config/config.test.yaml
 ```
+
+<details>
+<summary><b>想一次看全「告警外发 + 指标 + 探针 + 日志轮转」（点开看完整命令）</b></summary>
 
 想一次看全 **告警外发 + 指标 + 探针 + 日志轮转**（`config/config.ops.yaml`，不依赖 MySQL/复核服务）：
 
@@ -216,6 +246,8 @@ GRPC_AUTH_TOKEN=<同 config>  ./CVInfer-Gate --config config/config.ops.yaml --h
 # 3) 优雅退出：看"告警推送统计/日志轮转次数/各阶段统计"
 kill -TERM <pid>
 ```
+
+</details>
 
 | 想看的阶段 | 看哪里 |
 |---|---|
@@ -236,12 +268,12 @@ kill -TERM <pid>
 |---|---|---|
 | 架构重构 | 🟢 可信 | 11 个架构级 BUG 全修（线程安全/启动时序/优雅关闭/背压/落库）+ **数据库降级 / RTSP 断流重连**（见下）|
 | Phase A~D 四层抽象 | 🟢 可信 | `phase_selftest` 52/52，零外部依赖、秒级 |
-| 单元测试 / CI | 🟢 **新增** | `ctest` = `cv_unit_tests`(gtest 179 例) + `phase_selftest`，共 180 项全绿；覆盖 NMS / 多模态融合 / 配置校验 / 线程安全队列 / ROI / 告警去重 / 目标跟踪 / **鉴权语义** / **指标注册表+告警推送(重试/丢弃/排空)+日志轮转** / **占座规则状态机(33 例)**；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过） |
+| 单元测试 / CI | 🟢 **新增** | `ctest` = `cv_unit_tests`(gtest 179 例) + `phase_selftest`，共 **180 项全绿**；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过）。覆盖清单见上文折叠块 |
 | MySQL 落库 | 🟢 可信 | 表已建，程序正常写入（**不再产生 `db_fallback.csv`**）；**库不可用不再退出**：降级写 CSV + 后台自动重连并回传 |
-| Phase B 级联 | 🟡 能级联 / 精度未回归 | **本仓库已带 `role=classifier` 模型**（`models/helmet_cls.xml` + `helmet_labels.txt`，`model_config.yaml` 已注册 `helmet_classifier`，`config/config.test.yaml` 默认开启级联）；⚠️ 目前只有「能跑通级联」的冒烟，**未做过精度回归**（改 `accept_label`/`accept_conf` 无人能自动报警） |
-| Phase C 异步复核 | 🟡 两端已就位 / 真 VLM 未实测 | **服务端已实现**（`vlm_review/`：OpenAI 兼容 / 本地 transformers / mock 三后端，含 Health 探活 + 延迟观测；调用方鉴权已实现）；`scripts/mock_review_server.py` 保留为规则 mock。⚠️ “真 VLM 结果好不好”取决于你本地上游模型，需自行实测 |
+| Phase B 级联 | 🟡 能跑通 / 精度未回归 | 机制可用（`role=classifier` 注册样例见 `config/model_config.yaml` 注释块，与占座业务无关）；占座链路用不到它（`cascade.enabled=false`）。⚠️ **未做精度回归**（改 `accept_label`/`accept_conf` 无人能自动报警）|
+| Phase C 异步复核 | 🟢 真 VLM 已跑通 / 质量未评测 | 服务端已实现（`vlm_review/`：OpenAI 兼容 / 本地 transformers / mock 三后端 + 鉴权 + Health 探活）；已用 vLLM 起 `Qwen2-VL-2B-Instruct-AWQ` 端到端跑通（未留存日志）。⚠️ **结论准确率未做定量评测** |
 | Phase D 多模态融合 | 🟢 可信（stub 雷达）| 端到端实测 `matched=66`；带框传感器见 `config/config.test.yaml` 注释 |
-| `web_gateway` (Flask BFF) | 🟢 本地已联调 | **一键启动** `bash web_gateway/run.sh`（自动用/建 `.venv` + 缺依赖自动装 + 缺桩文件自动生成；未激活 venv 就直接 `python app.py` 时会打中文指引而不是英文堆栈）。前端两页合一：单图检测（拖拽上传 / 无刷新结果 / 检测列表 / 点击行高亮框 / 点击图放大 / 下载结果图 / `GET /api/status` 在线徽标）+ **结果回看**（`GET /api/results` 产物清单、`GET /api/result-video` 按需转码并支持 Range 拖动、`GET /api/events` 日志事件）|
+| `web_gateway` (Flask BFF) | 🟢 本地已联调 | **一键启动** `bash web_gateway/run.sh`（自动建 `.venv` + 装依赖 + 生成桩文件）。两页合一：**单图检测**（拖拽上传 / 无刷新结果 / 点列表行高亮框 / 下载结果图 / 在线徽标）+ **结果回看**（在线播放 `output.avi`（按需转码、支持 Range 拖动）+ 占座/告警事件时间线）|
 | RTSP 接入 | 🟢 已补强 | 连通已验证；**断流指数退避重连 + `close()` 可中断**（`interrupt_callback` 直接打断 `av_read_frame`），重连对上层透明 |
 | 性能 | 🟢 已定档 | 30.2 ± 0.7 FPS（量化上限 ~33）；瓶颈是推理 FLOP，**不在流水线** |
 | 可观测性 / 告警外发 | 🟢 **新增** | `/metrics` 20 组指标（Prometheus 文本格式，实测 5 条真告警全部投递到 webhook、死端口场景 `failed=3 retried=6` 且不影响主链路）+ `--health-check` 探针（实测 0/4 退出码）+ 日志文件按大小轮转（5 条单测）；均默认关闭 |
@@ -252,7 +284,8 @@ kill -TERM <pid>
 2. **告警去重现在是「身份优先」的**：默认启用跟踪 ⇒ 同一 `track_id` 即使框移开也只告警一次（快速移动目标不再重复）。但**无外观(re-ID)特征**，遮挡/交叉后可能换 id（ID switch），那之后仍可能重新告警一次；`tracking.enabled=false` 则退回纯几何去重。另外 `track_id` **未落库**（`detections` 表无该列，需 schema 迁移），gRPC 响应也没带它。
 3. **告警外发/指标是后续新增的**，且各带边界：`/metrics` **无鉴权**（只应暴露在受信网络）、webhook 只支持**明文 http**、推送队列**不落盘**（`kill -9` 时未发出的通知会丢，账在 DB）—— 详见下面的「已知边界」。
 
-## 工程化里程碑（逐轮详版）
+<details>
+<summary><b>工程化里程碑 · 逐轮详版（点开看：问题 → 做法 → 实测依据）</b></summary>
 
 > 上面的表是**结论**；以下是各轮工程化工作的「问题 → 做法 → 实测依据」。时间紧可只看上表，或直接跳到 [PROJECT_NOTES.md](PROJECT_NOTES.md)。
 
@@ -279,7 +312,7 @@ kill -TERM <pid>
 - 配置（`config/config.example.yaml` 已带注释，开关默认关；另有开箱即用的 `config/config.ops.yaml`）：
   `metrics.{enabled,bind,port}`、`alert.push.{enabled,url,timeout_ms,max_retries,retry_backoff_ms,max_queue,drain_timeout_ms,header_name,header_value}`、`app.log_max_size_mb`、`app.log_keep_files`。
 - webhook 载荷（**下游集成契约**，已用单测钉住）：`POST <url>`、`Content-Type: application/json`，
-  `{"source":"cvinfer-gate","alert_type":"安全帽缺失","description":"...","frame_seq":1039,"label":"person","confidence":0.8700,"track_id":3,"ts_ms":1730000000000}`；**2xx = 送达**，其它（含 4xx/5xx —— 有响应 ≠ 送到）按失败重试。
+  `{"source":"cvinfer-gate","alert_type":"图书馆疑似占座违规","description":"...","frame_seq":1039,"label":"person","confidence":0.8700,"track_id":3,"ts_ms":1730000000000}`；**2xx = 送达**，其它（含 4xx/5xx —— 有响应 ≠ 送到）按失败重试。
 - 验证（**真跑**：`config/config.ops.yaml` + `scripts/alert_receiver.py` 当伪下游）：
   `/metrics` 输出 20 组指标（`build_info{version}`、`uptime_seconds`、`frames_{decoded,processed,dropped,emitted}`、`detections`、`db_healthy`/`db_reconnects`、`grpc_requests_total{method,code}`、`alerts_{raised,suppressed}`、`alert_push_{sent,failed,dropped}`、`review_*`、`tracks_active`）；探针实测 `OK/EXIT=0`、`无 token/EXIT=4`、`错 token/EXIT=4`，服务端侧对应 `grpc_requests_total{method="Health",code="OK"}=1` 与 `{code="UNAUTHENTICATED"}=2`（“有人在试 token”一眼可见）；`grpc_client` 正常出 2 个目标且 `{method="Detect",code="OK"}=1`；**5 条告警全部投递**（`pushed=5 sent=5 failed=0 dropped=0`，伪下游逐条收到）；把 URL 指向死端口后 `sent=0 failed=3 retried=6 last_error=连接失败: 127.0.0.1:8877`，而**流水线照常跑完并正常出视频/落库**（失败不致命）；退出后 `/metrics` 立即拒连（`curl` 退出码 7）。
 - 轮转行为由 5 条单测钉住（`max_size_mb=0` 不轮转 / 超阈值产生 `.1` / `keep_files` 上限 / `=0` 不留归档 / 续写已有文件时把**已有大小**算进预算）—— 实测那次短跑日志不足 1MB，所以退出时 `日志轮转次数: 0` 是**正确**结果（“没触发”就不假装触发）。
@@ -322,7 +355,7 @@ kill -TERM <pid>
 - 仍未做：`track_id` 未落库（schema 迁移 + `DBWriter` 两处）、gRPC 响应未带该字段、无轨迹预测/外观特征（ID switch 见上）、停留/徘徊的**告警规则**未做（dwell 已可读）。
 
 **告警去重**：
-- 问题：告警判定是**每帧**执行的，而「安全帽缺失」描述的是**目标状态** —— 同一个人站着不动会被连续帧反复告警（每秒 N 条）。OVERVIEW §5 原把它列为 🔴 缺失。
+- 问题：告警判定是**每帧**执行的，而「疑似占座违规」这类结论描述的是**目标状态** —— 同一个目标不动会被连续帧反复告警（每秒 N 条）。OVERVIEW §5 原把它列为 🔴 缺失。
 - 做法：新增 `src/utils/AlertGate.h`（纯逻辑、header-only、内部 mutex），在**告警链路**上去重：复核路径打在**送审处**（同一目标只送审一次 ⇒ 不可能重复告警，且省掉重复的 VLM 调用；复核回调拿不到框，无法在那里去重），本地规则路径打在**写告警处**。画框/写视频/检测入库**完全不受影响**。
 - 语义：冷却窗按**最近一次命中**刷新 ⇒ 目标持续在画面里只告警一次；消失超过 `alert.dedup.cooldown_ms` 后再次出现才重新告警。`alert.dedup.enabled=false` 可一键回退到旧行为（默认开启是刻意的行为修正）。
 - 验证：13 条单测（含并发）+ 2 条配置用例；退出日志新增 `告警去重统计: allowed=/suppressed=/tracked=`。
@@ -336,31 +369,79 @@ kill -TERM <pid>
 
 > 完整推导、逐条实测数据与踩坑记录都在 **[PROJECT_NOTES.md](PROJECT_NOTES.md)**（§20.12–§20.15 = 性能与收尾对账）；想**按文件**读代码先看 **[docs/READING_MAP.md](docs/READING_MAP.md)**。
 
-## 面向对象（适用场景与人群）
+</details>
 
-### 适用场景
-- **安防 / 工地**：安全帽佩戴检测、区域入侵等合规告警（默认场景）。
-- **图书馆 / 自习室**：占座判定 —— 「某座位物品在、人不在，持续 N 秒」。
-- **通用实时检测**：任何「视频流 + 少量非视频传感器（雷达 / 红外）+ 需要落库与告警」的落地场景。
+## 面向对象（目标人群）
 
-### 目标人群
+> 适用场景见下文「应用价值 · 能直接落地的场景」。一句话：任何「视频流 +（可选）少量非视频传感器 + 需要落库与告警」的实时检测场景都能套。
+
 - **CV / 后端工程师**：想用 C++ 替换高并发 Python 推理后端，又不愿从零搭流水线与工程基建。
 - **算法转工程**：已有 YOLO 权重，需要「模型 → 服务」的完整闭环（推理、后处理、复核、落库、监控）。
 - **学生 / 毕设 / 作品集 / 面试**：一个「架构像生产、每一层设计取舍都能讲清」的参考实现。
 - **二次开发者**：需要一套「能力可插拔、默认全关、增量接入零破坏」的网关骨架。
 
-## 价值与展望
+## 应用价值
 
-### 核心价值
-- **性能工程有据可依**：不是「感觉快」，而是把 FP32 天花板量化到 ~33 FPS，并诚实标注唯一剩余的杠杆是 INT8。
-- **架构可插拔**：级联 / VLM 复核 / 多模态融合 / 占座四类能力都挂在同一条流水线上，**默认关闭即退化为纯视觉链路**，对存量配置零行为变化。
-- **工程化闭环**：从推理、后处理，到复核、去重、跟踪、占座规则、落库、告警外发、指标、探针、容器化 —— 一条龙，且每一段都有「降级 / 不阻塞 / 可观测」的边界设计。
-- **文档即资产**：阅读地图、依赖地图、Runbook、开发史与踩坑记录齐全，显著降低接手成本。
+### 1. 能直接落地的场景
 
-### 未来方向（待办清单）
+| 场景 | 靠哪些能力 | 打开哪个开关 |
+|---|---|---|
+| 图书馆 / 自习室**占座** | 占座规则层（筛）+ VLM 复核（判） | `occupancy.enabled` |
+| 工地 / 车间**安全合规** | 二级分类器 / VLM 复核 | `cascade.enabled` · `review.enabled` |
+| 无人货架 / 区域盘点 | 检测 + 落库 + webhook | `alert.push.enabled` |
+| 园区周界（视频 + 雷达/红外） | 多模态决策级融合 | `fusion.enabled` |
+| 接进你自己的系统 | gRPC `:50051` + webhook 回调 | — |
 
-- **INT8 量化**（唯一剩下的性能杠杆）：预计 1.5~2.5×（本机 AVX-VNNI）；阿里云 SPR/Xeon 带 AMX 收益更大 —— 但这是**拿精度换速度**，必须与 FP32 做同视频一致率对比
-- **OpenVINO 异步推理（Async Infer）**：⚠️ 本项目的实测结论是**它不会提速**（推理侧已饱和，加并发只是多烧 CPU），见 PROJECT_NOTES §20.13/§20.14
-- 支持 RTMP/WebRTC 实时视频流推流，实现网页端实时监控
-- ~~引入 Prometheus + Grafana 监控推理延迟与系统资源~~ ⇒ **已补上 Prometheus 那一半**：`/metrics` 端点（默认关闭）+ `docker/prometheus.example.yml`（抓取配置 + 关键指标清单）+ 容器 healthcheck 用 `--health-check`；**Grafana 面板仍未做**
+### 2. 成本上真的省
+
+- **VLM 调用量降 1~2 个数量级** —— 规则层先筛再送审。自建 VLM 方案里最贵的一项，就是“每帧每个目标都去问一次大模型”。
+- **纯 CPU 就有 30.2 FPS** —— 中小规模场景不用买 GPU，一台机器起步。
+- **单点故障不致命** —— 数据库连不上先写 CSV（后台自动回连补传）、复核服务没起走兜底策略 ⇒ 不会因为一个依赖挂掉就停摆。
+
+### 3. 换业务的成本很低
+
+- **换场景**：改 `review.prompt` + 选 `VLM_SCENARIO`（业务规则在配置里，不在代码里）
+- **换复核服务**：只改 `review.endpoint` —— OpenAI 兼容 / 本地 transformers / mock 三选一，**C++ 侧零改动**
+- **加新能力**：一律“默认关闭 + 加法字段” ⇒ 接进来**不影响存量配置**
+
+### 4. 当工程参考的价值
+
+- 每一层（模型抽象 / 级联 / 复核 / 融合 / 跟踪 / 占座 / 去重 / 告警外发）都是**接口分层 + 可注入替身** ⇒ 能脱离模型、脱离硬件做单测
+- **180 项测试全绿**，其中 `phase_selftest` 一次跑完四层架构（零外部依赖、秒级）⇒ 改代码心里有底
+- 文档即资产：阅读地图 / Runbook / 开发史与踩坑记录齐全 ⇒ 接手成本低
+
+## 未来可完善的方向
+
+> 分四类：**性能** / **精度与评测** / **工程健壮性** / **产品化**。每条都说明“为什么值得做”。
+
+### 性能
+
+| 方向 | 预期收益 | 备注 |
+|---|---|---|
+| **INT8 量化**（唯一剩下的性能杠杆） | 1.5~2.5×（本机 AVX-VNNI；SPR/Xeon 带 AMX 收益更大） | **拿精度换速度**，必须与 FP32 做同视频一致率对比后再上 |
+| 更小 / 更专的检测器 | 直接抬高 FPS 天花板 | 场景专用检测器已入库（`models/library_det.*`），可继续剪枝 / 蒸馏 |
+| ~~OpenVINO 异步推理~~ | **实测不会提速** | 推理侧已饱和，加并发只是多烧 CPU（PROJECT_NOTES §20.13/§20.14）。列在这里是为了**避免重复踩坑** |
+
+### 精度与评测（当前最大的空白）
+
+- **建一个小规模评测集**（几十张标注图 + 一段带占座的视频）：现在“结论准不准”完全没数，改 prompt / 阈值没有任何护栏 —— 有了它才能把“复核质量”变成可回归的数字。
+- **级联 B 阶段的精度回归**：`accept_label` / `accept_conf` 改了也没人报警。
+- **ID switch 评测**：跟踪没有外观特征，遮挡 / 交叉后会换 id。
+
+### 工程健壮性
+
+- **TLS / mTLS**：当前是明文共享密钥 —— 内网够用，公网必须上（同时解决窃听与重放）。
+- **`track_id` 落库**（schema 迁移 + `DBWriter` 两处）+ gRPC 响应带上该字段。
+- **结果视频上限**：长时间跑会一直涨（分段写 / 滚动覆盖）。
+- **RTSP 重连后分辨率变化**：sink 端 `VideoWriter` 需自动重建（现在要重启进程）。
+- **推送队列落盘**：`kill -9` 时未发出的通知会丢（现在靠 DB 侧补偿）。
+- **多机位去重**：同一物理座位被两个机位拍到会各报一次。
+- **座位自动标定**：座位 zone 现在是静态手填的，机位会动 / 球机巡航时需要标定。
+
+### 产品化
+
+- **Grafana 面板** —— Prometheus 那一半已经有了（`/metrics` + `docker/prometheus.example.yml`），缺的是面板。
+- **告警通知渠道** —— webhook 之外接钉钉 / 企微 / 短信。
+- **网页端实时监控** —— 支持 RTMP / WebRTC 推流，边跑边看（现在是跑完回看 `output.avi`）。
+- **座位可视化配置** —— 在网页上点选座位 zone（现在是手填 `[x,y,w,h]`，已有 16 格网格探针辅助定位）。
 

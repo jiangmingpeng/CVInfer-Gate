@@ -22,7 +22,7 @@ using alert::Config;
 
 Alert sample() {
     Alert a;
-    a.type = "安全帽缺失";
+    a.type = "图书馆疑似占座违规";
     a.description = "含\"引号\"与\n换行";
     a.frame_seq = 7;
     a.label = "person";
@@ -48,7 +48,7 @@ TEST(AlertNotifier, JsonEscapingAndPayloadFields) {
     // 有效载荷契约(下游按这个解析, 改动等于破坏兼容):
     // source / alert_type / description / frame_seq / label / confidence /
     // track_id / ts_ms
-    EXPECT_NE(j.find("\"alert_type\":\"安全帽缺失\""), std::string::npos);
+    EXPECT_NE(j.find("\"alert_type\":\"图书馆疑似占座违规\""), std::string::npos);
     EXPECT_NE(j.find("\\\"引号\\\""), std::string::npos); // 引号被转义(JSON 里是 \"引号\")
     EXPECT_NE(j.find("\\n"), std::string::npos); // 换行转义
     EXPECT_NE(j.find("\"frame_seq\":7"), std::string::npos);
@@ -93,7 +93,7 @@ TEST(AlertNotifier, DeliversOnFirstAttempt) {
     EXPECT_EQ(st.pushed, 1u);
     EXPECT_EQ(st.sent, 1u);
     EXPECT_EQ(st.failed, 0u);
-    EXPECT_NE(seen_body.find("安全帽缺失"), std::string::npos);
+    EXPECT_NE(seen_body.find("图书馆疑似占座违规"), std::string::npos);
 }
 
 TEST(AlertNotifier, RetriesWithBackoffUntilSuccess) {

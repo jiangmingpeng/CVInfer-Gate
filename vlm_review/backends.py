@@ -42,7 +42,7 @@ class VlmBackend(ABC):
     """复核后端接口。
 
     后端持有**场景**(Scenario): system prompt 与 label 词表都从它来 —— 这样
-    "换业务只换场景", 而不是像以前那样把安全帽写死在每个后端的 infer 里。
+    "换业务只换场景", 而不是像以前那样把某个业务的 system prompt 写死在每个后端的 infer 里。
     """
 
     kind: str = "base"

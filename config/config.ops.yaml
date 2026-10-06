@@ -60,8 +60,8 @@ review:
 #   worker_threads: 2
 #   trigger: { labels: ["person"], min_conf: 0.50, max_conf: 1.00 }
 #   roi_padding: 0.10
-#   prompt: "判断该人员是否未佩戴安全帽"
-#   alert_type: "安全帽缺失"
+#   prompt: "判断该座位是否被长期占座"
+#   alert_type: "图书馆疑似占座违规"
 #   alert_on_failure: true
 
 video:

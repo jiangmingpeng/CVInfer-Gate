@@ -38,7 +38,7 @@
 #     # B. 真 VLM(需先把上游 VLM 起在 :8000, 如 vLLM/Ollama)
 #     #     ⚠️ 本配置的业务是**占座**, 服务端必须用同一场景:
 #     #        VLM_SCENARIO=seat_occupancy (或 --scenario seat_occupancy)
-#     #        否则服务端的 system prompt 会停在"安全帽", 与这里的 prompt 打架。
+#     #        否则服务端的 system prompt 会停在别的业务, 与这里的 prompt 打架。
 #     VLM_SCENARIO=seat_occupancy python3 -m vlm_review.server --backend openai \
 #         --base-url http://127.0.0.1:8000/v1 --model Qwen/Qwen2.5-VL-7B-Instruct
 #
@@ -103,16 +103,18 @@ grpc:
   # 非空 => 主服务每个 RPC 都要 authorization: Bearer <token>(空 = 不鉴权)
   auth_token: "${GRPC_AUTH_TOKEN:-}"
 
-# ---- Phase B: 级联复核 (主筛 person 灰区 -> helmet_classifier 二级复核) ----
-# 依赖 config/model_config.yaml 中已注册的 role=classifier 模型 helmet_classifier
-# (输入 416x416, device=CPU)。⚠️ secondary 必须与模型名完全一致,
-# 否则 buildCascade() 会“静默退化为单模型”, 表现为 Phase B 没跑但也不报错。
+# ---- Phase B: 级联复核 (主筛灰区 -> 二级分类器复核) ----
+# ⚠️ 占座业务**用不到**这一段: 本仓库现成的 role=classifier 只有一个与占座无关的
+#    样例(注册写法见 config/model_config.yaml 的注释块)。所以这里 enabled=false、
+#    secondary 留空 —— 本文件跑的是"单模型 + 占座规则层 + VLM 复核"。
+#    想验 Phase B 机制: 按 model_config.yaml 注释开启样例分类器, 再把 secondary
+#    填成它的名字(**必须与模型名完全一致**, 否则 buildCascade() 会“静默退化为
+#    单模型”, 表现为 Phase B 没跑但也不报错)。
 cascade:
   # enabled: true
   enabled: false
   primary: library_detector       # 留空 = 首个 detector
-  # secondary: helmet_classifier   # 留空/找不到 = 退化为单模型
-  secondary: ""
+  secondary: ""                   # 留空/找不到 = 退化为单模型
   trigger:
     labels: ["bag", "laptop"]          # 触发复核
     min_conf: 0.40               # 灰区下界(含)
@@ -169,11 +171,11 @@ review:
 #     min_conf: 0.50
 #     max_conf: 1.00
 #   roi_padding: 0.10
-#   roi_context_scale: 1.0           # 1 = 只裁目标本身(安全帽足够, 不需要场景)
+#   roi_context_scale: 1.0           # 1 = 只裁目标本身(不需要场景上下文时)
 #   roi_min_side: 0                  # 0 = 不补最小边长
 #   min_dwell_ms: 0                  # 0 = 不做停留时长闸门
-#   prompt: "判断该人员是否未佩戴安全帽"
-#   alert_type: "安全帽缺失"
+#   prompt: "判断该座位是否被长期占座"
+#   alert_type: "图书馆疑似占座违规"
 #   alert_on_failure: false          # 拿不到结论(超时/不可用)时默认**不**告警
 #   # ---- 接入真 VLM ----
 #   max_message_size_mb: 16

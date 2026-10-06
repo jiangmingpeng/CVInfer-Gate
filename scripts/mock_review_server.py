@@ -20,7 +20,7 @@
 #
 # 与 config/config.test.yaml 对应的场景演示:
 #     --mode auto      (默认) 按 frame_seq 奇偶确定性地"确认/否决", 便于对照 CSV
-#     --mode confirm   全部确认  -> 应看到告警写入(复核确认: label=no_helmet ...)
+#     --mode confirm   全部确认  -> 应看到告警写入(复核确认: label=occupied ...)
 #     --mode reject    全部否决  -> 不应出现任何告警
 #     --mode drop      模拟服务不可达(返回 UNAVAILABLE) -> 统计 unavailable=N
 #     --mode error     模拟内部错误(返回 INTERNAL, 客户端记为 failed)
@@ -125,9 +125,9 @@ def main() -> int:
 
             confirmed = decide(seq)
             if confirmed:
-                label, conf = "no_helmet", round(rng.uniform(0.80, 0.95), 3)
+                label, conf = "occupied", round(rng.uniform(0.80, 0.95), 3)
             else:
-                label, conf = "with_helmet", round(rng.uniform(0.90, 0.99), 3)
+                label, conf = "not_occupied", round(rng.uniform(0.90, 0.99), 3)
 
             # 注意: request.confidence 是**送审时的置信度**。若启用了多模态融合,
             # 它是融合**后**的值(原始视觉值只存在于 DetectionResult::vision_confidence,
