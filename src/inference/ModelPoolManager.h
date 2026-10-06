@@ -8,7 +8,7 @@
 #include "inference/IModel.h"
 #include "utils/ConfigParser.h" // CascadeConfig
 
-// ModelPoolManager (T15: 多模型池管理器 / 模型注册表)
+// ModelPoolManager (多模型池管理器 / 模型注册表)
 // 背景: 原 main.cpp 只构造"单个 InferenceEnginePool"。
 // 多模型级联需要"每个模型各自一套引擎池"。
 //

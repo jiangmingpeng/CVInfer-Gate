@@ -19,7 +19,7 @@
 #include "utils/ConfigParser.h"
 #include "utils/ThreadSafeQueue.h"
 
-// DBWriter (T9: 连接池 + 异步落库)
+// DBWriter (连接池 + 异步落库)
 // 与原版差异:
 // 1) 单连接 -> ConnectionPool(database.pool_size 个连接)
 // 2) writeDetections/writeAlert 改为"异步入队", 立即返回,
@@ -28,7 +28,7 @@
 // 4) 复用 database.max_retries / batch_size / flush_interval_ms
 // 注意: 队列有界, 满时按 DropOldest 丢弃并在 stats 中可观测。
 //
-// T11 功能完善 (在保持对外接口不变的前提下增量增强):
+// 功能完善 (在保持对外接口不变的前提下增量增强):
 // A) 数据库状态缓存: 维护 db_healthy_ 状态位。首次写库失败后不再
 // 每帧重试; 仅打印一次警告并暂停写库, 之后每 30s 或累积 100 次
 // 冲刷后做一次"探测"重试, 以应对偶发网络闪断。

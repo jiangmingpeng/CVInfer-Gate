@@ -19,7 +19,7 @@
 
 再把 C++ 侧 config.yaml 的 review.endpoint 指到本服务即可(流水线零改动)。
 
-    # 4) [T41] 开启鉴权(与 C++ 侧 review.auth_token 对称): 服务端
+    # 4) 开启鉴权(与 C++ 侧 review.auth_token 对称): 服务端
     VLM_AUTH_TOKEN=xxx python3 -m vlm_review.server --backend mock
     #    同一 token 丢给客户端(环境变量优先, 不写进命令行历史)
     REVIEW_AUTH_TOKEN=xxx ./build/review_client 127.0.0.1:50052
@@ -95,14 +95,14 @@ def build_parser(cfg: VlmConfig) -> argparse.ArgumentParser:
 
 
 class _AuthInterceptor:
-    """[T41] 服务端鉴权: 校验 authorization: Bearer <token>。
+    """服务端鉴权: 校验 authorization: Bearer <token>。
 
     与 C++ 侧**对称**: GrpcLlmReviewer 在 auth_token 非空时对**每个** RPC(含 Health)
     都发 `authorization: Bearer <token>`(见 src/review/GrpcLlmReviewer.cpp)。
     所以这里也对**所有**方法统一校验, 不做例外 —— 语义最简单, 也堵住了
     "将来新增 RPC 忘了鉴权"这个最常见的漏洞(新增方法自动被覆盖)。
 
-    * token 为空 => 不启用鉴权(完全等价于 T41 之前的行为, 零破坏);
+    * token 为空 => 不启用鉴权(完全等价于改造前的行为, 零破坏);
     * 用 hmac.compare_digest 做**定长比较**, 避免按字节短路泄漏 token 前缀;
     * 注: 这是**明文传输的共享密钥**(不启用 TLS), 只解决"谁都能调"的问题,
       不解决窃听 —— 内网/本地回环够用, 公网必须上 TLS 或反向代理。
@@ -272,7 +272,7 @@ def serve(cfg: VlmConfig, max_rpcs: int = 0) -> int:
     print(f"[vlm] 场景: {scenario.name} — {scenario.description}"
           f"{' (system prompt 已被 VLM_SYSTEM_PROMPT 覆盖)' if cfg.system_prompt else ''}",
           flush=True)
-    # [T41] 鉴权状态必须打出来: "以为开了其实没开"是排查噩梦
+    # 鉴权状态必须打出来: "以为开了其实没开"是排查噩梦
     if cfg.auth_token:
         print("[vlm] 鉴权: 已开启(要求 authorization: Bearer <token>; Health 也要带)", flush=True)
     else:

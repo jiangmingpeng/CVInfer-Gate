@@ -10,9 +10,9 @@
 
 namespace sensor {
 
-// VideoSensorSource (T23: 把旧 IVideoSource 适配为统一传感器)
+// VideoSensorSource (把旧 IVideoSource 适配为统一传感器)
 // 角色: 让"视频"以和其它模态一致的方式提供**统一时间戳**, 供
-// MultiSensorPipeline 取对齐锚点(T26)以及日志/统计使用。
+// MultiSensorPipeline 取对齐锚点以及日志/统计使用。
 //
 // 设计取舍(重要, 便于后续演进):
 // * **非拥有**: 底层 IVideoSource 的打开/关闭由 main 管理, 本类只借用,

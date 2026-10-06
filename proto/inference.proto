@@ -28,7 +28,7 @@ message DetectResponse {
     repeated Detection detections = 3;
 }
 
-// [T43] 健康检查 / 自述
+// 健康检查 / 自述
 message HealthRequest {}
 
 message HealthResponse {
@@ -41,8 +41,8 @@ message HealthResponse {
 // 定义 gRPC 服务
 service DetectionService {
     rpc Detect (DetectRequest) returns (DetectResponse);
-    // [T43] 探针: 容器 healthcheck / systemd / k8s 的活性检查
-    //   同样**需要鉴权**(空 token = 不鉴权), 与 T42 的口径一致:
+    // 探针: 容器 healthcheck / systemd / k8s 的活性检查
+    //   同样**需要鉴权**(空 token = 不鉴权), 与主服务鉴权的口径一致:
     //   50051 不暴露任何匿名接口。
     rpc Health (HealthRequest) returns (HealthResponse);
 }

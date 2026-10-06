@@ -6,8 +6,8 @@
 
 #include <gtest/gtest.h>
 
-// AuthGuard 单测 (T42: 主服务 50051 鉴权)
-// 与 T41 的 Python 自测(vlm_review/test_auth_interceptor.py)**同用例集**, 保证
+// AuthGuard 单测 (主服务 50051 鉴权)
+// 与 Python 自测(vlm_review/test_auth_interceptor.py)**同用例集**, 保证
 // 两个服务端的鉴权语义不飘:
 // 正确 token / 完全不带 metadata / 6 种坏串(错 token、漏前缀、空 token、
 // 尾空格、小写方案名、前缀攻击) / metadata 混排 / 非 ASCII / 只看第一个头。
@@ -15,7 +15,7 @@
 // * 未启用(token 为空)必须**短路放行** => 老部署零破坏;
 // * 定长比较的长度不等/长公共前缀边界。
 //
-// 分工(与 T41 同):
+// 分工(与复核鉴权同):
 // * 本文件只测**纯逻辑**(不调 require()/verifyContext()), 所以 cv_unit_tests
 // 继续保持"不链 gRPC、不需要任何服务"的性质 —— 这也是它能在 CI 里秒级跑完的原因;
 // * "拒绝码必须是 UNAUTHENTICATED(不能退化成 UNKNOWN)"这类**拼装层**事实,

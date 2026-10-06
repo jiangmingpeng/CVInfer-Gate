@@ -665,7 +665,7 @@ bool ConfigParser::validateModelConfigs() const {
             fail("模型 " + m.name + " 的 role 非法(应为 detector/classifier/reviewer): " + m.role);
         // reviewer 已废弃: 大模型复核不走本地模型, 而在 config.yaml 的 review: 段配置。
         if (m.role == "reviewer")
-            fail("模型 " + m.name + " 的 role=reviewer 已废弃: 大模型复核请改用 config.yaml 的 review: 段(T20-T22), 不要放入 models:");
+            fail("模型 " + m.name + " 的 role=reviewer 已废弃: 大模型复核请改用 config.yaml 的 review: 段, 不要放入 models:");
         if (m.conf_threshold < 0.0f || m.conf_threshold > 1.0f)
             fail("模型 " + m.name + " 的 conf 阈值必须在 0..1");
         if (m.nms_threshold < 0.0f || m.nms_threshold > 1.0f)

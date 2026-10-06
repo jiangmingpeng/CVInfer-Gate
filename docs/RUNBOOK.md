@@ -152,7 +152,7 @@ ALERT_TOKEN=demotoken ./CVInfer-Gate --config /home/jmp/CVInfer-Gate/config/conf
 gRPC 服务已启动, 监听: 0.0.0.0:50051
 [指标] /metrics 端点已启动, 端口 9100
 服务就绪, 按 Ctrl+C 退出。
-[T35] 引擎分段/帧: 预处理=3.55ms  推理=124.65ms  (累计 100 帧)    ← 每 100 帧一次，看 FPS 靠它
+引擎分段/帧: 预处理=3.55ms  推理=124.65ms  (累计 100 帧)    ← 每 100 帧一次，看 FPS 靠它
 ```
 
 - 复核连通时**不**出现 `[GrpcLlmReviewer] 复核服务暂不可用(...)`；出现即没连上 50052。
@@ -177,6 +177,9 @@ gRPC 服务已启动, 监听: 0.0.0.0:50051
 | **带框结果视频** | `build/output.avi`（C++ 写出的 MJPEG）—— 可**直接在网页看**：`localhost:8080` → 「③ 流水线结果」；后端按需用 ffmpeg 转 H.264 mp4（100MB 约 6s）并缓存，支持拖进度条；也可点「下载原始 AVI」本地播 | 🟢 最直观 |
 | **占座/告警事件** | 控制台实时输出 + `build/logs/cvinfer.log`；网页「占座/告警事件」把它拉成时间线（`GET /api/events`），并把座位/物品/已持续时长/投票拆成结构化字段 | 🟢 可直接读 |
 | **事件在画面哪里** | 网页「画面示意 · 座位区」：底图 = 结果视频首帧，蓝框 = 配置里的 `occupancy.seats`（`GET /api/scene` + `/api/scene-frame`）；点事件行即高亮对应座位区（A-12 到底是画面哪一块，一眼就知道） | 🟢 一眼定位 |
+| **单张图片实时推理** | 网页上半部分（`POST /api/detect`，走 gRPC）—— 上传即出带框图 + 列表。⚠️ 它和视频流水线是**两条独立链路**（这条不读 `output.avi`） | 🟢 立即可见 |
+| **结构化检测记录** | MySQL `cv_infer.detections` / `alerts`（需写 SQL）；库不可用时降级到 `build/db_fallback.csv` | 🟡 要查库 |
+| 指标 / 探针 | `/metrics`、`--health-check` | 🟡 给监控/编排用，不是给人看结果的 |
 
 > ⚠ **网页事件时间线老是空的？** 九成是日志配置没生效。日志相关键全在 **`app` 段**
 > （`app.log_level` / `app.log_file` / `app.log_max_size_mb` / `app.log_keep_files`），
@@ -186,9 +189,6 @@ gRPC 服务已启动, 监听: 0.0.0.0:50051
 > `[Logger] 日志轮转已开启: logs/cvinfer.log (...)`；没有就说明 `log_file` 根本没被读到。
 > `log_file` 相对 **CWD**（从 `build/` 启动 ⇒ `build/logs/cvinfer.log`，正好是网页默认读的位置），
 > 也可用环境变量 `RESULT_LOG` 指到别处。
-| **单张图片实时推理** | 网页上半部分（`POST /api/detect`，走 gRPC）—— 上传即出带框图 + 列表。⚠️ 它和视频流水线是**两条独立链路**（这条不读 `output.avi`） | 🟢 立即可见 |
-| **结构化检测记录** | MySQL `cv_infer.detections` / `alerts`（需写 SQL）；库不可用时降级到 `build/db_fallback.csv` | 🟡 要查库 |
-| 指标 / 探针 | `/metrics`、`--health-check` | 🟡 给监控/编排用，不是给人看结果的 |
 
 其它产物：`build/logs/cvinfer.log`（若开 + 轮转）、伪下游逐条打印告警；`build/output.web.mp4` 是网页播放用的转码缓存（源视频更新后自动重转，可直接删）。
 

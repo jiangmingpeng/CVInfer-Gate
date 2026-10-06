@@ -84,9 +84,9 @@ python3 -m vlm_review.server --backend mock
 ```
 
 `review_client` 会先探活（`Health`），再送审一张 ROI 并打印结构化结论。
-退出码：`0=Ok  1=Failed  2=不可达  3=超时  4=入参错误  5=UNAUTHENTICATED`（[T41] token 不匹配/未带）。
+退出码：`0=Ok  1=Failed  2=不可达  3=超时  4=入参错误  5=UNAUTHENTICATED`（ token 不匹配/未带）。
 
-### [T41] 打开鉴权（两端必须一致）
+### 打开鉴权（两端必须一致）
 
 ```bash
 # 服务端：设了 token 就**每个 RPC 都校验**(含 Health)；不设 = 完全不校验(与旧行为一致)
@@ -113,7 +113,7 @@ REVIEW_AUTH_TOKEN=s3cr3t ./build/review_client 127.0.0.1:50052      # A. 环境�
 | `VLM_MODEL` | 后端默认 | 模型名或本地权重路径 |
 | `VLM_BASE_URL` | `http://127.0.0.1:8000/v1` | openai 后端上游地址 |
 | `VLM_API_KEY` | `EMPTY` | openai 后端**上游**供应商鉴权 |
-| `VLM_AUTH_TOKEN` | 空 | [T41] **本服务**对调用方的鉴权(Bearer)；空 = 不校验。CLI: `--auth-token` |
+| `VLM_AUTH_TOKEN` | 空 | **本服务**对调用方的鉴权(Bearer)；空 = 不校验。CLI: `--auth-token` |
 | `VLM_REQUEST_TIMEOUT_S` | `30` | 单次上游 HTTP 超时 |
 | `VLM_MAX_TOKENS` | `160` | 生成长度 |
 | `VLM_TEMPERATURE` | `0.0` | 建议 0，保证可复现 |

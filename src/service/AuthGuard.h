@@ -8,11 +8,11 @@
 
 #include <grpcpp/grpcpp.h>
 
-// AuthGuard (T42: 主服务 50051 鉴权)
+// AuthGuard (主服务 50051 鉴权)
 // 起因: OVERVIEW §5 把"主服务 50051 无鉴权"列为🔴 —— 任何能连到端口的人都能
-// 白嫖推理算力 / 探测服务是否在线; T41 只给复核服务(50052)补了鉴权。
+// 白嫖推理算力 / 探测服务是否在线; 复核服务(50052)已有鉴权。
 //
-// 语义与 T41(vlm_review/server.py::_AuthInterceptor)**逐条对齐**, 不另发明一套:
+// 语义与 vlm_review/server.py::_AuthInterceptor **逐条对齐**, 不另发明一套:
 // * token 为空 => 不启用鉴权(完全等价于改动前, 零破坏);
 // * 比对的是**整串** `"Bearer " + token` —— 大小写敏感, 也没有尾空格容错。
 // 这是**故意**的: C++ 客户端发的是精确的 `Bearer <token>`, 服务端就做严格
@@ -25,10 +25,10 @@
 // 多个同名头时**不挑一个能过的** => 不给降级通道;
 // * 定长比较(逐字节累加差值, 长度不同也把短的走完) => 内容比较不短路,
 // 不靠首个不同字节提前返回;
-// * 拒绝码用 UNAUTHENTICATED(而非 PERMISSION_DENIED): 与 T41 及 HTTP 语义
+// * 拒绝码用 UNAUTHENTICATED(而非 PERMISSION_DENIED): 与复核鉴权及 HTTP 语义
 // 一致, 客户端能区分"没带/带错凭证" vs "有凭证但没权限"。
 //
-// 与 T41 的一处**结构性差异**(需要说明):
+// 与复核鉴权的一处**结构性差异**(需要说明):
 // Python 的拦截器必须返回"与原型同类型"的 handler, 否则 grpc 会把状态码
 // 降级成 UNKNOWN。C++ 同步服务是每个方法自己 `return Status`, 所以这里把
 // 校验做成"方法入口显式一行" —— 结构上不可能出现 handler 类型不匹配。
@@ -36,7 +36,7 @@
 // 这条作为**已知边界**写在 README 里, 而不是假装不存在。
 //
 // 诚实边界: 这是**明文共享密钥**(不启用 TLS) —— 只解决"谁都能调",
-// 不解决窃听/重放。内网/回环够用, 公网必须 TLS 或反向代理(与 T41 同)。
+// 不解决窃听/重放。内网/回环够用, 公网必须 TLS 或反向代理(与复核鉴权同)。
 
 namespace auth_guard {
 
@@ -71,7 +71,7 @@ inline bool constantTimeEquals(std::string_view a, std::string_view b) {
 }
 
 struct Guard {
-    std::string token; // 空 = 不鉴权(默认; 与 T41 的 cfg.auth_token 同语义)
+    std::string token; // 空 = 不鉴权(默认; 与复核鉴权的 cfg.auth_token 同语义)
 
     Guard() = default;
     explicit Guard(std::string t) : token(std::move(t)) {}
@@ -124,7 +124,7 @@ struct Guard {
                             "缺少或错误的 authorization metadata (应为: Bearer <token>)");
     }
 
-    // 启动时打一行: 把"以为开了其实没开"变成显式输出(与 T41 同一条纪律)。
+    // 启动时打一行: 把"以为开了其实没开"变成显式输出(与复核鉴权同一条纪律)。
     std::string describe() const {
         return enabled() ? "开启(每个 RPC 都校验 authorization: Bearer <token>)"
                          : "关闭(token 为空 => 不校验, 等价改动前行为)";

@@ -9,7 +9,7 @@
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
 
-// AlertGate 单测 (T39: 告警去重)
+// AlertGate 单测 (告警去重)
 // 覆盖: 滑动冷却窗(持续目标只告警一次 / 到期后重新告警) / 标签隔离 /
 // 框重叠判定 / 退化输入(空框, cooldown=0) / enabled=false 短路 /
 // 有界内存(丢最旧) / 多线程并发只放行一次 / IoU 数值

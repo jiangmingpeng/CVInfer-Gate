@@ -9,9 +9,9 @@
 
 #include "utils/ConfigParser.h" // SensorConfig(与解析器共用同一份定义, 故放在 utils)
 
-// 统一传感器抽象 (T23: Phase D 地基)
+// 统一传感器抽象 (Phase D 地基)
 // 目标: 把"视频帧"与"非视频传感器(雷达/红外)"统一为**带时间戳的采样**,
-// 使上层能在同一条时间轴上做对齐与决策级融合(T25)。
+// 使上层能在同一条时间轴上做对齐与决策级融合。
 //
 // 三种模态在本项目中的角色:
 // Video    —— 主模态: 提供图像, 由 IDetector 产出 DetectionResult(带像素框);
@@ -53,7 +53,7 @@ inline std::int64_t nowMs() {
         .count();
 }
 
-// 单个目标观测(T24/T25): 某传感器在某一时刻对某个目标的观测
+// 单个目标观测: 某传感器在某一时刻对某个目标的观测
 struct SensorTarget {
     int class_id = -1;
     std::string label; // 语义标签(如 "person"); 空 = 该模态未分类
@@ -63,7 +63,7 @@ struct SensorTarget {
     double azimuth_deg = 0.0; // 方位角(度); 仅雷达有意义
 };
 
-// 一次采样(T23): 统一时间戳 + 可选图像(视频) + 目标列表(非视频)
+// 一次采样: 统一时间戳 + 可选图像(视频) + 目标列表(非视频)
 struct SensorSample {
     SensorKind kind = SensorKind::Radar;
     std::int64_t timestamp_ms = 0;

@@ -147,7 +147,7 @@ bool RtspVideoSource::read(cv::Mat& frame) {
         // 没连上(或刚断): 先重连
         if (!fmt_ctx_ || !codec_ctx_) {
             // 启动时就没连上(open() 失败过): 不要把上层卡在这里无限重连 ——
-            // 如实返回“没流”, 让调用方去起 gRPC / 报错(与 T36 之前行为一致)。
+            // 如实返回“没流”, 让调用方去起 gRPC / 报错(与改造前行为一致)。
             if (!connected_once_.load()) return false;
             if (!tryReconnect()) return false; // 被要求关闭
             continue;

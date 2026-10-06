@@ -5,8 +5,8 @@
 
 #include <opencv2/opencv.hpp>
 
-// RoiUtils (T16/T22: 目标 ROI 外扩与裁剪)
-// 供 CascadeEngine(二级分类器复核, T16) 与 main(大模型复核, T22) 共用的
+// RoiUtils (目标 ROI 外扩与裁剪)
+// 供 CascadeEngine(二级分类器复核) 与 main(大模型复核) 共用的
 // 纯几何工具, 避免两处重复实现"外扩 + 裁剪到图像边界"。
 namespace roi_utils {
 

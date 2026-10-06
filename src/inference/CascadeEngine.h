@@ -10,7 +10,7 @@
 
 #include "inference/IModel.h"
 
-// CascadeEngine (T16: 级联主筛 + 二级复核, 实现 IDetector)
+// CascadeEngine (级联主筛 + 二级复核, 实现 IDetector)
 // 设计要点:
 // * 组合而非继承具体模型 —— 持有一个主 IDetector(如 YoloDetector) 与一个
 // 可选的二级 IClassifier(如 BehaviorClassifier)。它自身实现 IDetector,

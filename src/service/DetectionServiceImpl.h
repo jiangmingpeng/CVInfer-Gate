@@ -7,15 +7,15 @@
 #include "inference/IModel.h"
 #include "service/AuthGuard.h"
 
-// DetectionServiceImpl (T7: 推理引擎池; T15: 改用 IDetector 抽象)
+// DetectionServiceImpl (推理引擎池; 改用 IDetector 抽象)
 // 演进:
 // - 原版: 持有裸 OpenVINOEngine&, 与流水线线程共享同一引擎 => 数据竞争。
-// - T7 : 改为每次请求从 InferenceEnginePool 借一个独立引擎 (RAII 归还)。
-// - T15: 进一步收敛为依赖 IDetector 抽象。借引擎/推理/后处理均在模型内部
+// - 改为每次请求从 InferenceEnginePool 借一个独立引擎 (RAII 归还)。
+// - 进一步收敛为依赖 IDetector 抽象。借引擎/推理/后处理均在模型内部
 // (YoloDetector) 完成, 与流水线 worker 共享同一个 detector, 资源隔离
-// 与复用能力与 T7 等价。T16+ 可直接注入级联 detector。
-// - T42: [鉴权] 构造时注入 token(空 = 不校验); Detect 入口第一行显式校验。
-// - T43: [自述] 新增 Health RPC(鉴权口径与 Detect 一致), 供容器/systemd/负载均衡探活。
+// 与复用能力与单引擎池等价。可直接注入级联 detector。
+// - [鉴权] 构造时注入 token(空 = 不校验); Detect 入口第一行显式校验。
+// - [自述] 新增 Health RPC(鉴权口径与 Detect 一致), 供容器/systemd/负载均衡探活。
 class DetectionServiceImpl final : public inference::DetectionService::Service {
 public:
     // auth_token 为空 => 不鉴权(完全等价改动前, 零破坏)

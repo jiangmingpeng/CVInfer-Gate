@@ -11,7 +11,7 @@
 
 #include "inference/DetectionResult.h"
 
-// TargetTracker (T40: 目标跟踪 / track_id)
+// TargetTracker (目标跟踪 / track_id)
 // 起因: 全链没有 track_id —— OVERVIEW §5 的 🔴 之一。后果有两条:
 // 1) 告警去重只能靠"框重叠" => 快速移动的目标照样重复告警;
 // 2) 停留/徘徊这类**行为分析**没有立足点(它需要"同一个目标持续了多久")。

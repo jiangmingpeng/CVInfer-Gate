@@ -9,7 +9,7 @@
 
 #include "utils/ConfigParser.h"
 
-// Logger (T2: 分级日志)
+// Logger (分级日志)
 // 让 app.log_level / app.log_file 生效, 逐步替换满项目的
 // std::cout / std::cerr。线程安全, 支持控制台 + 文件双输出。
 //

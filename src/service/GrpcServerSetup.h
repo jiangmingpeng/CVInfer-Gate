@@ -9,7 +9,7 @@
 
 class DetectionServiceImpl;
 
-// GrpcServerSetup (T8: gRPC 超时 / 消息大小 / keepalive / 线程数)
+// GrpcServerSetup (gRPC 超时 / 消息大小 / keepalive / 线程数)
 // 把 GrpcConfig 中此前"只解析未消费"的字段真正落地到 ServerBuilder:
 // - max_message_size_mb -> 收发消息上限 (默认 4MB, 大图/大响应会超限)
 // - worker_threads      -> 同步服务线程配额 (0 = gRPC 默认)

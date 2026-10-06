@@ -7,7 +7,7 @@
 #include <gtest/gtest.h>
 #include <opencv2/core.hpp>
 
-// TargetTracker 单测 (T40: 目标跟踪 / track_id)
+// TargetTracker 单测 (目标跟踪 / track_id)
 // 覆盖: id 首次分配 / 跨帧稳定、快速移动的距离兜底、超出可达范围分裂新 id、
 // 标签隔离、遮挡滑行、老化退休后 **id 不复用**、min_hits 确认门限、
 // 回退帧防御、enabled=false 短路、轨迹数有界、dwell 累计、多目标不串号

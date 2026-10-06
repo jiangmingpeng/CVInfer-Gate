@@ -10,7 +10,7 @@
 #include <queue>
 #include <utility>
 
-// ThreadSafeQueue<T>  (T3: 有界 + 策略 + 统计 + 超时)
+// ThreadSafeQueue<T>  (有界 + 策略 + 统计 + 超时)
 // 与原版差异:
 // 1) 队列策略可配: DropOldest(默认, 实时) / Block(离线不丢帧)
 // 2) 新增统计 pushed/popped/dropped, 丢弃可见(on_drop 回调)

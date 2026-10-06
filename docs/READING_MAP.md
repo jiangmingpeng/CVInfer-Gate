@@ -1,7 +1,7 @@
 # CVInfer-Gate 阅读地图（文件 ↔ 架构层次 ↔ 运行周期）
 
 > **定位**：`docs/OVERVIEW.md` 讲"系统长什么样"；本文讲"**每个文件在什么时候、对谁、起什么作用**"。
-> **口径**：文件规模/符号取自本机实测（`src/` **75 文件 / 9 605 行**；`tests/` 4 022 行）；每个文件的作用引自**源码文件头的 banner**（**代码里已删除 `[Tn]` 标号**：T 号现在只在本套文档中使用，2025 清理），未读到的细节不臆造。
+> **口径**：文件规模/符号取自本机实测（`src/` **75 文件 / 9 605 行**；`tests/` 4 022 行）；每个文件的作用引自**源码文件头的 banner**（**代码与其余文档已删除 `[Tn]` 标号**：任务编号现在只保留在 `PROJECT_NOTES.md` 中），未读到的细节不臆造。
 > **本文不含代码改动**。编号术语（T / Phase A–D / § / R）见 `OVERVIEW.md` §0。
 
 ---
@@ -59,20 +59,20 @@
 
 ## 2. 分层文件总表（`src/` 全 75 个文件）
 
-> 读法：**作用**列=它是什么；**上游调用者**=谁碰它（用来判断改它的影响范围）；**T 号**=它在哪一轮引入（细节查 `PROJECT_NOTES.md`）。
+> 读法：**作用**列=它是什么；**上游调用者**=谁碰它（用来判断改它的影响范围）。
 
 ### 2.1 L2 地基：`utils/`（13 文件 / 2 217 行）—— 全项目最底层，谁都依赖它
 
 | 文件 | 行 | 作用 | 上游调用者 |
 |---|---|---|---|
 | `ConfigParser.h/.cpp` | 342 / 678 | **系统运行配置**：新版分组结构（旧扁平结构仍可解析）+ `${VAR}` 环境变量展开 + **启动即校验**（非法配置拒绝启动） | `main.cpp`、所有单测的 config 部分 |
-| `Logger.h/.cpp` | 99 / 186 | 分级日志（trace..error）+ 文件落盘 + **[T43] 按大小轮转**（`log_max_size_mb`/`log_keep_files`，0=不轮转） | 全项目（`Logger::instance()`） |
-| `LifecycleCoordinator.h/.cpp` | 87 / 149 | **[T6] 生命周期协调器**：`sigaction` + self-pipe 收 SIGTERM/SIGINT；子对象 `registerChild()`；提供"该退出了"的唯一信号源 | `main.cpp`、`VideoPipeline`、`DBWriter`、`ReviewScheduler`、`MultiSensorPipeline` |
-| `ThreadSafeQueue.h` | 177 | **[T3] 有界队列**：容量 + 丢弃策略（`drop_oldest`/`block`）+ 统计 + 超时等待。**header-only 模板**，是"背压"这条不变量的唯一落点 | `VideoPipeline`、`DBWriter`、`AlertNotifier`、`ReviewScheduler`、`MultiSensorPipeline` |
-| `Metrics.h/.cpp` | 82 / 165 | **[T43] 指标注册表**：counter/gauge/labelled/拉式采集器 4 种形态 + Prometheus 文本格式渲染 | `main.cpp`、`DetectionServiceImpl`、`AlertNotifier`、`ReviewScheduler`、`TargetTracker`、`MetricsServer` |
-| `HttpClient.h/.cpp` | 37 / 201 | **[T43] 极简 HTTP/1.1 客户端**（仅为 webhook；带超时的 connect 是"连不上"最常见卡点） | `AlertNotifier` |
-| `AlertGate.h` | 143 | **[T39] 告警去重**：IoU 判定同一目标 + 冷却窗 + 有界记忆（`max_entries`）；**身份优先**（有 `track_id` 时按身份去重）。header-only | `main.cpp`（sink 回调） |
-| `RoiUtils.h` | 106 | **[T16/T22] ROI 外扩与裁剪** + **`cropContext()`**（占座/场景复核：以目标为中心扩成"物体所在场景"，而不是只裁一本书） | `CascadeEngine`、`main.cpp`（复核提交） |
+| `Logger.h/.cpp` | 99 / 186 | 分级日志（trace..error）+ 文件落盘 + **按大小轮转**（`log_max_size_mb`/`log_keep_files`，0=不轮转） | 全项目（`Logger::instance()`） |
+| `LifecycleCoordinator.h/.cpp` | 87 / 149 | **生命周期协调器**：`sigaction` + self-pipe 收 SIGTERM/SIGINT；子对象 `registerChild()`；提供"该退出了"的唯一信号源 | `main.cpp`、`VideoPipeline`、`DBWriter`、`ReviewScheduler`、`MultiSensorPipeline` |
+| `ThreadSafeQueue.h` | 177 | **有界队列**：容量 + 丢弃策略（`drop_oldest`/`block`）+ 统计 + 超时等待。**header-only 模板**，是"背压"这条不变量的唯一落点 | `VideoPipeline`、`DBWriter`、`AlertNotifier`、`ReviewScheduler`、`MultiSensorPipeline` |
+| `Metrics.h/.cpp` | 82 / 165 | **指标注册表**：counter/gauge/labelled/拉式采集器 4 种形态 + Prometheus 文本格式渲染 | `main.cpp`、`DetectionServiceImpl`、`AlertNotifier`、`ReviewScheduler`、`TargetTracker`、`MetricsServer` |
+| `HttpClient.h/.cpp` | 37 / 201 | **极简 HTTP/1.1 客户端**（仅为 webhook；带超时的 connect 是"连不上"最常见卡点） | `AlertNotifier` |
+| `AlertGate.h` | 143 | **告警去重**：IoU 判定同一目标 + 冷却窗 + 有界记忆（`max_entries`）；**身份优先**（有 `track_id` 时按身份去重）。header-only | `main.cpp`（sink 回调） |
+| `RoiUtils.h` | 106 | **ROI 外扩与裁剪** + **`cropContext()`**（占座/场景复核：以目标为中心扩成"物体所在场景"，而不是只裁一本书） | `CascadeEngine`、`main.cpp`（复核提交） |
 
 ### 2.2 L3 采集：`video/`（5 / 519）与 `sensor/`（8 / 560）
 
@@ -80,12 +80,12 @@
 |---|---|---|---|
 | `video/IVideoSource.h` | 23 | **视频源抽象**（open/read/close/分辨率） | `VideoPipeline`、`VideoSensorSource` |
 | `video/FileVideoSource.h/.cpp` | 31 / 101 | 文件源（`cv::VideoCapture`），本地 mp4 跑通全靠它 | `main.cpp`（`source_type: file`） |
-| `video/RtspVideoSource.h/.cpp` | 88 / 276 | RTSP 源：**FFmpeg 直连** + `interrupt_callback` 断开 `av_read_frame` + **[T36] 读循环内指数退避重连（0.5s→8s）**，对上层透明 | `main.cpp`（`source_type: rtsp`） |
-| `sensor/ISensorSource.h` | 94 | **[T23] 统一传感器抽象**（video/radar/infrared 同一接口：带时间戳的目标列表） | `MultiSensorPipeline`、`SensorFusion` |
+| `video/RtspVideoSource.h/.cpp` | 88 / 276 | RTSP 源：**FFmpeg 直连** + `interrupt_callback` 断开 `av_read_frame` + **读循环内指数退避重连（0.5s→8s）**，对上层透明 | `main.cpp`（`source_type: rtsp`） |
+| `sensor/ISensorSource.h` | 94 | **统一传感器抽象**（video/radar/infrared 同一接口：带时间戳的目标列表） | `MultiSensorPipeline`、`SensorFusion` |
 | `sensor/VideoSensorSource.h/.cpp` | 52 / 34 | 把旧 `IVideoSource` **适配**为统一传感器（**非拥有**适配器：open/close 仍由 main 负责） | `main.cpp`（融合开启时） |
-| `sensor/RadarSensorSource.h` | 21 | **[T24] 雷达骨架**（无硬件也能跑：stub） | 工厂 → `MultiSensorPipeline` |
-| `sensor/InfraredSensorSource.h` | 20 | **[T24] 红外骨架**（同上） | 同上 |
-| `sensor/ReplaySensorSource.h/.cpp` | 76 / 226 | **[T24] 文件回放/合成传感器**：用文本/合成数据喂融合链路（`scripts/sensor_replay_demo.txt` 即它的输入） | 工厂 → `MultiSensorPipeline` |
+| `sensor/RadarSensorSource.h` | 21 | **雷达骨架**（无硬件也能跑：stub） | 工厂 → `MultiSensorPipeline` |
+| `sensor/InfraredSensorSource.h` | 20 | **红外骨架**（同上） | 同上 |
+| `sensor/ReplaySensorSource.h/.cpp` | 76 / 226 | **文件回放/合成传感器**：用文本/合成数据喂融合链路（`scripts/sensor_replay_demo.txt` 即它的输入） | 工厂 → `MultiSensorPipeline` |
 | `sensor/SensorSourceFactory.h` | 37 | 按 `sensors[]` 配置构建传感器（`kind`+`backend` → 实现） | `main.cpp` |
 
 ### 2.3 L4 调度：`pipeline/`（4 / 519）—— **帧的一生在此**
@@ -93,52 +93,52 @@
 | 文件 | 行 | 作用 | 上游调用者 |
 |---|---|---|---|
 | `pipeline/VideoPipeline.h/.cpp` | 109 / 174 | **主干**：`decode` → 有界队列 → `worker`×N → `sink` 三线程；抽帧/限速；`start()/stop()`（幂等）/`stats()`；**sink 回调把结果交给 main 的业务回调** | `main.cpp` |
-| `pipeline/MultiSensorPipeline.h/.cpp` | 89 / 147 | **[T26] 多模态融合编排**：每传感器一个轮询线程（按 `rate_hz`）+ 缓冲；`fuse()` 由 **sink** 调用 ⇒ **停机必须晚于 `pipeline.stop()`** | `main.cpp`（sink 回调内） |
+| `pipeline/MultiSensorPipeline.h/.cpp` | 89 / 147 | **多模态融合编排**：每传感器一个轮询线程（按 `rate_hz`）+ 缓冲；`fuse()` 由 **sink** 调用 ⇒ **停机必须晚于 `pipeline.stop()`** | `main.cpp`（sink 回调内） |
 
 ### 2.4 L5 推理：`inference/`（21 / 1 369）—— 抽象层（Phase A）的实体
 
 | 文件 | 行 | 作用 | 上游调用者 |
 |---|---|---|---|
 | `inference/DetectionResult.h` | 33 | **跨模块数据契约**（见 §3.2）：13 个字段，**加法设计**（新能力=加带默认值的字段，对旧链路零影响） | 全链路 |
-| `inference/IModel.h` | 86 | **[T12] 抽象核心**：`IModel` / `IDetector` / `IClassifier` + `ModelRole{Detector,Classifier,Reviewer}` + `DetectStatus` + `Classification`。**Phase A 的"地基"就是这 89 行** | `ModelFactory`、`ModelPoolManager`、所有模型类 |
+| `inference/IModel.h` | 86 | **抽象核心**：`IModel` / `IDetector` / `IClassifier` + `ModelRole{Detector,Classifier,Reviewer}` + `DetectStatus` + `Classification`。**Phase A 的"地基"就是这 89 行** | `ModelFactory`、`ModelPoolManager`、所有模型类 |
 | `inference/IInferenceEngine.h` | 15 | **引擎接缝**（init/infer）——单测/替换后端靠它 | `InferenceEnginePool`、`OpenVINOEngine` |
-| `inference/OpenVINOEngine.h/.cpp` | 18 / 153 | OpenVINO 实现（含 **[T35] 分段计时**：预处理/推理每 100 帧打均值） | `InferenceEnginePool` |
-| `inference/InferenceEnginePool.h/.cpp` | 72 / 82 | **[T4] 引擎池**：借/还 + 超时（`grpc.timeout_ms` 亦作借用超时）；**worker 数=池大小** | `ModelPoolManager`、`DetectionServiceImpl` |
-| `inference/ModelFactory.h/.cpp` | 17 / 34 | **[T12] 模型工厂**：`role` → 造 `IDetector`/`IClassifier`/reviewer | `ModelPoolManager` |
-| `inference/ModelPoolManager.h/.cpp` | 59 / 115 | **[T15] 模型注册表**：读取 `model_config.yaml` 全部模型、按 role/name 提供；启动即打印"模型数=N" | `main.cpp`、`DetectionServiceImpl` |
-| `inference/YoloDetector.h/.cpp` | 44 / 99 | **[T13] 把"单模型链路"封装成 `IDetector`**（预处理→推理→后处理） | `ModelPoolManager` |
-| `inference/YoloPostProcessor.h/.cpp` | 27 / 129 | **手写 NMS + 输出解码**（conf/nms 阈值）；[T35] 后处理分段计时 | `YoloDetector` |
-| `inference/CascadeEngine.h/.cpp` | 78 / 117 | **[T16] Phase B 级联**：实现 `IDetector`——主筛结果里**灰区**（`min_conf`~`max_conf`）目标送二级分类器 | `ModelPoolManager`（role=detector 且配了 classifier 时） |
-| `inference/BehaviorClassifier.h/.cpp` | 42 / 65 | **[T17] 二级分类器**：实现 `IClassifier`（含标签文件加载） | `CascadeEngine` |
-| `inference/ClassificationPostProcessor.h/.cpp` | 31 / 53 | **[T17] 分类后处理**：网络输出 → `Classification`（概率/标签） | `BehaviorClassifier` |
+| `inference/OpenVINOEngine.h/.cpp` | 18 / 153 | OpenVINO 实现（含 **分段计时**：预处理/推理每 100 帧打均值） | `InferenceEnginePool` |
+| `inference/InferenceEnginePool.h/.cpp` | 72 / 82 | **引擎池**：借/还 + 超时（`grpc.timeout_ms` 亦作借用超时）；**worker 数=池大小** | `ModelPoolManager`、`DetectionServiceImpl` |
+| `inference/ModelFactory.h/.cpp` | 17 / 34 | **模型工厂**：`role` → 造 `IDetector`/`IClassifier`/reviewer | `ModelPoolManager` |
+| `inference/ModelPoolManager.h/.cpp` | 59 / 115 | **模型注册表**：读取 `model_config.yaml` 全部模型、按 role/name 提供；启动即打印"模型数=N" | `main.cpp`、`DetectionServiceImpl` |
+| `inference/YoloDetector.h/.cpp` | 44 / 99 | **把"单模型链路"封装成 `IDetector`**（预处理→推理→后处理） | `ModelPoolManager` |
+| `inference/YoloPostProcessor.h/.cpp` | 27 / 129 | **手写 NMS + 输出解码**（conf/nms 阈值）；后处理分段计时 | `YoloDetector` |
+| `inference/CascadeEngine.h/.cpp` | 78 / 117 | **Phase B 级联**：实现 `IDetector`——主筛结果里**灰区**（`min_conf`~`max_conf`）目标送二级分类器 | `ModelPoolManager`（role=detector 且配了 classifier 时） |
+| `inference/BehaviorClassifier.h/.cpp` | 42 / 65 | **二级分类器**：实现 `IClassifier`（含标签文件加载） | `CascadeEngine` |
+| `inference/ClassificationPostProcessor.h/.cpp` | 31 / 53 | **分类后处理**：网络输出 → `Classification`（概率/标签） | `BehaviorClassifier` |
 
 ### 2.5 L6 能力：`review/`（5 / 481，Phase C）与 `fusion/`（2 / 206，Phase D）
 
 | 文件 | 行 | 作用 | 上游调用者 |
 |---|---|---|---|
-| `review/IReviewService.h` | 62 | **[T20] 复核服务抽象**（提交 ROI+prompt → 结论） | `ReviewScheduler`、`main.cpp` |
-| `review/GrpcLlmReviewer.h/.cpp` | 51 / 162 | **[T20/T37] gRPC 复核客户端**：连 `review.endpoint`(50052)、鉴权（`VLM_TOKEN`）、探活 deadline（`min(timeout,1500ms)`，避免拖慢启动） | `main.cpp` |
-| `review/ReviewScheduler.h/.cpp` | 84 / 122 | **[T20] 异步复核调度**：有界队列 + `worker_threads` 线程 + 超时/不可用 → **兜底告警**（`alert_on_failure`）；结论按 `frame_seq` 回投 | `main.cpp` |
-| `fusion/SensorFusion.h/.cpp` | 63 / 143 | **[T25] 决策级融合**：时间对齐（`time_tolerance_ms`）→ 目标关联（`match_iou`）→ 加权置信度（`sensor_weight`）；回写 `fused/vision_confidence/sensor_confidence/distance_m` | `MultiSensorPipeline::fuse()` |
+| `review/IReviewService.h` | 62 | **复核服务抽象**（提交 ROI+prompt → 结论） | `ReviewScheduler`、`main.cpp` |
+| `review/GrpcLlmReviewer.h/.cpp` | 51 / 162 | **gRPC 复核客户端**：连 `review.endpoint`(50052)、鉴权（`VLM_TOKEN`）、探活 deadline（`min(timeout,1500ms)`，避免拖慢启动） | `main.cpp` |
+| `review/ReviewScheduler.h/.cpp` | 84 / 122 | **异步复核调度**：有界队列 + `worker_threads` 线程 + 超时/不可用 → **兜底告警**（`alert_on_failure`）；结论按 `frame_seq` 回投 | `main.cpp` |
+| `fusion/SensorFusion.h/.cpp` | 63 / 143 | **决策级融合**：时间对齐（`time_tolerance_ms`）→ 目标关联（`match_iou`）→ 加权置信度（`sensor_weight`）；回写 `fused/vision_confidence/sensor_confidence/distance_m` | `MultiSensorPipeline::fuse()` |
 
 ### 2.6 L7 规则/状态 与 L8 出口
 
 | 文件 | 行 | 作用 | 上游调用者 |
 |---|---|---|---|
 | `occupancy/SeatOccupancyAnalyzer.h/.cpp` | 189 / 354 | **占座判定（规则层）**：静态座位 zone + 几何关系（物品归属/人在不在用）+ 时序状态机（累计/暂停/复位/上升沿）+ M-of-N 投票；**纯逻辑、不依赖模型**，可确定性单测 | `main.cpp`（sink 回调，紧跟跟踪） |
-| `tracking/TargetTracker.h` | 262 | **[T40] 目标跟踪**：IoU + 质心兜底关联、滑行/退休、`track_id` **单调递增且永不复用**（复用会让去重误判）。header-only | `main.cpp`（sink 回调，紧跟融合） |
-| `database/ConnectionPool.h/.cpp` | 70 / 115 | **[T9] 连接池**（`database.pool_size`） | `DBWriter` |
-| `database/DBWriter.h/.cpp` | 134 / 450 | **[T9/T11/T36] 异步批量落库**：攒 `batch_size` 或 `flush_interval_ms` 冲刷；**不可用→`fallback_path` CSV 降级 + 按 `reconnect_interval_ms` 回连 + 恢复后回传**；启动只做 1 次快速连库（不再阻塞） | `main.cpp` |
-| `alert/AlertNotifier.h/.cpp` | 105 / 231 | **[T43] 告警外发**：有界队列 + 独立线程、重试指数退避（≤5s）、退避可被打断、停机排空（`drain_timeout_ms`）、统计（`pushed/sent/failed/dropped/retried`）；`Transport` 可注入（单测不碰网络） | `main.cpp` |
+| `tracking/TargetTracker.h` | 262 | **目标跟踪**：IoU + 质心兜底关联、滑行/退休、`track_id` **单调递增且永不复用**（复用会让去重误判）。header-only | `main.cpp`（sink 回调，紧跟融合） |
+| `database/ConnectionPool.h/.cpp` | 70 / 115 | **连接池**（`database.pool_size`） | `DBWriter` |
+| `database/DBWriter.h/.cpp` | 134 / 450 | **异步批量落库**：攒 `batch_size` 或 `flush_interval_ms` 冲刷；**不可用→`fallback_path` CSV 降级 + 按 `reconnect_interval_ms` 回连 + 恢复后回传**；启动只做 1 次快速连库（不再阻塞） | `main.cpp` |
+| `alert/AlertNotifier.h/.cpp` | 105 / 231 | **告警外发**：有界队列 + 独立线程、重试指数退避（≤5s）、退避可被打断、停机排空（`drain_timeout_ms`）、统计（`pushed/sent/failed/dropped/retried`）；`Transport` 可注入（单测不碰网络） | `main.cpp` |
 
 ### 2.7 L9 服务：`service/`（7 / 625）+ 顶层 `main.cpp`
 
 | 文件 | 行 | 作用 | 上游调用者 |
 |---|---|---|---|
-| `service/DetectionServiceImpl.h/.cpp` | 41 / 118 | **[T7/T15/T43] gRPC 业务实现**：`Detect`（借引擎推理）/`Health`（返 `version/uptime_ms/detector`）；RPC 计数（`method`/`code` 标签） | `GrpcServerSetup`、`tests/test_grpc_client.cpp` |
-| `service/GrpcServerSetup.h/.cpp` | 24 / 50 | **[T8] 服务端装配**：超时/消息上限（16MB）/keepalive/线程数 + 注册服务 + **[T42] 挂鉴权拦截器** | `main.cpp` |
-| `service/AuthGuard.h` | 134 | **[T42] 主服务(50051)鉴权**：校验 `authorization: Bearer <token>`，未授权回 `UNAUTHENTICATED`（实测退出码/指标可见）；token 空=不鉴权 | `GrpcServerSetup` |
-| `service/MetricsServer.h/.cpp` | 63 / 195 | **[T43] 指标端点**：极简 HTTP/1.1，只服务 `/metrics` 与 `/healthz`；`bind`+`port` 可配（默认 `0.0.0.0:9100`，无鉴权） | `main.cpp` |
+| `service/DetectionServiceImpl.h/.cpp` | 41 / 118 | **gRPC 业务实现**：`Detect`（借引擎推理）/`Health`（返 `version/uptime_ms/detector`）；RPC 计数（`method`/`code` 标签） | `GrpcServerSetup`、`tests/test_grpc_client.cpp` |
+| `service/GrpcServerSetup.h/.cpp` | 24 / 50 | **服务端装配**：超时/消息上限（16MB）/keepalive/线程数 + 注册服务 + **挂鉴权拦截器** | `main.cpp` |
+| `service/AuthGuard.h` | 134 | **主服务(50051)鉴权**：校验 `authorization: Bearer <token>`，未授权回 `UNAUTHENTICATED`（实测退出码/指标可见）；token 空=不鉴权 | `GrpcServerSetup` |
+| `service/MetricsServer.h/.cpp` | 63 / 195 | **指标端点**：极简 HTTP/1.1，只服务 `/metrics` 与 `/healthz`；`bind`+`port` 可配（默认 `0.0.0.0:9100`，无鉴权） | `main.cpp` |
 | `main.cpp` | 980 | **唯一的装配中心 + 生命周期 + 业务规则中枢**：解析参数（含 **`--health-check` 探针就实现在这里**，不是单独文件）→ 按固定顺序 init 各子系统 → sink 回调内的处理顺序（§4.2）→ 按固定顺序停机 + 打印各阶段统计 | 进程入口 |
 
 ### 2.8 外围（不在 `src/`，但决定"能不能跑/怎么跑"）
@@ -148,18 +148,18 @@
 | `proto/inference.proto` | 47 | 主服务契约：`Detect`、`Health`（`DetectionService`） |
 | `proto/review.proto` | 50 | 复核服务契约：`Review`、`Health`（`ReviewService`） |
 | `config/config.example.yaml` | 201 | **唯一模板**（不含口令，`${VAR}` 占位）：11 段（**含 `cascade:` / `occupancy:`**）；注意其 `video.source_type` 默认是 **rtsp** |
-| `config/config.ops.yaml` | 108 | **[T43] 运维向**：file 源 + `metrics` 开 + `alert.push` 指向脚本；不依赖 MySQL/复核 |
+| `config/config.ops.yaml` | 108 | **运维向**：file 源 + `metrics` 开 + `alert.push` 指向脚本；不依赖 MySQL/复核 |
 | `config/config.rtsp.yaml` / `config.test.yaml` | 149/219 | RTSP 实时流 / **打开 Phase B+C+D + 占座** 的真实链路（`config.test.yaml` 默认开 `occupancy` 并带一个可跑的座位） |
 | `config/config.yaml` | 106 | 本机默认配置（**被 `.gitignore`，不在仓库**：必须自己 `cp`） |
 | `config/model_config.yaml` | 53 | **模型清单**（每项带 `role`）——Phase A 的输入 |
 | ~~`config/{cascade,review,sensors}.example.yaml`~~ | — | 原有三个**分段模板**（35/57/60 行），2026-10-02 已合并进 `config.example.yaml` 并删除 |
-| `docker/Dockerfile` / `docker-compose.yml` | 44/127 | 4 个服务：`mysql-db`、`cv-infer-gate`（含 [T43] healthcheck）、`vlm-review`、网络 |
+| `docker/Dockerfile` / `docker-compose.yml` | 44/127 | 4 个服务：`mysql-db`、`cv-infer-gate`（含 healthcheck）、`vlm-review`、网络 |
 | `docker/init_db.sql` / `scripts/schema.sql` | 20/45 | 表结构（两者等价） |
-| `docker/prometheus.example.yml` | 43 | **[T43] Prometheus 抓取配置** |
-| `scripts/alert_receiver.py` | 131 | **[T43] 伪下游**：收 webhook 并逐条打印（验证告警外发） |
+| `docker/prometheus.example.yml` | 43 | **Prometheus 抓取配置** |
+| `scripts/alert_receiver.py` | 131 | **伪下游**：收 webhook 并逐条打印（验证告警外发） |
 | `scripts/mock_review_server.py` | 176 | 规则版复核服务端（跑通 Phase C 不花钱） |
-| `scripts/{bench,stack_probe,thread_probe}.sh` | 80/73/78 | 性能基准 / 栈探测 / 线程探测（T35 性能工程遗留工具） |
-| `web_gateway/`（`app.py` + `templates/index.html` + `static/{style.css,app.js}` + 生成桩 `*_pb2*.py`） | —（app.py + 2 静态资源 + 模板） | Flask BFF：HTTP ⇄ gRPC（含 [T42] token 透传）。前端为独立模板/静态资源：页面走 `POST /api/detect`（JSON：带框图 dataURL + 检测列表）、`GET /api/status`（TCP 探活徽标）；旧 `POST /detect`（带框 JPEG）保留兼容 |
+| `scripts/{bench,stack_probe,thread_probe}.sh` | 80/73/78 | 性能基准 / 栈探测 / 线程探测（性能工程遗留工具） |
+| `web_gateway/`（`app.py` + `templates/index.html` + `static/{style.css,app.js}` + 生成桩 `*_pb2*.py`） | —（app.py + 2 静态资源 + 模板） | Flask BFF：HTTP ⇄ gRPC（含 token 透传）。前端为独立模板/静态资源：页面走 `POST /api/detect`（JSON：带框图 dataURL + 检测列表）、`GET /api/status`（TCP 探活徽标）；旧 `POST /detect`（带框 JPEG）保留兼容 |
 | `vlm_review/*.py` | 1 070 | Phase C 服务端（OpenAI 兼容 / 本地 transformers / mock 三后端 + 鉴权拦截器 + 自测） |
 | `tests/unit/*.cpp`（13 个） | 3 147 | 单测（见 §6） |
 | `tests/phase_selftest.cpp` | 584 | 零依赖自检（**52 项**，秒级；ctest 记得它 1 项）|
@@ -224,7 +224,7 @@
 | `指标端点: 已禁用(metrics.enabled=false)` / `[指标] /metrics 端点已启动, 端口 N` | `main.cpp:686` / `service/MetricsServer` |
 | `[health-check] OK addr=… version=… uptime_ms=… <detail>` | `main.cpp:192`（`--health-check`）|
 | `[RtspVideoSource] RTSP 流打开成功: <url>` / `读流中断(…), 开始重连...` / `重连尝试 #N` / `重连成功(累计 N)` | `video/RtspVideoSource.cpp` |
-| `[DBWriter][T36] 数据库不可用, 以【降级模式】启动: 记录先落本地 <path>` | `database/DBWriter.cpp:41` |
+| `[DBWriter] 数据库不可用, 以【降级模式】启动: 记录先落本地 <path>` | `database/DBWriter.cpp:41` |
 | **关闭时的汇总（`main.cpp:716~790`；稳态期没有任何心跳日志 —— 这是"可观测性 65%"的字面含义）**：`流水线统计: decoded/dropped/processed/emitted`、`级联统计: primary/triggered`、`复核统计: submitted/dropped`、`融合统计: frames/…`、`告警去重统计: allowed/suppressed`、`目标跟踪统计: frames/spawned/retired/active/matched/longest_dwell`、`占座统计: frames/seats/occupied_events` + 逐座位快照、`告警推送统计: pushed/sent/failed/dropped/retried[ last_error=…]`、`结果视频已保存至 output.avi`、`日志轮转次数: N` | `main.cpp` |
 
 指标→注册点的真相：20 组指标在 `main.cpp:615~676` 用 `reg.addCollector(...)` **集中注册**（lambda 去拉各模块的值）；唯一例外是 `cvinfer_grpc_requests_total`，由 `service/DetectionServiceImpl.cpp:19` 直接 `Registry::instance().inc(name, labels)` 累加。`/metrics` 的渲染回调在 `main.cpp:681` 交给 `MetricsServer`。
@@ -240,7 +240,7 @@
 | 0 | 160–212 | **`--health-check` 提前返回**（一次性探针，不加载模型/不连库） | `main.cpp`（gRPC Health 存根） | `[health-check] OK addr=… version=… uptime_ms=… detector=…` |
 | 1 | 215 | 日志系统 | `utils/Logger` | `日志轮转已开启: …`（若配了上限） |
 | 2 | 224 | 信号/生命周期 | `utils/LifecycleCoordinator` | — |
-| 3 | 239 | 数据库（**1 次快速连库**，失败即降级不阻塞） | `database/DBWriter`+`ConnectionPool` | `[DBWriter][T36] 数据库不可用, 以【降级模式】启动: 记录先落本地 <path>` |
+| 3 | 239 | 数据库（**1 次快速连库**，失败即降级不阻塞） | `database/DBWriter`+`ConnectionPool` | `[DBWriter] 数据库不可用, 以【降级模式】启动: 记录先落本地 <path>` |
 | 4 | 247 | 告警外发（若开） | `alert/AlertNotifier` | `告警推送: 已启用 -> …` |
 | 5 | 283/285 | 视频源 | `video/FileVideoSource`/`RtspVideoSource` | `[RtspVideoSource] RTSP 流打开成功: <url>` |
 | 6 | 322 | 模型与引擎池（=`worker_threads`） | `inference/*` | `模型配置加载成功 (模型数=N)`、`使用检测器: …` |
@@ -371,7 +371,7 @@ curl -s http://127.0.0.1:9100/metrics | head -40         # 期望: 20 组 cvinfe
 | 改**落库字段/表** | `database/DBWriter.cpp`、`scripts/schema.sql`+`docker/init_db.sql` | `utils/ConnectionPool`（批量 SQL） | 两个 SQL 要同步改 |
 | 加**指标** | `utils/Metrics.h`（注册处+名字） | 采集点所在文件、`docker/prometheus.example.yml`、README 指标清单 | 名字前缀统一 `cvinfer_` |
 | 加**gRPC 方法** | `proto/*.proto` | `service/DetectionServiceImpl.*`、`web_gateway/`、`tests/test_grpc_client.cpp` | 重新生成 pb（CMake 已含） |
-| 改**鉴权** | `service/AuthGuard.h`、`vlm_review/server.py`（对称） | `web_gateway/app.py`、`tests/test_auth_guard.cpp` | **两端必须同步**（T41/T42 的教训） |
+| 改**鉴权** | `service/AuthGuard.h`、`vlm_review/server.py`（对称） | `web_gateway/app.py`、`tests/test_auth_guard.cpp` | **两端必须同步** |
 | 改**串行/并发模型**（槽位、线程数） | `pipeline/VideoPipeline.*`、`config.pipeline.worker_threads` | `inference/InferenceEnginePool.*`（池大小=worker 数） | 跑 `scripts/thread_probe.sh` |
 | 换**视频源** | `video/IVideoSource.h` + 新实现 | `main.cpp` 装配、`sensor/VideoSensorSource` | 回归 `frame_interval/target_fps` |
 
@@ -412,6 +412,6 @@ curl -s http://127.0.0.1:9100/metrics | head -40         # 期望: 20 组 cvinfe
 | 文档 | 关系 |
 |---|---|
 | `docs/OVERVIEW.md` | 上游：结构 + 现状 + 成熟度账目（本文是它的"文件级下钻"） |
-| `README.md` | 门面：快速开始 + 验证状态表（[T43] 实测数据在 §"验证状态"） |
-| `PROJECT_NOTES.md` | 全量开发史：每个 T 号的推导、实测数据、踩坑（本文的 T 号索引到它） |
+| `README.md` | 门面：快速开始 + 验证状态表（实测数据在 §"验证状态"） |
+| `PROJECT_NOTES.md` | 全量开发史：每个任务的推导、实测数据、踩坑（本文的历史条目索引到它） |
 | `docs/READING_MAP.md`（本文） | 文件 ↔ 层次 ↔ 运行周期；**改代码前先看 §5/§8/§9/§4.4** |

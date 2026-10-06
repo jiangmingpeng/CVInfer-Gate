@@ -1,5 +1,5 @@
 # ============================================================
-# [T43] Prometheus 抓取配置示例
+# Prometheus 抓取配置示例
 # ------------------------------------------------------------
 # 与 docker/docker-compose.yml 配套: cv-infer-gate 只 expose 9100(不发布到宿主机),
 # 所以 Prometheus 直接在同一个 compose 网络里按**服务名**抓取。
@@ -24,18 +24,18 @@ scrape_configs:
           env: dev
     metrics_path: /metrics
 
-# 建议先看一眼的关键指标(都是 T43 新暴露的):
+# 建议先看一眼的关键指标(都是新增的):
 #   cvinfer_uptime_seconds                进程活了多久(重启一眼可见)
 #   cvinfer_frames_decoded_total          解码帧数(源是否在出帧)
 #   cvinfer_frames_dropped_total          背压丢帧(队列满 => 算力不够或下游慢)
 #   cvinfer_frames_processed_total        推理完成帧数 => 除以时间 = 有效 FPS
 #   cvinfer_detections_total              检测框总数(模型是否在出结果)
-#   cvinfer_db_healthy                    0 => 正在降级写 CSV(T36 的降级状态)
+#   cvinfer_db_healthy                    0 => 正在降级写 CSV(降级状态)
 #   cvinfer_db_reconnects_total           库"不可用->恢复"次数(闪断频率)
 #   cvinfer_grpc_requests_total{code=}    Detect/Health 的调用数与结果码分布
 #                                         (code="UNAUTHENTICATED" 突增 = 有人在试 token)
 #   cvinfer_alerts_raised_total           产生告警数(含没推成功的)
-#   cvinfer_alerts_suppressed_total       被去重闸门抑制的重复告警数(T39/T40)
+#   cvinfer_alerts_suppressed_total       被去重闸门抑制的重复告警数
 #   cvinfer_alert_push_sent_total         webhook 送达数
 #   cvinfer_alert_push_failed_total       重试耗尽 => 下游真的不通(要告警到人)
 #   cvinfer_alert_push_dropped_total      队列满丢最旧(下游太慢)

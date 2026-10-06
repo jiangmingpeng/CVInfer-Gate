@@ -15,7 +15,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
-// RtspVideoSource (T28 引入; 补「可中断关闭 + 断流重连」)
+// RtspVideoSource (补「可中断关闭 + 断流重连」)
 // 修两个冻结缺陷:
 // R-13 `close()` 打不断阻塞中的 `av_read_frame`
 // 原实现: read() 阻塞在 av_read_frame 里, close() 只 free 资源 ——

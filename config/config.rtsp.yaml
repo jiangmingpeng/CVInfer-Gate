@@ -1,5 +1,5 @@
 # ============================================================
-# 局域网 RTSP 运行配置 (T28)
+# 局域网 RTSP 运行配置
 # ------------------------------------------------------------
 # 用法(在 build/ 目录下, 建议用**绝对路径**, 免得被 POST_BUILD 的 config/ 覆盖绕晕):
 #     ./CVInfer-Gate --config /home/JMP/CVInfer-Gate/config/config.rtsp.yaml
@@ -10,7 +10,7 @@
 # 先用 ffprobe 确认地址/鉴权(比启动整个程序快得多):
 #     ffprobe -rtsp_transport tcp -i "rtsp://..." -select_streams v -show_streams
 #
-# [T31] 本机 mediamtx 工作流(推 -> 拉), 顺序别搞反:
+# 本机 mediamtx 工作流(推 -> 拉), 顺序别搞反:
 #   1) 起 mediamtx(默认 rtspAddress 为 :8554; 若绑成 127.0.0.1:8554 则公网推流进不来)
 #   2) 推一路进来(<mp4> 换成素材; 用 -c copy 几乎不耗 CPU, 别转码去抢推理的核):
 #        ffmpeg -re -stream_loop -1 -i <mp4> -c copy -f rtsp rtsp://127.0.0.1:8554/live
@@ -86,7 +86,7 @@ grpc:
   max_message_size_mb: 16
   worker_threads: 0
   keepalive_time_ms: 20000
-  # [T42] 非空 => 主服务每个 RPC 都要 authorization: Bearer <token>(空 = 不鉴权)
+  # 非空 => 主服务每个 RPC 都要 authorization: Bearer <token>(空 = 不鉴权)
   auth_token: "${GRPC_AUTH_TOKEN:-}"
 
 # ---- Phase B: 本仓库没有 role=classifier 的模型, 开了也会退化成单模型 ----

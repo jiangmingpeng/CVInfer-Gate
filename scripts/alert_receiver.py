@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ============================================================
-# [T43] 告警接收端(演示/联调用) —— 只依赖标准库
+# 告警接收端(演示/联调用) —— 只依赖标准库
 # ------------------------------------------------------------
 # 用途: 把 config 里 alert.push.url 指过来, 就能看见"告警真的出去了",
 #       以及推送重试/退避/队列丢包这些行为在接收端长什么样。
@@ -76,7 +76,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         _received += 1
-        # 有效载荷契约(T43): {source, alert_type, description, frame_seq, label,
+        # 有效载荷契约: {source, alert_type, description, frame_seq, label,
         #                   confidence, track_id, ts_ms}; 兼容读 type 字段
         alert_type = payload.get("alert_type") or payload.get("type") or "?"
         # 一行一条, 方便 grep / 计数
@@ -93,7 +93,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="[T43] 告警接收端(演示用)")
+    ap = argparse.ArgumentParser(description="告警接收端(演示用)")
     ap.add_argument("--port", type=int, default=8899)
     ap.add_argument("--bind", default="0.0.0.0")
     ap.add_argument("--token", default="", help="校验 x-alert-token(空 = 不校验)")

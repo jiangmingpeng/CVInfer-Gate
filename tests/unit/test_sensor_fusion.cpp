@@ -251,7 +251,7 @@ TEST(SensorFusionFuse, NonDecisionLevelIsNoop) {
     EXPECT_FALSE(vision[0].fused);
 }
 
-// 空视觉帧语义 (T38 修正)
+// 空视觉帧语义
 // 原实现是 `if (targets.empty() || vision.empty()) return st;`: 某帧**视觉一个目标都没有**
 // 时整个融合阶段直接返回, 传感器证据既不计数也不产出 —— 而「雷达/红外测到了、视觉漏检了」
 // 恰恰是最该靠融合兜住的场景, 等于把多模态的价值静默作废。

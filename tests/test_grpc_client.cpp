@@ -18,7 +18,7 @@
 
 namespace {
 
-// token 走环境变量: 不进 shell 历史 / ps / 仓库(与 T41 的 REVIEW_AUTH_TOKEN 同纪律)
+// token 走环境变量: 不进 shell 历史 / ps / 仓库(与 REVIEW_AUTH_TOKEN 同纪律)
 std::string authTokenFromEnv() {
     const char* t = std::getenv("GRPC_AUTH_TOKEN");
     return (t && *t) ? std::string(t) : std::string();
@@ -32,14 +32,14 @@ void addAuth(grpc::ClientContext& ctx, const std::string& token) {
 } // namespace
 
 int main(int argc, char** argv) {
-    // 0. 参数: [server_addr] [timeout_ms]   (T8: 地址 / 超时可配)
+    // 0. 参数: [server_addr] [timeout_ms]   (地址 / 超时可配)
     const std::string server_address = (argc > 1) ? argv[1] : "127.0.0.1:50051";
     const int timeout_ms = (argc > 2) ? std::atoi(argv[2]) : 5000;
     const int max_msg_mb = 16;
     // 鉴权 token(环境变量; 空 => 不带 metadata, 要求服务端也没开鉴权)
     const std::string auth_token = authTokenFromEnv();
 
-    // 1. 连接服务端 (T8: 消息大小上限 + keepalive, 与服务端保持一致)
+    // 1. 连接服务端 (消息大小上限 + keepalive, 与服务端保持一致)
     grpc::ChannelArguments args;
     args.SetMaxReceiveMessageSize(max_msg_mb * 1024 * 1024);
     args.SetMaxSendMessageSize(max_msg_mb * 1024 * 1024);
@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
     inference::DetectResponse response;
     grpc::ClientContext context;
     addAuth(context, auth_token);
-    // T8: 客户端 deadline, 超过 timeout_ms 直接返回 DEADLINE_EXCEEDED
+    // 客户端 deadline, 超过 timeout_ms 直接返回 DEADLINE_EXCEEDED
     context.set_deadline(std::chrono::system_clock::now() +
                          std::chrono::milliseconds(timeout_ms));
 

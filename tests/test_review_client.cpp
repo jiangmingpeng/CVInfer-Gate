@@ -1,4 +1,4 @@
-// 复核服务联调客户端 (T37: 接真 VLM 的"探针")
+// 复核服务联调客户端 (接真 VLM 的"探针")
 // 用途: 不启动整条视频流水线的前提下, 单独验证 Phase C 的**复核服务端**
 // (scripts/mock_review_server.py 或 vlm_review/server.py) 是否可用。
 //

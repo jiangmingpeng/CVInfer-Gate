@@ -10,7 +10,7 @@
 #include "review/IReviewService.h"
 #include "utils/ConfigParser.h"
 
-// GrpcLlmReviewer (T20: 复用 gRPC 的大模型复核客户端)
+// GrpcLlmReviewer (复用 gRPC 的大模型复核客户端)
 // 依据 review.endpoint 建立 channel, 调用 review::ReviewService::Review:
 // 目标 ROI -> JPEG -> ReviewRequest -> (外部大模型服务) -> ReviewResponse
 //

@@ -8,7 +8,7 @@
 
 #include "utils/HttpClient.h"
 
-// /metrics 端点单测 (T43)
+// /metrics 端点单测
 // 分两层:
 // 1) 纯函数(请求行解析 / 响应拼装) —— 覆盖畸形请求, 不碰 socket
 // 2) 真 socket 集成 —— 起服务, 用自研 HttpClient 真的抓一次(200/404/健康)

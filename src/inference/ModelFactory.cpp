@@ -17,7 +17,7 @@ std::shared_ptr<IModel> ModelFactory::create(const ModelConfig& cfg) {
             return det;
         }
         case ModelRole::Classifier: {
-            // T17 落地: 行为/安全帽分类器(单 ROI)
+            // 行为/安全帽分类器(单 ROI)
             auto cls = std::make_shared<BehaviorClassifier>();
             if (!cls->init(cfg)) {
                 CVLOG_ERROR << "[ModelFactory] BehaviorClassifier 初始化失败: " << cfg.name;

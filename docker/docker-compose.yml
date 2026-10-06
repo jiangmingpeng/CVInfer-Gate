@@ -3,10 +3,10 @@
 # [P0-2] 所有口令/密钥走环境变量 —— 在本目录建 docker/.env(.gitignore 已忽略):
 #     MYSQL_ROOT_PASSWORD=<MySQL root 口令>
 #     DB_PASSWORD=<C++ 网关连库口令, 一般同上>
-#     VLM_AUTH_TOKEN=<[T41] 复核服务端/客户端共享 token; 留空 = 不鉴权>
-#     GRPC_AUTH_TOKEN=<[T42] 主服务(50051) token; 留空 = 不鉴权。
+#     VLM_AUTH_TOKEN=<复核服务端/客户端共享 token; 留空 = 不鉴权>
+#     GRPC_AUTH_TOKEN=<主服务(50051) token; 留空 = 不鉴权。
 #                     网关(宿主机跑的 web_gateway)要用**同一个**值>
-#     ALERT_PUSH_URL/ALERT_TOKEN=<[T43] 告警 webhook 地址/自定义头 token>
+#     ALERT_PUSH_URL/ALERT_TOKEN=<告警 webhook 地址/自定义头 token>
 #                     接收端跑在宿主机时: ALERT_PUSH_URL=http://host.docker.internal:8899/alert
 #                     (本服务的 extra_hosts 已把该名字指向宿主机)
 # 不建 .env 也能起, 但 MySQL 会因空口令初始化失败 / 网关连库失败降级写 CSV。
@@ -41,7 +41,7 @@ services:
     container_name: cv_infer_gate
     ports:
       - "50051:50051"
-    # [T43] /metrics 只在容器网络内可见(Prometheus 直接抓 cv-infer-gate:9100);
+    # /metrics 只在容器网络内可见(Prometheus 直接抓 cv-infer-gate:9100);
     # 需要从宿主机 curl 调试时, 把下边这行取消注释(注意: 指标端点**无鉴权**)。
     expose:
       - "9100"
@@ -59,18 +59,18 @@ services:
     # 就能被这里的变量注入 —— 不需要改代码(旧注释说的"需要在代码里支持环境变量"已不准确)。
     environment:
       DB_PASSWORD: ${DB_PASSWORD:-}
-      VLM_TOKEN: ${VLM_AUTH_TOKEN:-}      # [T41] 与 vlm-review 的 VLM_AUTH_TOKEN 配对
-      GRPC_AUTH_TOKEN: ${GRPC_AUTH_TOKEN:-}  # [T42] 主服务鉴权; config 里写 "${GRPC_AUTH_TOKEN:-}" 即生效
+      VLM_TOKEN: ${VLM_AUTH_TOKEN:-}      # 与 vlm-review 的 VLM_AUTH_TOKEN 配对
+      GRPC_AUTH_TOKEN: ${GRPC_AUTH_TOKEN:-}  # 主服务鉴权; config 里写 "${GRPC_AUTH_TOKEN:-}" 即生效
       DB_HOST: tcp://mysql-db:3306        # 仅当 config.yaml 的 database.host 写成 ${DB_HOST:-...} 才生效
-      ALERT_PUSH_URL: ${ALERT_PUSH_URL:-} # [T43] 告警 webhook(空 => 用 config 里的默认值)
-      ALERT_TOKEN: ${ALERT_TOKEN:-}       # [T43] 推送自定义头 x-alert-token 的值(空 => 不带头)
+      ALERT_PUSH_URL: ${ALERT_PUSH_URL:-} # 告警 webhook(空 => 用 config 里的默认值)
+      ALERT_TOKEN: ${ALERT_TOKEN:-}       # 推送自定义头 x-alert-token 的值(空 => 不带头)
     volumes:
       - ../config:/app/config
       - ../models:/app/models
       - ../test.mp4:/app/test.mp4 
       - ../output:/app/output  # 拿到处理后的视频
     # ==========================================================
-    # [T43] 健康检查: 直接问 gRPC 的 Health RPC(不加载模型/不连库, 秒级返回)
+    # 健康检查: 直接问 gRPC 的 Health RPC(不加载模型/不连库, 秒级返回)
     #   为什么不 curl /metrics: 指标端点默认只在容器内网; 而且"进程在跑"
     #   不等于"gRPC 在服务" —— 探针要测的是后者。
     #   注意: 不要额外传 --config(让探针与服务端用**同一套**配置解析,
@@ -83,12 +83,12 @@ services:
       timeout: 5s
       retries: 3
       start_period: 90s
-    # [T43] 让容器能回访宿主机(告警 webhook 常跑在宿主机的 8899 上)
+    # 让容器能回访宿主机(告警 webhook 常跑在宿主机的 8899 上)
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
   # ==========================================================
-  # [T37] Phase C 复核服务(真 VLM) —— 可选, 隔离在 profile 内
+  # Phase C 复核服务(真 VLM) —— 可选, 隔离在 profile 内
   # ----------------------------------------------------------
   # 默认 `docker compose up` **不会**启动它; 需要时:
   #     docker compose --profile vlm up -d vlm-review
@@ -112,7 +112,7 @@ services:
       VLM_BASE_URL: ${VLM_BASE_URL:-http://host.docker.internal:8000/v1}
       VLM_MODEL: ${VLM_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}
       VLM_API_KEY: ${VLM_API_KEY:-EMPTY}
-      VLM_AUTH_TOKEN: ${VLM_AUTH_TOKEN:-}   # [T41] 空 = 不校验; 与网关的 VLM_TOKEN 配对
+      VLM_AUTH_TOKEN: ${VLM_AUTH_TOKEN:-}   # 空 = 不校验; 与网关的 VLM_TOKEN 配对
       VLM_PORT: "50052"
       VLM_MAX_WORKERS: "4"
     ports:

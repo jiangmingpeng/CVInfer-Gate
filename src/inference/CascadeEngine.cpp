@@ -3,7 +3,7 @@
 #include <algorithm>
 
 #include "utils/Logger.h"
-#include "utils/RoiUtils.h" // roi_utils::expandAndClamp (与 T22 大模型复核共用)
+#include "utils/RoiUtils.h" // roi_utils::expandAndClamp (与大模型复核共用)
 
 CascadeEngine::CascadeEngine(std::shared_ptr<IDetector> primary,
                              std::shared_ptr<IClassifier> secondary,

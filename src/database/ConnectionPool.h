@@ -13,7 +13,7 @@
 
 #include "utils/ConfigParser.h"
 
-// ConnectionPool (T9: 数据库连接池)
+// ConnectionPool (数据库连接池)
 // 背景: 原 DBWriter 只持有一个 sql::Connection, 且在消费者线程里
 // 同步写库 -> 高并发下成为瓶颈, 且连接一旦失效无恢复能力。
 // 本类按 database.pool_size 维护 N 个连接, 用 condition_variable

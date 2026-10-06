@@ -46,7 +46,7 @@ class VlmConfig:
     port: int = 50052
     max_workers: int = 4                 # gRPC 线程池大小(并发复核数)
     pb2_dir: str = ""
-    auth_token: str = ""                # [T41] 非空 = 要求调用方带 authorization: Bearer <token>                   # protoc 生成的 *_pb2.py 目录; 空 = <repo>/build/pyproto
+    auth_token: str = ""                # 非空 = 要求调用方带 authorization: Bearer <token>                   # protoc 生成的 *_pb2.py 目录; 空 = <repo>/build/pyproto
 
     # ---- 后端选择 ----
     #   openai       : 任意 OpenAI 兼容多模态 HTTP 服务(vLLM/Ollama/LM Studio/DashScope/OpenAI)

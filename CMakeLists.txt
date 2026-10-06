@@ -31,14 +31,14 @@ endif()
 
 # 2. 指定 proto 文件路径
 set(PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/inference.proto)
-set(REVIEW_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/review.proto)   # [T20] 复核服务契约
+set(REVIEW_PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/review.proto)   # 复核服务契约
 
 # 3. 手动生成 C++ 代码（完全绕过 find_package(gRPC)）
 set(GRPC_GENERATED_SRCS
     ${CMAKE_CURRENT_BINARY_DIR}/inference.pb.cc
     ${CMAKE_CURRENT_BINARY_DIR}/inference.grpc.pb.cc
-    ${CMAKE_CURRENT_BINARY_DIR}/review.pb.cc        # [T20]
-    ${CMAKE_CURRENT_BINARY_DIR}/review.grpc.pb.cc   # [T20]
+    ${CMAKE_CURRENT_BINARY_DIR}/review.pb.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/review.grpc.pb.cc
 )
 
 add_custom_command(
@@ -100,7 +100,7 @@ target_link_libraries(grpc_client PRIVATE
 )
 
 # ============================================================
-# [T37] 复核服务联调客户端 (Phase C)
+# 复核服务联调客户端 (Phase C)
 # ------------------------------------------------------------
 # 不启动流水线, 直接调 review.proto 的 ReviewService, 用于验证
 # "真 VLM"复核服务端(或 mock)是否可用。运行: ./review_client <addr> [image]
@@ -123,7 +123,7 @@ target_link_libraries(review_client PRIVATE
 )
 
 # ============================================================
-# [T27] 阶段自检程序 (Phase A~D)
+# 阶段自检程序 (Phase A~D)
 # ------------------------------------------------------------
 # 用"测试内注入的假实现"驱动每个阶段的接缝, 因此**不需要**模型/传感器/复核服务/数据库,
 # 也不依赖 config/config.yaml; 也不链接 OpenVINO / gRPC / MySQL, 只编译用到的 5 个 .cpp。
@@ -157,7 +157,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${MYSQLCPPCONN_INCLUDE_DIR}
 )
 
-# [T43] 版本号注入代码(Health RPC / --health-check / cvinfer_build_info 都用它)
+# 版本号注入代码(Health RPC / --health-check / cvinfer_build_info 都用它)
 target_compile_definitions(${PROJECT_NAME} PRIVATE CV_GATE_VERSION="${PROJECT_VERSION}")
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -190,7 +190,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test.mp4)
 endif()
 
 # ============================================================
-# [T38] 单元测试 (gtest + ctest) —— "立可信度"
+# 单元测试 (gtest + ctest) —— "立可信度"
 # ------------------------------------------------------------
 # 覆盖范围: **纯逻辑 / 接缝**, 也就是改动受益面最大、又最容易悄悄改坏的部分:
 #   YoloPostProcessor  解码 + 置信度过滤 + NMS + 边界裁剪(不需要模型文件)
@@ -223,13 +223,13 @@ if(CV_BUILD_TESTS)
         set(CV_GTEST_MAIN gtest_main)
     else()
         if(CV_TESTS_REQUIRE_GTEST)
-            message(FATAL_ERROR "[T38] 未找到 GTest, 先 sudo apt install -y libgtest-dev 再 cmake")
+            message(FATAL_ERROR "未找到 GTest, 先 sudo apt install -y libgtest-dev 再 cmake")
         endif()
-        message(WARNING "[T38] 未找到 GTest => 不会生成 cv_unit_tests 目标(故 make cv_unit_tests 报 No rule to make target)")
+        message(WARNING "未找到 GTest => 不会生成 cv_unit_tests 目标(故 make cv_unit_tests 报 No rule to make target)")
     endif()
 
     if(CV_GTEST_MAIN)
-        message(STATUS "[T38] 单元测试已启用: cv_unit_tests + phase_selftest")
+        message(STATUS "单元测试已启用: cv_unit_tests + phase_selftest")
         add_executable(cv_unit_tests
             tests/unit/test_thread_safe_queue.cpp
             tests/unit/test_roi_utils.cpp
@@ -240,18 +240,18 @@ if(CV_BUILD_TESTS)
             tests/unit/test_seat_occupancy.cpp
             tests/unit/test_yolo_post_processor.cpp
             tests/unit/test_auth_guard.cpp
-            # [T43] 运维面: 指标 / 日志轮转 / 告警推送
+            # 运维面: 指标 / 日志轮转 / 告警推送
             tests/unit/test_metrics.cpp
             tests/unit/test_metrics_server.cpp
             tests/unit/test_logger_rotation.cpp
             tests/unit/test_alert_notifier.cpp
             src/fusion/SensorFusion.cpp
             src/utils/ConfigParser.cpp
-            src/utils/Logger.cpp           # [T43] 轮转
-            src/utils/Metrics.cpp          # [T43]
-            src/utils/HttpClient.cpp       # [T43] 告警推送传输层
-            src/service/MetricsServer.cpp  # [T43] /metrics 端点
-            src/alert/AlertNotifier.cpp    # [T43] 告警推送
+            src/utils/Logger.cpp           # 轮转
+            src/utils/Metrics.cpp
+            src/utils/HttpClient.cpp       # 告警推送传输层
+            src/service/MetricsServer.cpp  # /metrics 端点
+            src/alert/AlertNotifier.cpp    # 告警推送
             src/occupancy/SeatOccupancyAnalyzer.cpp # [占座] 规则判定状态机
             src/inference/YoloPostProcessor.cpp
         )

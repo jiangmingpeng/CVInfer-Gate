@@ -9,7 +9,7 @@
 #include "inference/InferenceEnginePool.h"
 #include "inference/ClassificationPostProcessor.h"
 
-// BehaviorClassifier (T17: 二级分类器, 实现 IClassifier)
+// BehaviorClassifier (二级分类器, 实现 IClassifier)
 // 一个 BehaviorClassifier = 一个 InferenceEnginePool + 分类后处理 + 标签。
 // - 输入: 单张 ROI (外扩裁剪后的目标小图)
 // - 引擎自带预处理(blobFromImage: resize/1/255/BGR->RGB), 故此处只管后处理

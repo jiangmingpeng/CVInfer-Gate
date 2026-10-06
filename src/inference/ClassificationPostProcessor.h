@@ -7,7 +7,7 @@
 
 #include "inference/IModel.h"
 
-// ClassificationPostProcessor (T17: 分类后处理)
+// ClassificationPostProcessor (分类后处理)
 // 把分类模型(单张量输出)的原始张量解析为 Classification:
 // [1, N] -> argmax -> (class_id, confidence, label)
 //

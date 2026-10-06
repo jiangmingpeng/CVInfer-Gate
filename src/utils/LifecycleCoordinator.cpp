@@ -82,7 +82,7 @@ bool SignalWatcher::start(const std::vector<int>& signals) {
 
     // 先让 handler 拿得到写端, 再安装处理动作(顺序不能反)。
     // 注意: 这里**不再** pthread_sigmask —— sigaction 是进程级的, 不论内核把信号
-    // 投给哪个线程都会进 handleSignal(旧 sigwait 方案依赖掩码继承, 已废弃:T34)。
+    // 投给哪个线程都会进 handleSignal(旧 sigwait 方案依赖掩码继承, 已废弃)。
     g_pipe_wr = pipe_fds_[1];
 
     struct sigaction sa;

@@ -25,7 +25,7 @@ struct ReviewOutcome {
     std::int64_t latency_ms = 0; // 服务端处理耗时(ms; 0 = 未上报)
 };
 
-// ReviewScheduler (T21: 异步复核调度器)
+// ReviewScheduler (异步复核调度器)
 // 目标: 让"大模型复核"完全不阻塞解码/推理/sink 线程。
 // - submit(): 非阻塞入队(有界 DropOldest, 绝不阻塞调用方)
 // - N 个 worker 线程: 出队 -> IReviewService::review -> 回调 on_outcome

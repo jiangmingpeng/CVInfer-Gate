@@ -38,7 +38,7 @@ bool DBWriter::init(const AppConfig& config) {
     // 演示/联调时 gRPC 与流水线照常工作, 记录先落本地 CSV。
     if (!pool_.init(db, /*max_attempts=*/1, /*retry_sleep_ms=*/0)) {
         db_healthy_ = false; // 直接进入“暂停写库 + 定时探测”, 不等第一帧才发现
-        CVLOG_WARN << "[DBWriter][T36] 数据库不可用, 以【降级模式】启动: 记录先落本地 "
+        CVLOG_WARN << "[DBWriter] 数据库不可用, 以【降级模式】启动: 记录先落本地 "
                    << (fallback_path_.empty() ? "(未配置降级文件!)" : fallback_path_)
                    << ", 每 " << probe_interval_.count() << "ms 或 "
                    << probe_after_calls_ << " 次冲刷后自动重连; 恢复后自动回传并清理。"
@@ -172,7 +172,7 @@ bool DBWriter::ensurePoolAvailable() {
     if (pool_.ready()) return true;
     const bool ok = pool_.init(db_cfg_, /*max_attempts=*/1, /*retry_sleep_ms=*/0);
     if (ok) {
-        CVLOG_INFO << "[DBWriter][T36] 连接池已重建, 连接数=" << pool_.size();
+        CVLOG_INFO << "[DBWriter] 连接池已重建, 连接数=" << pool_.size();
     }
     return ok;
 }

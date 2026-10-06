@@ -1,5 +1,5 @@
 # ============================================================
-# CVInfer-Gate 测试运行配置 (T27 引入, 2026-xx 重建)
+# CVInfer-Gate 测试运行配置 (2026-xx 重建)
 # ------------------------------------------------------------
 # 用途: 把 Phase B(级联) / Phase C(复核) / Phase D(融合) 逐段打开,
 #       在**不动**被安全策略锁定的 config/config.yaml 的前提下跑真实链路。
@@ -35,7 +35,7 @@
 # 前置(复核服务, 否则 review 全部走 unavailable 兜底), 二选一:
 #     # A. 确定性 mock(与旧行为一致, 回归用)
 #     python3 scripts/mock_review_server.py --port 50052 --mode auto
-#     # B. 真 VLM(T37; 需先把上游 VLM 起在 :8000, 如 vLLM/Ollama)
+#     # B. 真 VLM(需先把上游 VLM 起在 :8000, 如 vLLM/Ollama)
 #     #     ⚠️ 本配置的业务是**占座**, 服务端必须用同一场景:
 #     #        VLM_SCENARIO=seat_occupancy (或 --scenario seat_occupancy)
 #     #        否则服务端的 system prompt 会停在"安全帽", 与这里的 prompt 打架。
@@ -100,10 +100,10 @@ grpc:
   max_message_size_mb: 16
   worker_threads: 0
   keepalive_time_ms: 20000
-  # [T42] 非空 => 主服务每个 RPC 都要 authorization: Bearer <token>(空 = 不鉴权)
+  # 非空 => 主服务每个 RPC 都要 authorization: Bearer <token>(空 = 不鉴权)
   auth_token: "${GRPC_AUTH_TOKEN:-}"
 
-# ---- Phase B: 级联复核 (主筛 person 灰区 -> helmet_classifier 二级复核, T16-T19) ----
+# ---- Phase B: 级联复核 (主筛 person 灰区 -> helmet_classifier 二级复核) ----
 # 依赖 config/model_config.yaml 中已注册的 role=classifier 模型 helmet_classifier
 # (输入 416x416, device=CPU)。⚠️ secondary 必须与模型名完全一致,
 # 否则 buildCascade() 会“静默退化为单模型”, 表现为 Phase B 没跑但也不报错。
@@ -175,7 +175,7 @@ review:
 #   prompt: "判断该人员是否未佩戴安全帽"
 #   alert_type: "安全帽缺失"
 #   alert_on_failure: false          # 拿不到结论(超时/不可用)时默认**不**告警
-#   # ---- [T37] 接入真 VLM ----
+#   # ---- 接入真 VLM ----
 #   max_message_size_mb: 16
 #   keepalive_time_ms: 20000
 #   auth_token: "${VLM_TOKEN:-}"     # 需鉴权的 VLM 才填; 默认空

@@ -126,7 +126,7 @@ authJWTJWKS:
 # Global settings -> Control API
 
 # Enable controlling the server through the Control API.
-# [迁移 WSL / T32] 由 no 改为 yes: 排查“流有没有上来”时一条 curl 就够, 不必翻日志:
+# [迁移 WSL] 由 no 改为 yes: 排查“流有没有上来”时一条 curl 就够, 不必翻日志:
 #   curl -s http://127.0.0.1:9997/v3/paths/list | python3 -m json.tool
 #   -> 看每个 path 的 ready / readers / source(source=publisher 即在推流)
 # 安全: 上面的 authInternalUsers 仅对 127.0.0.1 / ::1 开放 api 权限。

@@ -33,7 +33,7 @@ DetectionServiceImpl::DetectionServiceImpl(IDetector& detector, std::string auth
       version_(std::move(version)),
       start_ms_(start_ms != 0 ? start_ms : nowMs()) {
     // 鉴权状态必须打出来: "以为开了其实没开" / "以为没开其实开了"
-    // 都是排查噩梦(与 T41 同一条纪律)。
+    // 都是排查噩梦(与复核鉴权同一条纪律)。
     CVLOG_INFO << "[鉴权] 主服务(50051): " << auth_.describe();
 
     // 指标声明(HELP 文本在这里给全, /metrics 就能自解释)

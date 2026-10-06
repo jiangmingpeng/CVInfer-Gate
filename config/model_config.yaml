@@ -1,5 +1,5 @@
 # ============================================================
-# 模型配置模板 (T12-T15: 多模型注册)
+# 模型配置模板 (多模型注册)
 # ------------------------------------------------------------
 # 说明:
 #   1) 本文件是"多模型"格式示例; 旧的单模型格式 (model: + thresholds:)
@@ -48,7 +48,7 @@ models:
     acquire_timeout_ms: 2000   # 借引擎超时(ms)
 
     # ---- 推理性能旋钮(纯 CPU 场景的实测最优值) ----
-    # device: 必须显式写 CPU —— 用 AUTO 会让插件去枚举设备, 在带 NPU 插件的 WSL 环境会段错误(T33)。
+    # device: 必须显式写 CPU —— 用 AUTO 会让插件去枚举设备, 在带 NPU 插件的 WSL 环境会段错误。
     # num_threads: 4 = 物理核数, 实测吞吐最优(再加只会多烧 CPU; 推导见 PROJECT_NOTES §20.13/§20.14)。
     device: CPU
     performance_mode: latency
@@ -66,7 +66,7 @@ models:
   #   input_height: 416
   #   pool_size: 2                # 建议 >= worker_threads(否则并发复核会 Busy -> 降级)
   #   acquire_timeout_ms: 2000
-  #   device: CPU                 # 必填(缺省 AUTO 会触发 T33 的 NPU 段错误)
+  #   device: CPU                 # 必填(缺省 AUTO 会触发 NPU 段错误)
   #   performance_mode: latency
   #   num_threads: 2              # 分类器很轻, 别和主模型抢物理核
 

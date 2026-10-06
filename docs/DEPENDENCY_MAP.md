@@ -300,4 +300,4 @@ proto/review.proto ────(同一套生成逻辑)────────> 
 | `tracking/TargetTracker.h` | `main.cpp`、`test_target_tracker` | 该单测 |
 | `proto/*.proto` | `main`、`service/`、`review/`、2 个 test 客户端、**Python 侧** | 重跑 `cmake`（重新生成）+ 起 `vlm_review` 与 `web_gateway` 联调 |
 | 新增 `.cpp` | — | **必须重跑 `cmake`**（`GLOB_RECURSE` 不会自动感知） |
-| 新增/改依赖边 | — | `ctest`（129 项）+ `phase_selftest`（52 项） |
+| 新增/改依赖边 | — | `ctest`（180 项）+ `phase_selftest`（52 项） |

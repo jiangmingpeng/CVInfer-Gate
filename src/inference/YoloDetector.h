@@ -9,7 +9,7 @@
 #include "inference/InferenceEnginePool.h"
 #include "inference/YoloPostProcessor.h"
 
-// YoloDetector (T13: 把"现有单模型链路"封装成 IDetector)
+// YoloDetector (把"现有单模型链路"封装成 IDetector)
 // 一个 YoloDetector = 一个 InferenceEnginePool + 一个 YoloPostProcessor + labels。
 // - 内部引擎池大小来自 ModelConfig::pool_size (0 时由 ModelPoolManager 兜底)
 // - detect() 内完成 [借引擎 -> infer -> 后处理], 与旧 VideoPipeline worker /

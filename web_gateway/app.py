@@ -116,7 +116,7 @@ except ImportError as _exc:
     )
     sys.exit(3)
 
-# ---------------------- T10: 运行参数全部来自环境变量 ----------------------
+# ---------------------- 运行参数全部来自环境变量 ----------------------
 # 去除硬编码 IP：不再把 C++ 服务地址写死在源码里。
 # 可选：若安装了 python-dotenv，则自动加载同目录 .env（本地开发方便）。
 # 注意这里**显式指定路径**：否则从别的目录启动时，会按 CWD 找 .env 而读不到。
@@ -148,7 +148,7 @@ GRPC_SERVER = _env_str("GRPC_SERVER", "localhost:50051")
 GRPC_TIMEOUT_MS = _env_int("GRPC_TIMEOUT_MS", 5000)
 # 收发消息上限(MB)，与 C++ 端 grpc.max_message_size_mb 对齐（默认 4MB 会挡住大图）
 GRPC_MAX_MSG_MB = _env_int("GRPC_MAX_MSG_MB", 16)
-# [T42] 主服务(50051)鉴权 token：非空则每次调用带 authorization: Bearer <token>
+# 主服务(50051)鉴权 token：非空则每次调用带 authorization: Bearer <token>
 # 留空 => 不带任何 metadata（要求服务端也没开鉴权，与改动前完全一致）
 GRPC_AUTH_TOKEN = _env_str("GRPC_AUTH_TOKEN", "")
 # Flask 监听地址与端口
@@ -182,7 +182,7 @@ stub = DetectionServiceStub(channel)
 
 
 def _grpc_metadata():
-    """[T42] 主服务鉴权 metadata：token 非空才带。
+    """主服务鉴权 metadata：token 非空才带。
 
     服务端(AuthGuard)比的是**整串** "Bearer " + token —— 大小写敏感、没有尾空格
     容错，所以这里必须精确拼同一串（与 tests/test_grpc_client.cpp 完全一致）。
@@ -226,10 +226,10 @@ def _run_detect(img_bytes):
         response = stub.Detect(
             DetectRequest(image_data=img_bytes),
             timeout=GRPC_TIMEOUT_MS / 1000.0,
-            metadata=_grpc_metadata(),   # [T42] 空 token => ()，不带 metadata
+            metadata=_grpc_metadata(),   # 空 token => ()，不带 metadata
         )
     except grpc.RpcError as e:
-        # [T42] 鉴权失败最常见的原因：网关与服务端 env 不一致(或只配了一边)
+        # 鉴权失败最常见的原因：网关与服务端 env 不一致(或只配了一边)
         if e.code() == grpc.StatusCode.UNAUTHENTICATED:
             return None, ("鉴权不通过 —— 网关与服务端必须用同一个 GRPC_AUTH_TOKEN"
                           f"（当前网关侧: {'已设置' if GRPC_AUTH_TOKEN else '未设置'}）", 401)

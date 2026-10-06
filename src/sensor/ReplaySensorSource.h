@@ -11,7 +11,7 @@
 
 namespace sensor {
 
-// ReplaySensorSource (T24 骨架: 文件回放 / 合成)
+// ReplaySensorSource (骨架: 文件回放 / 合成)
 // 真实部署里雷达/红外各有 SDK/UDP/串口协议; 本类先实现**可离线验证**的两种
 // backend, 让整条多模态链路在无硬件时也能端到端跑通、且可复现:
 //

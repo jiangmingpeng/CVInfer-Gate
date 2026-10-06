@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""[T41] 服务端鉴权拦截器自测(无第三方依赖; 不需要 grpcio / pytest, 也不需要相机和模型)。
+"""服务端鉴权拦截器自测(无第三方依赖; 不需要 grpcio / pytest, 也不需要相机和模型)。
 
 跑法(仓库根目录):
     python3 -m vlm_review.test_auth_interceptor
@@ -192,7 +192,7 @@ def case_handler_type_preserved():
 
 
 def main():
-    print("[test_auth_interceptor] T41 服务端鉴权拦截器自测(无 grpcio 依赖)")
+    print("[test_auth_interceptor] 服务端鉴权拦截器自测(无 grpcio 依赖)")
     for fn in (case_token_ok, case_missing_metadata, case_wrong_token,
                case_other_metadata_ignored, case_non_ascii_metadata,
                case_handler_type_preserved):

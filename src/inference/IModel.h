@@ -8,7 +8,7 @@
 #include "inference/DetectionResult.h"
 #include "utils/ConfigParser.h"
 
-// IModel / IDetector / IClassifier (T12: 模型抽象层)
+// IModel / IDetector / IClassifier (模型抽象层)
 // 背景: 原项目只有单一 InferenceEngine (IInferenceEngine 直接吐原始张量),
 // "多模型级联 / 大模型复核" 无法表达。这里在 IInferenceEngine(裸张量)
 // 之上新增一层"模型"抽象: 一个模型 = 引擎池 + 专属后处理 + 标签。
@@ -17,9 +17,9 @@
 // IInferenceEngine  —— 低层: init(ModelConfig) / infer(cv::Mat, vector<ov::Tensor>&)
 // IModel            —— 中层: 角色化模型基类 (init / name / role)
 // ├─ IDetector    —— 整图 -> 检测框 (YOLO 等)
-// └─ IClassifier  —— ROI -> 类别   (行为/安全帽分类器等, T17 落地)
+// └─ IClassifier  —— ROI -> 类别   (行为/安全帽分类器等)
 //
-// 说明: 级联(CascadeEngine, T16) 也实现 IDetector, 因此 VideoPipeline /
+// 说明: 级联(CascadeEngine) 也实现 IDetector, 因此 VideoPipeline /
 // DetectionServiceImpl 只依赖 IDetector 即可, 无需感知级联细节。
 
 // 模型角色 (由 ModelConfig::role 字符串映射而来)
@@ -77,7 +77,7 @@ public:
                                 std::vector<DetectionResult>& out) = 0;
 };
 
-// 分类器: ROI -> 类别 (T17 提供实现)
+// 分类器: ROI -> 类别
 // 返回状态与 IDetector::detect 对称: 便于级联区分"引擎繁忙(Busy, 保留主结果)"
 // 与"推理失败(Failed, 同样降级保留)"。
 class IClassifier : public IModel {

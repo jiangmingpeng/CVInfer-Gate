@@ -12,7 +12,7 @@
 #include "sensor/ISensorSource.h"
 #include "utils/ConfigParser.h" // FusionConfig
 
-// MultiSensorPipeline (T26: 多模态融合编排)
+// MultiSensorPipeline (多模态融合编排)
 // 定位: **不改动 VideoPipeline**。它作为"融合前置阶段"挂在既有 sink 回调的
 // 最前面, 因此解码/抽帧/限速/多 worker/队列背压/落库全部复用 —— 与
 // Phase A~C 的抽象思路一致(级联实现 IDetector、复核实现 IReviewService,

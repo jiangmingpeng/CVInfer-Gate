@@ -5,11 +5,11 @@
 
 #include <opencv2/opencv.hpp>
 
-// IReviewService (T20: 复核服务抽象)
+// IReviewService (复核服务抽象)
 // 把"大模型/外部复核"抽象为一个同步调用接口: 调用方(ReviewScheduler 的
-// worker 线程)会阻塞等待一次复核结果, 但整条视频流水线不阻塞(见 T21)。
+// worker 线程)会阻塞等待一次复核结果, 但整条视频流水线不阻塞。
 //
-// 当前实现: GrpcLlmReviewer(复用 gRPC, T20)。
+// 当前实现: GrpcLlmReviewer(复用 gRPC)。
 // 预留: 可替换为本地 VLM/其它后端, 只需实现本接口。
 
 // 复核请求: 一个"灰区/告警候选"目标

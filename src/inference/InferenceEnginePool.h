@@ -11,7 +11,7 @@
 #include "inference/IInferenceEngine.h"
 #include "utils/ConfigParser.h"
 
-// InferenceEnginePool (T4: 推理引擎池)
+// InferenceEnginePool (推理引擎池)
 // 背景: OpenVINOEngine 内部仅持有一个 ov::InferRequest, 不是线程安全的。
 // 原 main.cpp 中"视频流水线线程"与"gRPC 服务线程"共用同一个引擎
 // 实例 => 数据竞争 / 崩溃。本类用引擎池隔离并复用推理资源。

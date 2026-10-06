@@ -48,34 +48,34 @@
 #define CV_GATE_VERSION "dev"
 #endif
 
-// CVInfer-Gate 主程序 (T7: 装配收口)
+// CVInfer-Gate 主程序 (装配收口)
 // 与旧版 main.cpp 的差异:
-// 1) T2: 引入 Logger, 统一分级日志, 取代散落的 std::cout/cerr
-// 2) T6: 引入 LifecycleCoordinator + SignalWatcher, 主线程与
+// 1) 引入 Logger, 统一分级日志, 取代散落的 std::cout/cerr
+// 2) 引入 LifecycleCoordinator + SignalWatcher, 主线程与
 // gRPC/流水线子线程通过 condition_variable 协作, Ctrl+C 优雅关闭
 // 3) gRPC 服务在独立线程启动, 与视频流水线"并行"
 // (旧版是视频跑完才启动 gRPC, 且无法优雅退出)
-// 4) T4: 引入 InferenceEnginePool, 推理引擎被流水线 worker 与 gRPC
+// 4) 引入 InferenceEnginePool, 推理引擎被流水线 worker 与 gRPC
 // 共享, 消除"多线程共用单个 ov::InferRequest"的数据竞争
-// 5) T5: 视频处理交棒给 VideoPipeline (解码/抽帧/限速/多 worker/落库)
+// 5) 视频处理交棒给 VideoPipeline (解码/抽帧/限速/多 worker/落库)
 // 6) 保留原业务规则: 画框写视频、检测入库、person>0.8 触发告警
-// 7) T12-T15: 推理链路由"单引擎池"升级为"多模型注册 + IDetector 抽象":
+// 7) 推理链路由"单引擎池"升级为"多模型注册 + IDetector 抽象":
 // ModelPoolManager 按 model_config 批量构建模型(每模型独立引擎池),
-// 流水线/gRPC 只依赖 IDetector, 为 T16+ 的多模型级联铺路。
-// 8) T16-T19: 当 config.yaml 中 cascade.enabled=true 时, 用 CascadeEngine
+// 流水线/gRPC 只依赖 IDetector, 为后续的多模型级联铺路。
+// 8) 当 config.yaml 中 cascade.enabled=true 时, 用 CascadeEngine
 // (同样实现 IDetector)替换单模型: 主筛灰区目标 -> 二级分类器复核。
 // 流水线/gRPC 代码无需改动(这正是 Phase A 抽象层的价值)。
-// 9) T20-T22: 当 config.yaml 中 review.enabled=true 时, 告警候选目标被裁剪
+// 9) 当 config.yaml 中 review.enabled=true 时, 告警候选目标被裁剪
 // ROI 后异步送大模型复核(复用 gRPC), **复核确认后才写告警**; 画框/写视频/
 // 检测入库仍用本地结果实时进行, 复核不阻塞任何流水线线程。
-// 10) T23-T26: 当 config.yaml 中 fusion.enabled=true 时, 在 sink **最前置**叠加
+// 10) 当 config.yaml 中 fusion.enabled=true 时, 在 sink **最前置**叠加
 // 多模态决策级融合: 雷达/红外采样经 poller 存进有界时间缓冲, 每帧按
 // fusion.time_tolerance_ms 时间对齐 + 目标关联 + 加权置信度融合。
 // 视频仍是主模态(画框/落库/告警的框都来自视觉), 融合只调置信度/补测距;
-// 11) T39: 告警去重(alert.dedup): 告警判定按帧执行, 而"安全帽缺失"描述的是**目标
+// 11) 告警去重(alert.dedup): 告警判定按帧执行, 而"安全帽缺失"描述的是**目标
 // 状态** => 同一静止目标会被连续帧反复告警。新增 AlertGate(标签 + 框重叠 +
 // 冷却窗), 在**告警链路上**去重(送审处 / 写告警处), 画框与落库不受影响。
-// 12) T43: 运维收口 —— 把"能跑"补成"好运维":
+// 12) 运维收口 —— 把"能跑"补成"好运维":
 // (a) 告警可推 webhook(alert.push): 有界队列 + 重试退避, 不阻塞流水线;
 // (b) /metrics 指标端点(metrics.enabled) + 日志文件轮转(app.log_max_size_mb);
 // (c) gRPC Health RPC + `--health-check` 探针, 供容器 healthcheck / systemd 判活。
@@ -162,7 +162,7 @@ void printUsage(const char* argv0) {
     std::cout << "用法: " << argv0 << " [选项]\n"
               << "  --config <path>        系统配置(默认 config/config.yaml, 或环境变量 CVINFER_CONFIG)\n"
               << "  --model-config <path>  模型配置(默认 config/model_config.yaml, 或 CVINFER_MODEL_CONFIG)\n"
-              << "  --health-check[=addr]  [T43] 只做一次健康探针后退出(不加载模型/不连库)\n"
+              << "  --health-check[=addr]  只做一次健康探针后退出(不加载模型/不连库)\n"
               << "                         默认 127.0.0.1:<grpc.port>, 可用 CVINFER_HEALTH_ADDR 覆盖;\n"
               << "                         退出码 0=serving 1=失败 2=连不上 3=超时 4=未授权\n"
               << "  --help                 显示本帮助\n";
@@ -252,11 +252,11 @@ int main(int argc, char** argv) {
         }
     }
 
-    // T2: 初始化分级日志
+    // 初始化分级日志
     Logger::instance().init(app_cfg.log);
     CVLOG_INFO << "=== CVInfer-Gate 启动 ===";
 
-    // T6: 信号监听必须早于其它线程, 使其继承信号掩码
+    // 信号监听必须早于其它线程, 使其继承信号掩码
     LifecycleCoordinator lifecycle;
     SignalWatcher signal_watcher([&lifecycle](int sig) {
         CVLOG_WARN << "收到信号 " << sig << ", 开始优雅关闭...";
@@ -267,7 +267,7 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    // T9: 数据库 (连接池 + 异步落库)
+    // 数据库 (连接池 + 异步落库)
     // DBWriter::init() 已改为“连不上库也**不**失败”: 降级模式启动(记录先落
     // 本地 CSV), 后台按 database.reconnect_interval_ms 自动重建连接池, 恢复
     // 后回传; 启动只做 1 次快速连库尝试(不再白等 ~20s)。
@@ -353,7 +353,7 @@ int main(int argc, char** argv) {
     CVLOG_INFO << "视频帧率: 源=" << source_fps << "fps, frame_interval=" << interval
                << ", 输出容器=" << fps << "fps";
 
-    // 3. T12-T15: 多模型注册 (Phase A 走单模型路径; 级联在 T16+)
+    // 3. 多模型注册 (Phase A 走单模型路径; 级联在后续阶段)
     // ModelPoolManager 按配置批量构建模型: 每个模型(如 YoloDetector)内部持有
     // 独立引擎池, 流水线 worker 与 gRPC 共享同一个 detector, 资源隔离/复用等价于旧版。
     ModelPoolManager model_manager;
@@ -591,7 +591,7 @@ int main(int argc, char** argv) {
         CVLOG_INFO << "占座判定: 已禁用(occupancy.enabled=false)";
     }
 
-    // 5. T5: 构造三阶段流水线 (sink 回调负责画框/写视频/异步落库)
+    // 5. 构造三阶段流水线 (sink 回调负责画框/写视频/异步落库)
     VideoPipeline::Config pipe_cfg;
     pipe_cfg.target_fps = app_cfg.video.target_fps;
     pipe_cfg.frame_interval = app_cfg.video.frame_interval;
@@ -724,14 +724,14 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     if (!alert_gate.allow(det.label, det.track_id, det.box, nowMs())) {
-                        CVLOG_DEBUG << "[T39] 冷却窗内同目标重复, 跳过送审: " << det.label
+                        CVLOG_DEBUG << "冷却窗内同目标重复, 跳过送审: " << det.label
                                     << " frame=" << frame_seq;
                         continue;
                     }
                     review_scheduler->submit(std::move(job));
                 } else {
                     if (!alert_gate.allow(det.label, det.track_id, det.box, nowMs())) {
-                        CVLOG_DEBUG << "[T39] 冷却窗内同目标重复, 跳过告警: " << det.label
+                        CVLOG_DEBUG << "冷却窗内同目标重复, 跳过告警: " << det.label
                                     << " frame=" << frame_seq;
                         continue;
                     }
@@ -793,7 +793,7 @@ int main(int argc, char** argv) {
     // 6. 启动 gRPC 服务 (独立线程, 与流水线并行; 旧版是视频跑完才启动)
     // 鉴权: token 取自 grpc.auth_token(建议写 "${GRPC_AUTH_TOKEN:-}"; 空 = 不鉴权)
     DetectionServiceImpl service(*detector, app_cfg.grpc.auth_token, CV_GATE_VERSION, start_ms);
-    // T8: 按 GrpcConfig 配置消息大小/线程/keepalive 并启动服务
+    // 按 GrpcConfig 配置消息大小/线程/keepalive 并启动服务
     std::string server_address;
     std::unique_ptr<grpc::Server> server =
         buildAndStartGrpcServer(app_cfg.grpc, service, server_address);

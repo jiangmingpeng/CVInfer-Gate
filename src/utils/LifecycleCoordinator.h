@@ -9,7 +9,7 @@
 #include <thread>
 #include <vector>
 
-// LifecycleCoordinator (T6: 生命周期协调器)
+// LifecycleCoordinator (生命周期协调器)
 // 目标: 让"主线程 / gRPC 线程 / 视频流水线线程"通过 condition_variable
 // 协作启动与优雅关闭。原 main.cpp 无生命周期管理, 视频跑完才启动
 // gRPC, 也无法优雅退出。
@@ -46,7 +46,7 @@ private:
     int running_children_ = 0;
 };
 
-// SignalWatcher (T6/T34: 异步信号安全监听)
+// SignalWatcher (异步信号安全监听)
 // 捕获 SIGINT/SIGTERM, 收到即回调(回调在**普通线程**中执行, 故可以在里面
 // 打日志/加锁/通知条件变量, 不受“异步信号安全”限制)。
 //

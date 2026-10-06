@@ -1,6 +1,7 @@
 # CVInfer-Gate 改造工程笔记（PROJECT_NOTES）
 
 > **用途**：记录本轮架构重构的任务、根因、修复方案与接口约定。
+> **术语**：`Tn` = 本轮改造的**任务序号**（第几个任务，T1 起）；`R-x` = 已知风险编号；`BUG-x` = 架构缺陷编号。本文是工程日志，编号即索引（对照表 / 路线图 / 交叉引用都依赖它），故正文**保留编号不做去标记处理**；代码与产品文档中的编号已清除。
 > **给新对话**：先读本文，再 `git diff` / `git log` 即可快速对齐上下文，无需从头复述。
 > 最近更新：T1–T31 完成（Phase A=T12–T15 地基；Phase B=T16–T19 级联主筛 + 二级复核；Phase C=T20–T22 大模型异步复核；Phase D=T23–T26 多模态接入与决策级融合；**T27 = 阶段自检工具 + 配置注入 + 复核服务 mock**，见第 14 节；**T28 = RTSP 真实接入；T29 = 输出视频正确性修正（容器帧率 + sink 保序）**，见第 16 节；**T30 = 推理性能旋钮配置化（device/performance_mode/num_threads）**，见第 18 节；**T31 = 视频源配置交叉校验 + VideoWriter 降噪**，见第 19 节；**T32 = 迁移本地 WSL（环境适配 + 配置审查 + “数据库启动强耦合”的发现）**；**T33 = WSL 下 `device=AUTO` 触发 NPU 插件段错误（改 `device: CPU`）**；**T34 = 修复优雅关闭完全失灵（`sigwait` → `sigaction` + self-pipe）**，见第 20 节；**T35 = 推理性能收官（缓存友好改造 + 分段计时 ⇒ FP32 天花板定量化 ~33fps）**，见 §20.14）。
 > **新对话请先读第 17 节「架构总览」**（主动脉 + 四个挂载点 + 线程/关闭顺序 + 开关映射 + 验证状态），再按需下钻。
@@ -1294,47 +1295,4 @@ T34 修好后终于拿到了 `流水线统计`（之前拿不到，就是被这�
 - 下一步（一次只改一个变量）：`performance_mode: throughput`，然后再看 `num_threads`；
 - 旁证：`unavailable=61` 是因为本机没起 mock LLM 服务(127.0.0.1:50052)，复核走兜底，**符合预期**
   （阿里云那次有 mock 服务，所以两者不可直接比）；`融合统计` 有真实对齐/关联数据
-  (aligned=53, matched=46) ⇒ T23-T26 在新机器上复现 ✅。
-
-**小噪音**：连按两次 Ctrl+C 会打两遗 `收到信号 2`（`requestShutdown()` 本身幂等，无害）。
-若嫌乱，可在回调里先判 `lifecycle.isShutdownRequested()` 再打日志；
-或者做成“第二次信号 = 强制退出”（nginx/docker 惯例，但会跳过落库 flush，未做）。
-
-### 20.10 ⚠️ 算力被 WSL 扼住了：`processors=4` ⇒ 只用掉宿主机 16 个逻辑核中的 4 个
-
-```bash
-$ nproc
-4
-$ cat /proc/cpuinfo | grep "model name" | head -1
-model name      : 12th Gen Intel(R) Core(TM) i7-12650H
-$ cat /mnt/c/Users/jmp/.wslconfig
-[wsl2]
-memory=8GB
-processors=4
-swap=4GB
-```
-
-**关键结论**：i7-12650H 是 **6 P-core + 4 E-core = 10 核 / 16 逻辑线程**，
-而 `.wslconfig` 写着 **`processors=4`** ⇒ **WSL 只拿到 4 个逻辑核，白扔 12 个**。
-
-- ⚠️ 更正本节初稿写的“4 逻辑 CPU = 2 物理核 + SMT”：那只是 **WSL 给的合成拓扑**，
-  **不是宿主机真相**；⇒ **19.6 fps 不是这台机器的天花板，只是 1/4 台机器的成绩**；
-- 之前“两个引擎互抢核”的预判，**在 4 vCPU 的口径下成立**（2×2=4 线程正好占满 4 个逻辑 CPU），
-  但一旦放开 vCPU，`pool_size`/`worker_threads`/`num_threads` 这些 T30 旋钮就**重新变得有意义**
-  （可以把 `worker_threads`/`pool_size` 提到 4）；
-- Alder Lake 有 **AVX-VNNI**（无 AVX-512）⇒ **INT8 量化有真实收益**，是下一步的主要杠杆。
-
-**行动**：改 `.wslconfig`（`processors=12` 左右，给 Windows 留几个）→ Windows 侧 `wsl --shutdown`
-→ 重开 WSL → （先拉起 MySQL/MediaMTX 容器，见 §20.4 的“DB 启动强耦合”）→ 重测基线。
-**预期推理吞吐翻 2~3 倍，越过 30fps 实时线。**
-
-### 20.11 [T30/T32] 放开 WSL CPU 配额（4->8 vCPU）-> **首次越过实时线：31.6 fps**
-
-`.wslconfig` 把 `processors` 从 4 提到 **8**（没给满 16，怕宿主机卡）：
-
-| 配置 | vCPU | 窗口 | processed | **吞吐** | 解码 |
-|---|---|---|---|---|---|
-| 调优前 | 4 | 5.56 s | 109 | **19.6 fps** | ~240 fps |
-| 放开后 | 8 | 2.85 s | 90 | **31.6 fps** | ~215 fps |
-
-- ⚠️ **结论修正**：首发那次（�
+  (aligned=53, matched=46) ⇒ T23-T26 在新机器上复现 ✅�

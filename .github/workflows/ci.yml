@@ -1,5 +1,5 @@
 # ============================================================
-# [T38] CI: 编译 + 单元测试 + 阶段自检
+# CI: 编译 + 单元测试 + 阶段自检
 # ------------------------------------------------------------
 # 目标(比赛/产品化口径): **每次 push/PR 自动回答"还能不能编、逻辑还对不对"**,
 # 不再依赖"人工想起来跑一次 phase_selftest"。
@@ -100,6 +100,6 @@ jobs:
         run: cd build && ctest --output-on-failure
 
       # [P2-5] Python 侧自测: 用假 grpc 模块驱动**真**拦截器逻辑, 不需要安装 grpcio。
-      # 覆盖 T41: 放行/拒绝/前缀攻击/尾空格/小写 bearer/metadata 混排/非 ASCII/流式 handler 类型。
+      # 覆盖鉴权语义: 放行/拒绝/前缀攻击/尾空格/小写 bearer/metadata 混排/非 ASCII/流式 handler 类型。
       - name: Python 自测 (vlm_review 鉴权拦截器)
         run: python3 -m vlm_review.test_auth_interceptor

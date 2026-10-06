@@ -10,7 +10,7 @@
 
 namespace fusion {
 
-// SensorFusion (T25: 决策级融合)
+// SensorFusion (决策级融合)
 // "决策级"(decision-level) = 各模态**各自独立完成检测/判决**后再融合结论,
 // 不共享中间特征(对应 Phase D 决策⑤"先做决策级融合")。
 //

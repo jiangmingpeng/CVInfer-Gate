@@ -1,5 +1,5 @@
 // tests/phase_selftest.cpp
-// Phase A~D 阶段自检 (T27)
+// Phase A~D 阶段自检
 // 目的: 不依赖 模型/传感器/复核服务/数据库, 也不需要改动 config/config.yaml,
 // 用"测试内注入的假实现"驱动每个阶段的接缝, 一次跑完即可看到
 // Phase A 抽象层 / Phase B 级联灰区 / Phase C 异步复核 / Phase D 融合
@@ -164,9 +164,9 @@ std::vector<DetectionResult> greyZoneResults() {
     };
 }
 
-// Phase A: 模型抽象层 (T12-T15)
+// Phase A: 模型抽象层
 void phaseA() {
-    section("Phase A: 模型抽象层 (T12-T15)");
+    section("Phase A: 模型抽象层");
 
     auto det = std::make_shared<FakeDetector>();
     det->results = greyZoneResults();
@@ -188,9 +188,9 @@ void phaseA() {
     note("请用主程序日志验证 Phase A: '模型配置加载成功: ... (模型数=N)' + '使用检测器: ...'。");
 }
 
-// Phase B: 级联灰区复核 (T16-T19)
+// Phase B: 级联灰区复核
 void phaseB() {
-    section("Phase B: 级联主筛 + 灰区二级复核 (T16-T19)");
+    section("Phase B: 级联主筛 + 灰区二级复核");
 
     CascadeConfig cfg;
     cfg.trigger_labels = {"person"};
@@ -292,9 +292,9 @@ void phaseB() {
     note("'级联构建失败, 回退单模型检测器。'。这也是你当前跑出来'单模型模式'的原因之一。");
 }
 
-// Phase C: 大模型异步复核 (T20-T22)
+// Phase C: 大模型异步复核
 void phaseC() {
-    section("Phase C: 大模型异步复核 (T20-T22)");
+    section("Phase C: 大模型异步复核");
 
     // C1: alert_on_failure = true (拿不到复核结论时兜底告警; **否决仍不告警**)
     {
@@ -403,9 +403,9 @@ void phaseC() {
     note("想看到真实的 确认/否决, 可跑 scripts/mock_review_server.py (Python mock)。");
 }
 
-// Phase D: 多模态决策级融合 (T23-T26)
+// Phase D: 多模态决策级融合
 void phaseD() {
-    section("Phase D-1: 时间对齐 + 目标关联 + 置信度融合 (T25)");
+    section("Phase D-1: 时间对齐 + 目标关联 + 置信度融合");
 
     FusionConfig cfg;
     cfg.enabled = true;
@@ -510,7 +510,7 @@ void phaseD() {
     }
 
     // D-3: MultiSensorPipeline + 真实 poller 线程(stub 传感器)
-    section("Phase D-2: 多传感器编排 MultiSensorPipeline (T26)");
+    section("Phase D-2: 多传感器编排 MultiSensorPipeline");
 
     FusionConfig pc = cfg;
     pc.time_tolerance_ms = 100;

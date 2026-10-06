@@ -6,7 +6,7 @@
 #include <vector>
 #include <yaml-cpp/yaml.h>
 
-// 系统运行配置 (T1: 扁平结构 -> 按业务域分组的嵌套结构)
+// 系统运行配置 (扁平结构 -> 按业务域分组的嵌套结构)
 // 原 AppConfig 为扁平字段 (video_source_type / db_host / grpc_port ...),
 // 现拆分到 Video/Database/Grpc/Log/Pipeline 各子结构, 便于
 // 扩展、传参与校验。所有字段均带默认值, 未配置时行为可预测。
@@ -52,8 +52,8 @@ struct DatabaseConfig {
     std::string password;
     std::string dbname = "cv_infer";
     int pool_size = 4; // 连接池大小
-    int batch_size = 20; // [新增/T11] 攒够多少条批量写入
-    int flush_interval_ms = 1000; // [新增/T11] 或每隔多久批量冲刷(ms)
+    int batch_size = 20; // 攒够多少条批量写入
+    int flush_interval_ms = 1000; // 或每隔多久批量冲刷(ms)
     int max_retries = 10; // 初次连接最大重试次数
     // 数据库降级 / 重试策略
     std::string fallback_path = "db_fallback.csv"; // 不可用时本地降级 CSV(空=禁用)
@@ -74,9 +74,9 @@ struct GrpcConfig {
     std::string auth_token;
 };
 
-// 级联配置  [新增/T16-T19]
+// 级联配置
 // 控制"主模型灰区 -> 二级分类器复核"的级联行为。所有字段带默认值;
-// 未配置 cascade 段时 enabled=false, 退化为 T15 的单模型路径。
+// 未配置 cascade 段时 enabled=false, 退化为单模型路径。
 // 该结构同时被 ConfigParser(解析) 与 CascadeEngine(运行) 使用。
 struct CascadeConfig {
     bool enabled = false; // 是否启用级联
@@ -94,7 +94,7 @@ struct CascadeConfig {
     bool boost_on_confirm = false; // 确认时是否用二级置信度提升主置信度
 };
 
-// 大模型异步复核配置  [新增/T20-T22]
+// 大模型异步复核配置
 // 控制"告警候选 -> 异步大模型复核 -> 确认后告警"的行为。默认 enabled=false,
 // 未启用时告警走原有本地规则(person>0.8), 行为不变。
 struct ReviewConfig {
@@ -131,7 +131,7 @@ struct ReviewConfig {
     bool health_check = true; // init() 时探测一次 Health(仅用于日志; 失败不影响运行)
 };
 
-// 非视频传感器配置  [新增/T23-T24]
+// 非视频传感器配置
 // 一条 sensors: 记录描述一路**非视频**传感器(雷达/红外)。视频不走这里
 // (视频由 video: 段描述, 用 VideoSensorSource 适配)。
 // 与 CascadeConfig/ReviewConfig 一样放在 utils: 解析器与运行期(sensor:)
@@ -145,8 +145,8 @@ struct SensorConfig {
     std::vector<std::string> labels; // 标签白名单(空 = 不过滤)
 };
 
-// 多模态融合配置  [新增/T25-T26]
-// 默认 enabled=false => 完全不启用融合, 行为与 T22 一致(纯视觉)。
+// 多模态融合配置
+// 默认 enabled=false => 完全不启用融合, 行为与纯视觉一致。
 struct FusionConfig {
     bool enabled = false; // 是否启用多模态融合
     std::string level = "decision"; // 融合层级; 目前仅支持 decision(决策级)
@@ -158,7 +158,7 @@ struct FusionConfig {
     std::size_t buffer_capacity = 256; // 采样时间缓冲容量(满则丢最旧)
 };
 
-// 告警去重配置  [新增/T39]
+// 告警去重配置
 // 控制"同一目标在连续帧里重复告警"的抑制。默认 enabled=true —— 这是**行为修正**:
 // 告警判定按帧执行, 而"安全帽缺失"描述的是目标状态 => 一个站着不动的人会被
 // 连续帧反复告警(告警刷屏)。
@@ -285,14 +285,14 @@ struct AppConfig {
     PipelineConfig pipeline;
     DatabaseConfig database;
     GrpcConfig grpc;
-    CascadeConfig cascade; // [新增/T16-T19]
-    ReviewConfig review; // [新增/T20-T22]
-    std::vector<SensorConfig> sensors; // [新增/T23-T24] 非视频传感器列表
-    FusionConfig fusion; // [新增/T25-T26] 多模态决策级融合
-    AlertConfig alert; // [新增/T39] 告警去重
-    TrackingConfig tracking; // [新增/T40] 目标跟踪(track_id)
+    CascadeConfig cascade;
+    ReviewConfig review;
+    std::vector<SensorConfig> sensors; // 非视频传感器列表
+    FusionConfig fusion; // 多模态决策级融合
+    AlertConfig alert; // 告警去重
+    TrackingConfig tracking; // 目标跟踪(track_id)
     OccupancyConfig occupancy; // [新增] 占座判定(静态座位 zone + 规则状态机)
-    MetricsConfig metrics; // [新增/T43] 指标端点(Prometheus)
+    MetricsConfig metrics; // 指标端点(Prometheus)
 };
 
 // 模型推理配置

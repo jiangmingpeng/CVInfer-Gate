@@ -18,7 +18,7 @@
 class IVideoSource;
 class IDetector;
 
-// VideoPipeline (T5: 三阶段流水线)
+// VideoPipeline (三阶段流水线)
 // 解码线程(抽帧/限速) --frame_queue--> N 个推理 worker --result_queue--> sink 线程
 //
 // 与原版 main.cpp 的单消费者线程相比:
@@ -28,7 +28,7 @@ class IDetector;
 // 4) 通过 LifecycleCoordinator 感知关闭信号, 支持优雅退出
 // 5) 提供 stats() (decoded/dropped/processed/emitted) 便于观测
 // 6) worker 不再直接持 engines/后处理, 改依赖 IDetector 抽象:
-// Phase A 注入 YoloDetector; T16+ 可注入 CascadeEngine(同样实现 IDetector),
+// Phase A 注入 YoloDetector; 后续可注入 CascadeEngine(同样实现 IDetector),
 // 流水线无需改动。
 //
 // 注意: 多 worker 下 result 完成顺序不保证与帧序一致;
@@ -88,7 +88,7 @@ private:
     void sinkLoop();
 
     IVideoSource& source_;
-    IDetector& detector_; // 推理抽象(单模型=YoloDetector; T16+可=级联)
+    IDetector& detector_; // 推理抽象(单模型=YoloDetector; 也可=级联)
     Config config_;
     LifecycleCoordinator& lifecycle_;
     ResultCallback on_result_;
