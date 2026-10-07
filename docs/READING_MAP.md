@@ -1,6 +1,7 @@
 # CVInfer-Gate 阅读地图（文件 ↔ 架构层次 ↔ 运行周期）
 
 > **定位**：`docs/OVERVIEW.md` 讲"系统长什么样"；本文讲"**每个文件在什么时候、对谁、起什么作用**"。
+> **本文含两部分**：§1–§11 = 文件职责与运行周期；§12 = 编译依赖地图（并入原 `DEPENDENCY_MAP.md`）。
 > **口径**：文件规模/符号取自本机实测（`src/` **75 文件 / 9 605 行**；`tests/` 4 022 行）；每个文件的作用引自**源码文件头的 banner**（**代码与其余文档已删除 `[Tn]` 标号**：任务编号现在只保留在 `PROJECT_NOTES.md` 中），未读到的细节不臆造。
 > **本文不含代码改动**。编号术语（T / Phase A–D / § / R）见 `OVERVIEW.md` §0。
 
@@ -199,7 +200,7 @@
 | `fused`/`vision_confidence`/`sensor_confidence`/`distance_m` | `SensorFusion`（sink 最前置） | 画框、落库、告警 |
 | `track_id` | `TargetTracker`（sink，融合之后） | `AlertGate`（身份优先去重）、画框（`#id`）、落库 |
 
-> **设计原则（很重要）**：每次新增能力都是**加带默认值的字段** ⇒ 未启用的链路行为**逐字节不变**。⚠️ 但 `track_id` **没有进 proto** ⇒ gRPC 响应里看不到它。
+> **设计原则（很重要）**：每次新增能力都是**加带默认值的字段** ⇒ 未启用的链路行为**逐字节不变**。⚠但 `track_id` **没有进 proto** ⇒ gRPC 响应里看不到它。
 
 ### 3.3 协议契约（`proto/`）
 
@@ -355,7 +356,7 @@ cd build && ALERT_TOKEN=demotoken ./CVInfer-Gate --config config/config.ops.yaml
 curl -s http://127.0.0.1:9100/metrics | head -40         # 期望: 20 组 cvinfer_* 指标
 ./build/CVInfer-Gate --health-check=127.0.0.1:50051      # （服务在跑时）期望: [health-check] OK addr=… version=… uptime_ms=… <detail> ，退出码 0
 ```
-> ⚠️ `config.ops.yaml` 用的是 **file** 源，需要 `build/test.mp4`（构建时自动拷贝；缺源文件时该步跳过，自行放一个 mp4 即可）。
+> ⚠`config.ops.yaml` 用的是 **file** 源，需要 `build/test.mp4`（构建时自动拷贝；缺源文件时该步跳过，自行放一个 mp4 即可）。
 
 ---
 
@@ -415,3 +416,137 @@ curl -s http://127.0.0.1:9100/metrics | head -40         # 期望: 20 组 cvinfe
 | `README.md` | 门面：快速开始 + 验证状态表（实测数据在 §"验证状态"） |
 | `PROJECT_NOTES.md` | 全量开发史：每个任务的推导、实测数据、踩坑（本文的历史条目索引到它） |
 | `docs/READING_MAP.md`（本文） | 文件 ↔ 层次 ↔ 运行周期；**改代码前先看 §5/§8/§9/§4.4** |
+
+---
+
+## 12. 编译依赖地图（并入原 `DEPENDENCY_MAP.md`）
+
+> **定位**：§1–§11 讲"怎么跑"（运行周期）；本节讲"谁依赖谁"（编译期依赖）。
+> **数据来源**：脚本扫全仓 `#include "..."` / `#include <...>` 实测，非手绘。
+> **口径**：只统计项目内 `#include "..."`（165 条边，含 `tests/`）；`#include <...>` 只按顶层库名归并；生成代码（`inference.pb.h` 等）算"外部"，单独列；行数为 2025 年注释清理后的实测值。**已知事实：头文件层依赖图无环（实测 0 环）。**
+
+### 12.1 一张图
+
+```mermaid
+graph TD
+    MAIN["main.cpp<br/>（装配唯一入口）"]
+    subgraph L9["L9 服务/出口"]
+        SVC["service/"]
+        DB["database/"]
+        ALERT["alert/"]
+    end
+    subgraph L8["L8 规则/状态"]
+        TRK["tracking/"]
+        GATE["utils/AlertGate.h"]
+    end
+    subgraph L65["L6 能力 / L5 推理"]
+        REV["review/"]
+        FUS["fusion/"]
+        INF["inference/"]
+    end
+    subgraph L42["L4 调度 / L3 采集 / L2 地基"]
+        PIPE["pipeline/"]
+        VID["video/"]
+        SEN["sensor/"]
+        U["utils/"]
+    end
+    MAIN --> SVC & DB & ALERT & TRK & REV & FUS & INF & PIPE & VID & SEN & U
+    PIPE --> INF & VID & U & FUS & SEN
+    FUS --> SEN
+    SEN --> VID
+    TRK --> INF
+    DB --> INF & U
+    SVC --> INF & U
+    ALERT --> U
+    REV --> U
+    FUS --> U
+    SEN --> U
+    VID --> U
+    INF --> U
+```
+
+### 12.2 模块级依赖矩阵（实测）
+
+| 模块 | 文件数 | 行数 | 依赖的项目内模块 | 依赖的外部库 | 被谁依赖 |
+|---|---|---|---|---|---|
+| `src/main.cpp` | 1 | 792 | 全部 11 个模块 + `*.pb.h` | gRPC++, OpenCV, 标准库 | — |
+| `utils/` | 13 | 2 217 | 仅 `utils/` 自身 | yaml-cpp、OpenCV（`RoiUtils.h`）、POSIX、标准库 | 所有模块 |
+| `inference/` | 21 | 1 369 | `inference/` + `utils/` | OpenVINO Runtime、OpenCV | `pipeline`/`database`/`tracking`/`fusion`/`service`/`main`/单测 |
+| `video/` | 5 | 519 | `video/` | OpenCV、FFmpeg（RTSP） | `sensor/`、`pipeline`、`main` |
+| `sensor/` | 8 | 560 | `sensor/` + `video/` + `utils/` | OpenCV | `pipeline`、`fusion`、`main`、自检/单测 |
+| `pipeline/` | 4 | 519 | `pipeline/` + `utils/` + `inference/`(cpp) + `video/`(cpp) + `fusion/` + `sensor/` | OpenCV、标准库 | `main`、自检 |
+| `fusion/` | 2 | 206 | `fusion/` + `sensor/` + `DetectionResult.h` + `utils/` | 无直接第三方 | `pipeline`、自检/单测 |
+| `tracking/` | 1 | 262 | `DetectionResult.h` | OpenCV | `main`、单测 |
+| `review/` | 5 | 481 | `review/` + `utils/` + `review.grpc.pb.h` | gRPC++, protobuf, OpenCV | `main`、自检、`review_client` |
+| `database/` | 4 | 769 | `database/` + `utils/` + `DetectionResult.h` | MySQL Connector/C++ | `main` |
+| `alert/` | 2 | 336 | `alert/` + `utils/` | 无（HTTP 由 `utils/HttpClient`） | `main`、单测 |
+| `service/` | 7 | 625 | `service/` + `utils/` + `inference/` + `*.pb.h` | gRPC++, protobuf, OpenCV, POSIX socket | `main`、单测 |
+| `tests/` | 3 + 12 | 876 + 2 291 | 被测模块 + `*.pb.h` | gtest、gRPC++、OpenCV、OpenVINO | — |
+
+**外部库总清单**：OpenCV · OpenVINO Runtime · Protobuf · gRPC++（手动调 `protoc`/`grpc_cpp_plugin` 生成，不经 `find_package(gRPC)`）· yaml-cpp · MySQL Connector/C++ · FFmpeg（`libavformat/libavcodec/libavutil/libswscale`）· GTest（仅测试）· POSIX（socket/signal）。
+
+### 12.3 入度热点：改一个头文件，谁要重编
+
+| 头文件 | 被包含次数 | 性质 |
+|---|---|---|
+| `utils/ConfigParser.h` | 19 | 配置 POD（`AppConfig/ModelConfig/…`）—— 全项目最热，改字段名牵动所有模块 |
+| `utils/Logger.h` | 18 | 日志单例宏 `CVLOG_*` |
+| `inference/IModel.h` | 10 | 模型抽象 + 级联结果结构 |
+| `sensor/ISensorSource.h` | 8 | 传感器抽象 + `SensorSample` |
+| `inference/DetectionResult.h` | 7 | 跨模块数据契约（`database`/`tracking`/`fusion`/`pipeline` 都读它） |
+| `video/IVideoSource.h` | 5 | 视频源抽象 |
+| `utils/Metrics.h`、`utils/ThreadSafeQueue.h`、`review/IReviewService.h`、`fusion/SensorFusion.h`、`sensor/ReplaySensorSource.h`、`inference/CascadeEngine.h` | 4 | 次级热点 |
+
+> 改 `ConfigParser.h` 的字段 = 重编 19 个 TU + 跑 `test_config_parser`/`test_metrics`/`test_alert_notifier`/`test_sensor_fusion`/`phase_selftest`。
+> `CMakeLists.txt` 用 `file(GLOB_RECURSE "src/*.cpp")`，**新增/删除 `.cpp` 必须重跑 cmake**，否则不进构建。
+
+### 12.4 逐文件依赖明细（项目内）
+
+- **`utils/`（13）**：6 条内部边全部指向自己（唯一边是 `Logger.h`→`ConfigParser.h`）；`ThreadSafeQueue.h`/`AlertGate.h`/`RoiUtils.h` 是无依赖叶子头（`RoiUtils.h` 是唯一用 OpenCV 的 utils 头）⇒ 任何模块可安全依赖它。
+- **`inference/`（21）**：`*.h` 只暴露抽象（`IModel.h`/`DetectionResult.h`），具体实现（`YoloDetector`/`OpenVINOEngine`/`BehaviorClassifier`）只在 `.cpp` 或工厂里被引用。
+- **`video/`（5）+ `sensor/`（8）**：`IVideoSource.h` 无依赖；FFmpeg 藏在 `RtspVideoSource.cpp`；`RadarSensorSource.h`/`InfraredSensorSource.h` 复用 `ReplaySensorSource.h`。
+- **`pipeline/`（4）+ `fusion/`（2）+ `tracking/`（1）**：`VideoPipeline.cpp` 只依赖抽象（`IModel.h`/`IVideoSource.h`，不认识 OpenVINO/FFmpeg）；`TargetTracker.h` 是 header-only（262 行全在头里，改它必须重编所有包含者）。
+- **`review/`（5）+ `database/`（4）+ `alert/`（2）+ `service/`（7）**：`IReviewService.h`/`AuthGuard.h` 无依赖；`DBWriter.h`→`ConnectionPool.h`+`DetectionResult.h`+`ThreadSafeQueue.h`；`DetectionServiceImpl.h`→`inference.grpc.pb.h`+`IModel.h`+`AuthGuard.h`。
+- **`main.cpp`（27 条内部 include）**：唯一同时认识所有具体实现类的地方（`FileVideoSource`/`RtspVideoSource`/`ModelPoolManager`/`GrpcLlmReviewer`/`DBWriter`…）；其余模块只通过抽象头交互 —— 这就是"换实现不改模块"的机制来源。
+- **`tests/`**：`phase_selftest.cpp` 只用 OpenCV（不链 gRPC/MySQL/OpenVINO）；`test_*.cpp` 依赖被测头 + gtest。
+
+### 12.5 编译目标依赖（CMake 实测）
+
+| 目标 | 组成 | 链接 |
+|---|---|---|
+| `CVInfer-Gate` | `GLOB_RECURSE src/*.cpp` + proto 生成源 | OpenCV · OpenVINO Runtime · yaml-cpp · protobuf · gRPC++（`PkgConfig::GRPC`）· MySQL Connector/C++ · FFmpeg · pthread |
+| `cv_unit_tests` | `tests/unit/*.cpp`（12 个） | OpenCV · `openvino::runtime` · yaml-cpp · `${CV_GTEST_MAIN}` · pthread（`gtest_discover_tests` 注册） |
+| `phase_selftest` | `tests/phase_selftest.cpp` + 少量 `src/` | OpenCV（**不依赖 gRPC/MySQL/OpenVINO**） |
+| `grpc_client` / `review_client` | `tests/test_*.cpp` + 复用生成的 pb 源 | OpenCV · protobuf · gRPC++ · grpc++ grpc gpr pthread |
+| proto 生成 | `proto/*.proto` → `protoc --grpc_out/--cpp_out` + `grpc_cpp_plugin`（手写 `add_custom_command`，刻意绕过 `find_package(gRPC)`） | — |
+
+> **耦合提醒**：`phase_selftest` 能秒级跑、无外部服务，正因为它只链 OpenCV；一旦在 `phase_selftest.cpp` 里 include `database/`/`service/`，它就会需要 MySQL/gRPC 才能链上 —— 这条"不链重库"的约束别破坏。
+
+### 12.6 生成代码依赖（`.proto` 流向）
+
+```text
+proto/inference.proto ──(protoc/grpc_cpp_plugin)──> build/inference.pb.{h,cc} + inference.grpc.pb.{h,cc}
+        ├── src/service/DetectionServiceImpl.h   （服务端实现 gRPC 接口）
+        ├── src/main.cpp                          （Health RPC 存根，--health-check）
+        ├── tests/test_grpc_client.cpp
+        └── 运行时对手：web_gateway/（Python grpcio 调 50051）
+
+proto/review.proto ────(同一套生成逻辑)────────> build/review.pb.{h,cc} + review.grpc.pb.{h,cc}
+        ├── src/review/GrpcLlmReviewer.h          （客户端）
+        ├── tests/test_review_client.cpp
+        └── 运行时对手：vlm_review/（Python 服务端，默认 50052）
+```
+
+> **改 proto 的影响面**：`proto/*.proto` → 重新生成 → 同时影响 `main.cpp`、`service/`、`review/`、两个 test 客户端、以及 Python 侧（`web_gateway/`、`vlm_review/`）。**proto 是本项目里最跨语言的接口**，改字段名要两边一起改。
+
+### 12.7 依赖规则（实测成立，改代码时别破坏）
+
+1. **`utils/` 谁都不依赖**（除自身）→ 必须永远是最底层。查违规：`grep -rn '#include "' src/utils/ | grep -v 'utils/'`
+2. **`inference/` 只依赖 `utils/`**；`video/`、`tracking/`、`fusion/` **绝不依赖 `pipeline/`**（单向）。
+3. **`pipeline/` 不认识"出口"**：不 include `database/`、`alert/`、`service/` —— 落库/告警/gRPC 全由 `main.cpp` 通过**回调**注入（`VideoPipeline::start(..., sink)`）。
+4. **抽象头是接缝**：`video/IVideoSource.h`、`sensor/ISensorSource.h`、`inference/IModel.h`、`review/IReviewService.h` —— 上层 + 测试替身只依赖这 4 个，换实现不改上层。
+5. **只有 `main.cpp` 认识具体实现类**。新增子系统时，把具体类型的使用限制在 `main.cpp` 的装配块内。
+6. **头文件层无环（实测 0 环）**；新增依赖后出现环，用前置声明 + 移到 `.cpp` 打破。
+7. **`tracking/TargetTracker.h` 是 header-only**：任何改动都会重编所有包含它的 TU。
+
+> 改动影响面（编译 vs 运行）另见 §8「变更影响表」。

@@ -96,7 +96,7 @@ REVIEW_AUTH_TOKEN=s3cr3t ./build/review_client 127.0.0.1:50052      # A. 环境�
 # B. 写进配置 review.auth_token: "${VLM_TOKEN:-}" 再 export VLM_TOKEN=s3cr3t
 ```
 
-⚠️ 带错 token 时连探活(`Health`)都会失败 —— 这是**刻意与客户端对称**的
+⚠带错 token 时连探活(`Health`)都会失败 —— 这是**刻意与客户端对称**的
 (客户端每个 RPC 都带 token)，代价是将来新增 RPC 也不会漏校验。
 
 接入流水线：把 `config.yaml` 的 `review.endpoint` 设为 `127.0.0.1:50052`，

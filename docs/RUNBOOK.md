@@ -1,7 +1,7 @@
 # CVInfer-Gate 全流程 Runbook
 
 > **一条命令链跑通完整链路**：file 源 → 推理 → Phase B 级联 → 真 VLM 复核 → Phase D 融合 → 跟踪去重 → **占座规则层** → 落库 / 告警外发 → 可观测 → 优雅退出。
-> 标注：🧰 所需环境/工具　▶ 命令　👀 启动后应看到的效果。
+> 标注：[所需] 所需环境/工具　[命令] 命令　[效果] 启动后应看到的效果。
 > 统一基线：OpenVINO **2025.4.0**（CI 与 Docker 镜像均以此版本复现；本机/更新的 2026.x 亦验证可用）。实测环境：g++ 15.2 · CMake 4.2.3 · OpenCV 4.10 · gRPC++ 1.51 · MySQL Connector 1.1.12 · Python 3.14。
 
 ---
@@ -25,7 +25,7 @@
 
 ## 1. 构建
 
-🧰 上表的 C++ 依赖
+[所需] 上表的 C++ 依赖
 
 ```bash
 cd /home/jmp/CVInfer-Gate
@@ -33,7 +33,7 @@ mkdir -p build && cd build
 cmake .. && make -j$(nproc)
 ```
 
-👀 产出（`build/` 下）：`CVInfer-Gate`、`grpc_client`、`review_client`、`phase_selftest`、`cv_unit_tests`。
+[效果] 产出（`build/` 下）：`CVInfer-Gate`、`grpc_client`、`review_client`、`phase_selftest`、`cv_unit_tests`。
 冒烟自检（零外部依赖，秒级）：
 
 ```bash
@@ -45,7 +45,7 @@ ctest --output-on-failure   # 期望 180/180
 
 ## 2. Python 环境
 
-🧰 Python 3 + venv（本机 PEP 668，`pip install` 直装会报错，必须 venv）
+[所需] Python 3 + venv（本机 PEP 668，`pip install` 直装会报错，必须 venv）
 
 ```bash
 cd /home/jmp/CVInfer-Gate
@@ -65,7 +65,7 @@ python3 -m grpc_tools.protoc -I proto \
 
 ## 3. 配置
 
-🧰 无。以 `config/config.test.yaml` 为基线（file 源 + Phase B/C/D 全开），按需覆盖：
+[所需] 无。以 `config/config.test.yaml` 为基线（file 源 + Phase B/C/D 全开），按需覆盖：
 
 | 段 | 键 | 全流程取值 | 说明 |
 |---|---|---|---|
@@ -77,9 +77,9 @@ python3 -m grpc_tools.protoc -I proto \
 | `fusion` | `enabled` | `true` | Phase D（stub 雷达，无需硬件） |
 | `alert.push` | `enabled` | `true`（可选） | 告警 webhook 外发 |
 | `metrics` | `enabled` | `true`（可选） | `/metrics` 端点 |
-| `occupancy` | `enabled` | `true` | **占座判定（规则层）**；座位写法 `seats[].rect: [x,y,w,h]` 或 `polygon: [[x,y],…]`。⚠️ **zone 别画到“人坐的地方”**：命中 C2（人在使用）就永远不判占座；先用临时多座位网格探针看物品/人到底落在哪 |
+| `occupancy` | `enabled` | `true` | **占座判定（规则层）**；座位写法 `seats[].rect: [x,y,w,h]` 或 `polygon: [[x,y],…]`。⚠ **zone 别画到“人坐的地方”**：命中 C2（人在使用）就永远不判占座；先用临时多座位网格探针看物品/人到底落在哪 |
 
-⚠️ 改**源码**的 `config/*.yaml`，别改 `build/config/`（构建时会被源码覆盖）。
+⚠ 改**源码**的 `config/*.yaml`，别改 `build/config/`（构建时会被源码覆盖）。
 
 ---
 
@@ -87,7 +87,7 @@ python3 -m grpc_tools.protoc -I proto \
 
 ### 4.1 MySQL（落库）
 
-🧰 MySQL Server（本机装或 docker）
+[所需] MySQL Server（本机装或 docker）
 
 ```bash
 sudo service mysql start
@@ -95,11 +95,11 @@ sudo mysql < /home/jmp/CVInfer-Gate/scripts/schema.sql     # 建库 cv_infer + �
 export DB_PASSWORD=<你的 root 口令>                        # config 里是 "${DB_PASSWORD:-…}"
 ```
 
-👀 起主程序后 `cvinfer_db_healthy 1`，且不再产生 `build/db_fallback.csv`。
+[效果] 起主程序后 `cvinfer_db_healthy 1`，且不再产生 `build/db_fallback.csv`。
 
 ### 4.2 复核服务（真 VLM，Phase C）
 
-🧰 vLLM（或任意 OpenAI 兼容端点）+ venv
+[所需] vLLM（或任意 OpenAI 兼容端点）+ venv
 
 ```bash
 # (1) 上游 VLM
@@ -110,12 +110,12 @@ python3 -m vlm_review.server --backend openai \
     --base-url http://127.0.0.1:8000/v1 --model Qwen/Qwen2.5-VL-7B-Instruct --port 50052
 ```
 
-👀 终端打印监听 `0.0.0.0:50052`。
+[效果] 终端打印监听 `0.0.0.0:50052`。
 鉴权（可选，两端同一个 token）：服务端 `VLM_AUTH_TOKEN=s3cr3t python3 -m vlm_review.server …`，网关侧 `export VLM_TOKEN=s3cr3t`，并让 `review.auth_token: "${VLM_TOKEN:-}"`。
 
 ### 4.3 告警伪下游（可选）
 
-🧰 仅 Python 标准库
+[所需] 仅 Python 标准库
 
 ```bash
 python3 /home/jmp/CVInfer-Gate/scripts/alert_receiver.py --port 8899 --token demotoken
@@ -126,7 +126,7 @@ python3 /home/jmp/CVInfer-Gate/scripts/alert_receiver.py --port 8899 --token dem
 
 ## 5. 启动主程序
 
-🧰 上面依赖已就绪（MySQL 在跑、复核服务在跑）
+[所需] 上面依赖已就绪（MySQL 在跑、复核服务在跑）
 
 ```bash
 cd /home/jmp/CVInfer-Gate/build
@@ -135,7 +135,7 @@ ALERT_TOKEN=demotoken ./CVInfer-Gate --config /home/jmp/CVInfer-Gate/config/conf
 
 > 配置用**绝对路径**，避免被 CMake `POST_BUILD` 拷进 `build/config/` 的那份绕晕。
 
-👀 **启动期逐行核对（实测原文）**：
+[效果] **启动期逐行核对（实测原文）**：
 
 ```
 [ConfigParser] 系统配置加载成功: .../config/config.test.yaml
@@ -156,13 +156,13 @@ gRPC 服务已启动, 监听: 0.0.0.0:50051
 ```
 
 - 复核连通时**不**出现 `[GrpcLlmReviewer] 复核服务暂不可用(...)`；出现即没连上 50052。
-- ⚠️ `decoded` 远大于 `processed` 属**正常**（file 源 30fps、单帧推理 ~125ms，队列 `drop_oldest` 丢帧不积压）。想让每帧都处理，用 `target_fps: 10`。
+- ⚠ `decoded` 远大于 `processed` 属**正常**（file 源 30fps、单帧推理 ~125ms，队列 `drop_oldest` 丢帧不积压）。想让每帧都处理，用 `target_fps: 10`。
 
 ---
 
 ## 6. 启动后的效果 / 对外面
 
-| 看什么 | ▶ 命令 | 👀 期望 |
+| 看什么 | [命令] 命令 | [效果] 期望 |
 |---|---|---|
 | 指标 | `curl -s http://127.0.0.1:9100/metrics \| head -40` | 20 组 `cvinfer_*` |
 | 健康探针 | `./CVInfer-Gate --config <cfg> --health-check` | `[health-check] OK addr=127.0.0.1:50051 version=1.0.0 … detector=…`，退出码 `0` |
@@ -177,7 +177,7 @@ gRPC 服务已启动, 监听: 0.0.0.0:50051
 | **带框结果视频** | `build/output.avi`（C++ 写出的 MJPEG）—— 可**直接在网页看**：`localhost:8080` → 「③ 流水线结果」；后端按需用 ffmpeg 转 H.264 mp4（100MB 约 6s）并缓存，支持拖进度条；也可点「下载原始 AVI」本地播 | 🟢 最直观 |
 | **占座/告警事件** | 控制台实时输出 + `build/logs/cvinfer.log`；网页「占座/告警事件」把它拉成时间线（`GET /api/events`），并把座位/物品/已持续时长/投票拆成结构化字段 | 🟢 可直接读 |
 | **事件在画面哪里** | 网页「画面示意 · 座位区」：底图 = 结果视频首帧，蓝框 = 配置里的 `occupancy.seats`（`GET /api/scene` + `/api/scene-frame`）；点事件行即高亮对应座位区（A-12 到底是画面哪一块，一眼就知道） | 🟢 一眼定位 |
-| **单张图片实时推理** | 网页上半部分（`POST /api/detect`，走 gRPC）—— 上传即出带框图 + 列表。⚠️ 它和视频流水线是**两条独立链路**（这条不读 `output.avi`） | 🟢 立即可见 |
+| **单张图片实时推理** | 网页上半部分（`POST /api/detect`，走 gRPC）—— 上传即出带框图 + 列表。⚠ 它和视频流水线是**两条独立链路**（这条不读 `output.avi`） | 🟢 立即可见 |
 | **结构化检测记录** | MySQL `cv_infer.detections` / `alerts`（需写 SQL）；库不可用时降级到 `build/db_fallback.csv` | 🟡 要查库 |
 | 指标 / 探针 | `/metrics`、`--health-check` | 🟡 给监控/编排用，不是给人看结果的 |
 
@@ -208,7 +208,7 @@ cvinfer_db_healthy 1                cvinfer_alert_push_sent_total 3
 pkill -TERM -f './CVInfer-Gate --config'
 ```
 
-👀 关闭时逐项结算（实测原文）：
+[效果] 关闭时逐项结算（实测原文）：
 
 ```
 收到信号 15, 开始优雅关闭...

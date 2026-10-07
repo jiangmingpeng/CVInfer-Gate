@@ -16,7 +16,7 @@
 **它和“跑个 YOLO demo”的区别**：背压、降级、复核、去重、落库、指标、探针、容器化都是现成的 ——
 少写的，正是“从能跑”到“能上”之间那几百行胶水代码。
 
-> 🎯 **一句话**：**clone 就能跑**（模型权重已入库）、**每项能力都能关**（关了就是纯视觉链路，对存量配置零影响）、**每个数字都有实测出处**。
+> **一句话**：**clone 就能跑**（模型权重已入库）、**每项能力都能关**（关了就是纯视觉链路，对存量配置零影响）、**每个数字都有实测出处**。
 
 ## 它怎么工作（以“图书馆占座”为例）
 
@@ -60,14 +60,14 @@
 [视频源 File / RTSP]
       │ FFmpeg 解码 · 抽帧 · 限速
       ▼
-[有界帧队列 drop_oldest] ──▶ [worker × N]  OpenVINO 推理 + NMS
+[有界帧队列 drop_oldest] ── [worker × N]  OpenVINO 推理 + NMS
                                       │
                                       ▼
 [sink 单线程]  融合 → 跟踪 → 占座 → 告警去重
-      ├──▶ MySQL（检测/告警落库；连不上降级 CSV）
-      ├──▶ output.avi（带框结果视频）
-      ├──▶ gRPC :50051 ◀── Flask BFF :8080 ◀── Web 浏览器
-      └──▶ webhook 告警外发 / /metrics 指标（Prometheus）
+      ├──MySQL（检测/告警落库；连不上降级 CSV）
+      ├──output.avi（带框结果视频）
+      ├──gRPC :50051 ←── Flask BFF :8080 ←── Web 浏览器
+      └──webhook 告警外发 / /metrics 指标（Prometheus）
 ```
 
 ## 技术栈
@@ -296,8 +296,8 @@ kill -TERM <pid>
 | Phase A~D 四层抽象 | 🟢 可信 | `phase_selftest` 52/52，零外部依赖、秒级 |
 | 单元测试 / CI | 🟢 **新增** | `ctest` = `cv_unit_tests`(gtest 179 例) + `phase_selftest`，共 **180 项全绿**；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过）。覆盖清单见上文折叠块 |
 | MySQL 落库 | 🟢 可信 | 表已建，程序正常写入（**不再产生 `db_fallback.csv`**）；**库不可用不再退出**：降级写 CSV + 后台自动重连并回传 |
-| Phase B 级联 | 🟡 能跑通 / 精度未回归 | 机制可用（`role=classifier` 注册样例见 `config/model_config.yaml` 注释块，与占座业务无关）；占座链路用不到它（`cascade.enabled=false`）。⚠️ **未做精度回归**（改 `accept_label`/`accept_conf` 无人能自动报警）|
-| Phase C 异步复核 | 🟢 真 VLM 已跑通 / 质量未评测 | 服务端已实现（`vlm_review/`：OpenAI 兼容 / 本地 transformers / mock 三后端 + 鉴权 + Health 探活）；已用 vLLM 起 `Qwen2-VL-2B-Instruct-AWQ` 端到端跑通（未留存日志）。⚠️ **结论准确率未做定量评测** |
+| Phase B 级联 | 🟡 能跑通 / 精度未回归 | 机制可用（`role=classifier` 注册样例见 `config/model_config.yaml` 注释块，与占座业务无关）；占座链路用不到它（`cascade.enabled=false`）。⚠**未做精度回归**（改 `accept_label`/`accept_conf` 无人能自动报警）|
+| Phase C 异步复核 | 🟢 真 VLM 已跑通 / 质量未评测 | 服务端已实现（`vlm_review/`：OpenAI 兼容 / 本地 transformers / mock 三后端 + 鉴权 + Health 探活）；已用 vLLM 起 `Qwen2-VL-2B-Instruct-AWQ` 端到端跑通（未留存日志）。⚠**结论准确率未做定量评测** |
 | Phase D 多模态融合 | 🟢 可信（stub 雷达）| 端到端实测 `matched=66`；带框传感器见 `config/config.test.yaml` 注释 |
 | `web_gateway` (Flask BFF) | 🟢 本地已联调 | **一键启动** `bash web_gateway/run.sh`（自动建 `.venv` + 装依赖 + 生成桩文件）。两页合一：**单图检测**（拖拽上传 / 无刷新结果 / 点列表行高亮框 / 下载结果图 / 在线徽标）+ **结果回看**（在线播放 `output.avi`（按需转码、支持 Range 拖动）+ 占座/告警事件时间线）|
 | RTSP 接入 | 🟢 已补强 | 连通已验证；**断流指数退避重连 + `close()` 可中断**（`interrupt_callback` 直接打断 `av_read_frame`），重连对上层透明 |
@@ -357,7 +357,7 @@ kill -TERM <pid>
   GRPC_AUTH_TOKEN=wrong  ./build/grpc_client 127.0.0.1:50051      # 期望同上(错 token 与没带等价)
   GRPC_AUTH_TOKEN=s3cr3t ./build/grpc_client 127.0.0.1:50051      # 期望「检测成功」+ 退出码 0
   ```
-  实测：前两条 `RPC 调用失败: 16 - 缺少或错误的 authorization metadata`、退出码 5 ✓；第三条 `检测成功 / 检测到目标数量: 1 (bed 0.62)`、退出码 0 ✓；服务端侧正好 2 条 `[鉴权] 拒绝 ipv4:127.0.0.1:xxxxx 的 Detect` ✓。**不设 token 重启后**：`auth=off`、同一客户端调用照旧成功、0 条拒绝 ⇒ 零破坏 ✓。
+  实测：前两条 `RPC 调用失败: 16 - 缺少或错误的 authorization metadata`、退出码 5 ；第三条 `检测成功 / 检测到目标数量: 1 (bed 0.62)`、退出码 0 ；服务端侧正好 2 条 `[鉴权] 拒绝 ipv4:127.0.0.1:xxxxx 的 Detect` 。**不设 token 重启后**：`auth=off`、同一客户端调用照旧成功、0 条拒绝 ⇒ 零破坏 。
 - 已知边界：①**不是** gRPC 拦截器，而是“每个方法入口一行”—— 结构上不可能出现 handler 类型不匹配（C++ 同步服务直接 `return Status`），代价是**新增 RPC 要手动加这一行**；②明文共享密钥（无 TLS）⇒ 只解决“谁都能调”，不解决窃听/重放，公网必须上 TLS 或反向代理；③ token 建议纯 ASCII 且不含空格（其它语言的客户端可能发不出非 ASCII metadata）。
 
 **[占座] 新增：占座判定（卡在「检测」与「VLM 复核」之间的规则层）**：
