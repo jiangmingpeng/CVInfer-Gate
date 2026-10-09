@@ -142,10 +142,11 @@
 | `service/MetricsServer.h/.cpp` | 63 / 195 | **指标端点**：极简 HTTP/1.1，只服务 `/metrics` 与 `/healthz`；`bind`+`port` 可配（默认 `0.0.0.0:9100`，无鉴权） | `main.cpp` |
 | `main.cpp` | 980 | **唯一的装配中心 + 生命周期 + 业务规则中枢**：解析参数（含 **`--health-check` 探针就实现在这里**，不是单独文件）→ 按固定顺序 init 各子系统 → sink 回调内的处理顺序（§4.2）→ 按固定顺序停机 + 打印各阶段统计 | 进程入口 |
 
-### 2.8 外围（不在 `src/`，但决定"能不能跑/怎么跑"）
+### 2.8 外围与离线工具（决定"能不能跑/怎么跑"）
 
 | 文件/目录 | 行 | 作用 |
 |---|---|---|
+| `src/calibration/SeatProbe.h/.cpp` | 111 / 233 | **座位标定探针（离线, 一次性命令）**：把 `item_labels` 目标的**底边中点**（与占座判定 C1 同一口径）落进网格 → 物品落区热力 → 合并热格给出**建议 rect**，让商家不用手抠像素坐标；纯逻辑（输入 = 画面尺寸 + 逐帧检测结果）⇒ 可确定性单测。上游：`main.cpp --seat-probe`；web 端 `GET /api/seat-probe` 只是把它画成热力图 |
 | `proto/inference.proto` | 47 | 主服务契约：`Detect`、`Health`（`DetectionService`） |
 | `proto/review.proto` | 50 | 复核服务契约：`Review`、`Health`（`ReviewService`） |
 | `config/config.example.yaml` | 201 | **唯一模板**（不含口令，`${VAR}` 占位）：11 段（**含 `cascade:` / `occupancy:`**）；注意其 `video.source_type` 默认是 **rtsp** |
@@ -160,9 +161,9 @@
 | `scripts/alert_receiver.py` | 131 | **伪下游**：收 webhook 并逐条打印（验证告警外发） |
 | `scripts/mock_review_server.py` | 176 | 规则版复核服务端（跑通 Phase C 不花钱） |
 | `scripts/{bench,stack_probe,thread_probe}.sh` | 80/73/78 | 性能基准 / 栈探测 / 线程探测（性能工程遗留工具） |
-| `web_gateway/`（`app.py` + `templates/index.html` + `static/{style.css,app.js}` + 生成桩 `*_pb2*.py`） | —（app.py + 2 静态资源 + 模板） | Flask BFF：HTTP ⇄ gRPC（含 token 透传）。前端为独立模板/静态资源：页面走 `POST /api/detect`（JSON：带框图 dataURL + 检测列表）、`GET /api/status`（TCP 探活徽标）；旧 `POST /detect`（带框 JPEG）保留兼容 |
+| `web_gateway/`（`app.py` + `seats_yaml.py` + `test_seats_yaml.py` + `templates/index.html` + `static/{style.css,app.js}` + 生成桩 `*_pb2*.py`） | —（app.py + 文本层 + 自测 + 2 静态资源 + 模板） | Flask BFF：HTTP ⇄ gRPC（含 token 透传）。前端为独立模板/静态资源：页面走 `POST /api/detect`（JSON：带框图 dataURL + 检测列表）、`GET /api/status`（TCP 探活徽标）、`GET /api/seat-probe`（标定热力图 + 建议 zone + 每格 `cells`）、`GET/POST /api/seats`（读/写/校验座位 zone，`dry_run` 只校验 —— 也是 P2「标定即时反馈」的入口）；旧 `POST /detect`（带框 JPEG）保留兼容。**座位配置的文本层读写（只换 `occupancy.seats` 这一段）单独在 `seats_yaml.py`**，零第三方依赖 ⇒ 有 `test_seats_yaml.py` 挂在 CI；`static/app.js` 的**即时反馈**（拖动中把 zone 压到的物品/人落点摆出来 + 服务端 `dry_run` 判决原文点红/描红）口径全部来自这两个来源，前端不重写任何判定 |
 | `vlm_review/*.py` | 1 070 | Phase C 服务端（OpenAI 兼容 / 本地 transformers / mock 三后端 + 鉴权拦截器 + 自测） |
-| `tests/unit/*.cpp`（13 个） | 3 147 | 单测（见 §6） |
+| `tests/unit/*.cpp`（14 个） | 3 444 | 单测（见 §6） |
 | `tests/phase_selftest.cpp` | 584 | 零依赖自检（**52 项**，秒级；ctest 记得它 1 项）|
 | `tests/test_grpc_client.cpp` / `test_review_client.cpp` | 119/173 | 真连服务的联调客户端 |
 | `.github/workflows/ci.yml` | 105 | 编译 + `ctest`（纯文档改动跳过） |
@@ -319,7 +320,7 @@ video/Rtsp·File  ──►  VideoPipeline::decodeLoop   （frame_interval/targe
 
 ---
 
-## 6. 测试 ↔ 被测文件（`tests/unit/` 13 文件 / 179 例 + 3 个端到端工具）
+## 6. 测试 ↔ 被测文件（`tests/unit/` 14 文件 / 194 例 + 3 个端到端工具 + 2 个零依赖 Python 自测 + 1 个前端静态自检）
 
 | 测试文件 | 例 | 被测文件 |
 |---|---|---|
@@ -336,8 +337,12 @@ video/Rtsp·File  ──►  VideoPipeline::decodeLoop   （frame_interval/targe
 | `test_metrics.cpp` | 97 | `utils/Metrics` |
 | `test_logger_rotation.cpp` | 123 | `utils/Logger`（轮转） |
 | `test_metrics_server.cpp` | 93 | `service/MetricsServer`（HTTP 真连） |
+| `test_seat_probe.cpp` | 220 | `calibration/SeatProbe`（底边中点归属口径 / 网格热力 / 去噪阈值 / 建议 zone 合并） |
 | `phase_selftest.cpp` | **52 项**（ctest 记 1 项） | NMS/融合/配置/队列/ROI 等 "零依赖自检"（Phase A~D 行为全演一遍）|
 | `test_grpc_client.cpp` / `test_review_client.cpp` | — | 真连 50051 / 50052（需服务在跑） |
+| `web_gateway/test_seats_yaml.py` / `vlm_review/test_auth_interceptor.py` | 零依赖 Python 自测（各 1 条 CI step，**不进 ctest**） | 座位配置文本层 `web_gateway/seats_yaml.py` / 鉴权拦截器 `vlm_review/` |
+| `scripts/jscheck.py`（1 条 CI step） | 前端静态自检，**两遍**：①括号/引号/注释是否配平；②有没有"用了但没声明"的标识符（手柄名拼错就是这么暴露的：`edHint` vs `editHint`）。**不解析语法**，环境无 node 时的兜底 | `web_gateway/static/app.js` |
+| `scripts/selfcheck_seats_writeback.py`（手工跑，需 .venv + 构建产物） | 座位回写端到端：只换 `seats` 一段 / 口径由 C++ 判 / 写回能被加载 / **[P2] 干跑零副作用 + 拒绝理由点名到座位** / **[P3] 日志自证（喂一段「视频源打开失败」的日志 ⇒ 必须认出「一帧都没处理」，且每条结论都能指回原文）** | `web_gateway/app.py`、`seats_yaml.py`、C++ `--check-config` |
 
 ---
 
@@ -367,7 +372,8 @@ curl -s http://127.0.0.1:9100/metrics | head -40         # 期望: 20 组 cvinfe
 | 换/加检测模型 | `config/model_config.yaml` | —（`role` 决定装配） | 跑 `phase_selftest` + `ctest` |
 | 改 NMS/阈值 | `inference/YoloPostProcessor.*` | 配置默认值 | `test_yolo_post_processor.cpp` |
 | 加一条**告警规则**（如"停留>30s"） | `main.cpp` 的 sink 回调（规则判断处） | `utils/AlertGate`（去重键）、`config` 增加阈值段、`ConfigParser` 默认值+校验 | 新单测；`PROJECT_NOTES` 记一笔 |
-| 加/改**座位 zone** 或占座判据 | `config` 的 `occupancy.seats` + 阈值 | `src/occupancy/SeatOccupancyAnalyzer.*`（判据 C1~C7） | `test_seat_occupancy.cpp`；**zone 别画到"人坐的地方"**（否则永远命中 C2、永不判占座） |
+| 加/改**座位 zone** 或占座判据 | `config` 的 `occupancy.seats` + 阈值 | `src/occupancy/SeatOccupancyAnalyzer.*`（判据 C1~C7） | `test_seat_occupancy.cpp`；**zone 别画到"人坐的地方"**（否则永远命中 C2、永不判占座 —— 网页标定时 P2 会按探针实测的 `person_hits > item_hits` 把这一区的人和物品落点摆出来给你看）。⚠ 提示里的次数是探针跑**整段视频**抽样累出来的，而底图只是**首帧**：首帧看不到人不等于视频里没人；若整段视频一个物品标签都没抓到，提示会改口让你先查模型/`occupancy.item_labels`，而不是怪 zone |
+| 改**前端页面**（`static/{app.js,style.css}`、`templates/index.html`） | —（纯前端；只与 `/api/*` 的 JSON 字段/文案有关） | `web_gateway/app.py` 的路由返回（改了字段名/文案，前端就悄悄哑掉） | `python3 scripts/jscheck.py web_gateway/static/app.js`（配平 + "用了但没声明"的名字）；**动到 `/api/seats` 的返回或拒绝理由** 还要跑 `scripts/selfcheck_seats_writeback.py`（第 8 组断言前端依赖的"点名到座位 + 干跑零副作用 + 手柄 id 对得上"契约）；**动到 `/api/events` / `/api/seat-probe` 的返回** 跑同脚本的**第 9 组**（P3 自证：`diagnosis` 每条都要能指回日志原文 + 探针回 `item_labels` + 前端真的读了 `resDiag`/`d.item_labels`/`d.config`） |
 | 改**告警出口**（钉钉/企业微信） | `alert/AlertNotifier.*`（`Transport` 或载荷） | `README` 载荷契约、`scripts/alert_receiver.py` | `test_alert_notifier.cpp` |
 | 改**落库字段/表** | `database/DBWriter.cpp`、`scripts/schema.sql`+`docker/init_db.sql` | `utils/ConnectionPool`（批量 SQL） | 两个 SQL 要同步改 |
 | 加**指标** | `utils/Metrics.h`（注册处+名字） | 采集点所在文件、`docker/prometheus.example.yml`、README 指标清单 | 名字前缀统一 `cvinfer_` |

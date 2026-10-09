@@ -378,3 +378,126 @@ a.btn-ghost { text-decoration: none; display: inline-block; }
 }
 .seat-poly.occupied.focus + .seat-label { fill: #ffe6b0; }
 
+/* ---- ④ 座位标定探针（上传视频 → 在线热力图） ---- */
+.probe-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.probe-row input[type="file"] {
+  flex: 1; min-width: 220px; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+  font-size: 12.5px;
+}
+.probe-btn { flex: 0 0 auto; min-width: 130px; }
+.probe-out { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+.probe-img-wrap {
+  flex: 1 1 320px; min-width: 260px; border: 1px solid var(--line);
+  border-radius: 10px; overflow: hidden; background: var(--panel-2);
+}
+.probe-img-wrap img { display: block; width: 100%; height: auto; }
+.probe-meta { flex: 1 1 260px; min-width: 240px; font-size: 12.5px; }
+.probe-suggest { margin-bottom: 10px; line-height: 1.7; }
+.probe-suggest b { color: #7ee787; }
+.probe-suggest.warn { color: #ffb4ae; }
+.probe-labels { line-height: 1.9; margin-bottom: 8px; }
+.probe-chip {
+  display: inline-block; margin: 0 6px 4px 0; padding: 1px 8px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); font-size: 11.5px;
+}
+
+/* ---------- ④ 座位标定：在底图上点选 zone → 回写 occupancy.seats（P1） ---------- */
+.edit-wrap { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.edit-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.edit-tools { display: inline-flex; gap: 6px; }
+.edit-tools .btn-ghost.on {
+  border-color: var(--accent); color: #cfe6ff; background: rgba(59, 130, 246, .16);
+}
+.edit-heat { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+/* 画布 = 块级 stage（宽度由容器决定, 不许出现"inline-block 循环定宽"）
+   + 底图 100% + 绝对定位 SVG —— 与 .scene-stage 同一套写法。
+   宽度上限由 JS 按**视频纵横比 + 视口高度**算(edFit): 竖屏视频别铺满整页, 
+   不然一张桌子要滚三屏才看得完。 */
+.edit-stage {
+  position: relative; line-height: 0; margin: 0 auto 10px; max-width: 560px;
+}
+.edit-stage img {
+  width: 100%; display: block; border-radius: 10px; background: #000;
+}
+/* 图层直写视频像素坐标（viewBox = 视频尺寸），所以这里只需铺满底图 */
+.edit-svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+.edit-poly { fill: rgba(56, 189, 248, .16); stroke: #38bdf8; }
+.edit-poly.sel { fill: rgba(250, 204, 21, .20); stroke: #facc15; }
+.edit-label {
+  fill: var(--text); font-weight: 600; pointer-events: none;
+  paint-order: stroke; stroke: rgba(0, 0, 0, .7); stroke-width: 3px;
+}
+.edit-handle { fill: #facc15; stroke: #1b1f24; cursor: pointer; }
+.edit-handle.first { fill: #7ee787; }
+.edit-draft {
+  fill: rgba(250, 204, 21, .12); stroke: #facc15; stroke-dasharray: 6 4;
+  pointer-events: none;
+}
+.edit-seats { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.edit-seat {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2);
+  font-size: 12px; cursor: pointer;
+}
+.edit-seat.sel { border-color: #facc15; background: rgba(250, 204, 21, .10); }
+.edit-seat b { color: var(--muted); font-weight: 500; }
+/* P2 即时反馈：两行常驻状态, 颜色本身就在说"这是谁下的结论"——
+   红/绿 = 服务端 dry_run（C++ 口径）的判定; 橙 = 探针**实测数据**摆出来给你看（提示, 不是判定）。 */
+.edit-live { margin: 6px 0 2px; display: flex; flex-direction: column; gap: 3px; }
+.live-row { font-size: 12px; line-height: 1.5; }
+.live-row:empty { display: none; }
+.live-row.ok { color: #7ee787; }
+.live-row.bad { color: #ffb4ae; }
+.live-row.tip { color: #f0c674; }
+.live-row.hint { color: var(--muted); }
+/* 被服务端点名的座位：画面里描红, 一眼看到是哪一个（仅呈现, 不改任何数值） */
+.edit-poly.bad { fill: rgba(248, 81, 73, .18); stroke: #f85149; }
+.edit-seat.bad { border-color: #f85149; background: rgba(248, 81, 73, .10); }
+.edit-name {
+  width: 120px; padding: 2px 4px; color: var(--text); font-size: 12.5px;
+  background: transparent; border: 1px solid transparent; border-bottom-color: var(--line);
+}
+.edit-name:focus { outline: none; border-bottom-color: var(--accent); }
+/* 校验失败会一次列多条, 换行要保住 */
+#editBanner { white-space: pre-line; }
+.edit-preview { margin-top: 10px; }
+.edit-preview pre {
+  margin: 6px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: #b7f0c4; font-family: var(--mono);
+  font-size: 11.5px; overflow: auto;
+}
+
+
+/* ---------- 「为什么一条告警都没有」自证面板（每条结论都附日志原文） ---------- */
+.diag {
+  margin: 2px 0 14px; padding: 12px 14px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--line); font-size: 12.5px;
+}
+.diag-head { font-weight: 600; margin-bottom: 6px; }
+.diag-head .muted { font-weight: 400; font-size: 11.5px; margin-left: 4px; }
+.diag-cfg {
+  font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  font-weight: 400; margin-top: 5px; word-break: break-all; line-height: 1.5;
+}
+.diag-cfg code { color: var(--text); }
+.diag-row {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 7px 0; border-top: 1px dashed var(--line);
+}
+.diag-icon { flex: none; width: 15px; text-align: center; }
+.diag-body { min-width: 0; }
+.diag-row.err .diag-body b { color: #ffb4ae; }
+.diag-row.warn .diag-body b { color: #f0c674; }
+.diag-row.ok .diag-body b { color: #b7f0c4; }
+.diag-detail { color: var(--muted); margin-top: 3px; line-height: 1.6; }
+.diag-ev { margin-top: 4px; }
+.diag-ev summary { cursor: pointer; color: var(--muted); font-size: 11.5px; }
+.diag-ev div {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  background: rgba(0, 0, 0, .35); border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 8px; margin-top: 4px; word-break: break-all; line-height: 1.5;
+}
+

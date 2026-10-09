@@ -15,12 +15,14 @@
 """
 
 import base64
+import json
 import os
 import re
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from collections import deque
 
@@ -98,6 +100,10 @@ import cv2                  # noqa: E402
 import grpc                 # noqa: E402
 from flask import Flask, jsonify, render_template, request, Response, send_file  # noqa: E402
 
+# 座位配置的**文本层**读写单独成模块（只依赖标准库）—— 见 seats_yaml.py 顶部说明:
+# 那里有一条必须被 CI 守住的约定（只换 occupancy.seats 这一段, 其余字节含注释一字不动）。
+import seats_yaml            # noqa: E402  (与 pb2 一样: 需要上面的 sys.path)
+
 # pb2 桩文件是同目录下由 proto 生成的（已入库）。缺了就明确告诉怎么重新生成。
 try:
     from inference_pb2 import DetectRequest
@@ -168,6 +174,70 @@ FFMPEG_BIN = _env_str("FFMPEG_BIN", "ffmpeg")
 # C++ 侧配置：用来读 occupancy.seats，好在画面上标出"事件发生在哪一块"。
 # 换配置就设 CVINFER_CONFIG（例如指向 config.yaml）。
 CONFIG_PATH = _env_str("CVINFER_CONFIG", os.path.join(_REPO_ROOT, "config", "config.test.yaml"))
+
+
+def _sync_build_config_mirror(path=None):
+    """把写回后的配置同步到 build/config/<同名>（那边已有一份时才同步）。
+
+    为什么需要它: C++ 主程序按**启动目录**解析相对路径, 而商家/文档的启动命令是
+    `cd build && ./CVInfer-Gate --config config/config.test.yaml` ⇒ 程序读的是
+    **构建时拷贝**出来的 `build/config/config.test.yaml`；网页写回的却是
+    `<REPO_ROOT>/config/config.test.yaml`。两份不同步时, 网页里 zone 画得再准,
+    程序也永远读不到 —— 实测表现就是「跑完整段视频仍 occupied_events=0 ⇒ 0 复核
+    ⇒ VLM 一个请求都收不到」。写回后顺手刷新镜像, 让「网页编辑的那份」与
+    「程序按启动目录读到的那份」始终一致，商家现有的启动命令不必改。
+
+    返回同步到的镜像路径；None = 没有镜像 / 无需同步（绝不去动别的文件）。
+    """
+    src = path or CONFIG_PATH
+    if not src or not _REPO_ROOT:
+        return None
+    src_abs = os.path.abspath(src)
+    # 护栏: 只同步「仓库 config/ 里的那份 → build/config 镜像」。
+    # 绝不让**临时文件**(如自检脚本用的临时副本 config.yaml)借同名覆盖 build 里的真配置。
+    if os.path.dirname(src_abs) != os.path.abspath(os.path.join(_REPO_ROOT, "config")):
+        return None
+    tgt = os.path.join(_REPO_ROOT, "build", "config", os.path.basename(src_abs))
+    if os.path.abspath(tgt) == src_abs:
+        return None                       # 编辑的就是 build 里的那份, 不用镜像
+    if not os.path.isfile(tgt):
+        return None                       # 没有镜像(未构建 / 配置名不同) ⇒ 不新建
+    try:
+        shutil.copy2(src_abs, tgt)
+        return tgt
+    except OSError:
+        return None
+
+
+def _same_file_content(a, b):
+    """a 与 b 是否指向**内容相同**的现存文件。
+
+    用于「程序启动目录读到的那份」与「网页在编辑的那份」是否真是同一份：
+    只比文件名会漏判（两份都叫 config.test.yaml, 但一份在 build/config/、
+    一份在仓库根 config/）—— 实测就是这里骗过了诊断面板。这里展开真实路径后
+    逐字节比对, 内容一致才算「同一份」。
+    """
+    try:
+        if not (a and b and os.path.isfile(a) and os.path.isfile(b)):
+            return False
+        if os.path.realpath(a) == os.path.realpath(b):
+            return True
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            return fa.read() == fb.read()
+    except OSError:
+        return False
+
+
+# ---------------------- 座位标定探针（上传视频 → 在线热力图） ----------------------
+# 「哪个框算进哪一格、每格算几次」由 C++ 的 --seat-probe 算完（口径与线上占座判定同源），
+# 这里只负责**跑它 + 把结果画出来** —— 绝不在 Python 里重算热力，否则热力图会骗人。
+CVINFER_BIN = _env_str("CVINFER_BIN", os.path.join(_REPO_ROOT, "build", "CVInfer-Gate"))
+MODEL_CONFIG_PATH = _env_str("CVINFER_MODEL_CONFIG",
+                             os.path.join(_REPO_ROOT, "config", "model_config.yaml"))
+# 每隔 N 帧采样一次（标定不需要逐帧；调大只影响采样密度，不改变归属口径）
+SEAT_PROBE_STRIDE = _env_int("SEAT_PROBE_STRIDE", 5)
+# 探针是"把整段视频跑一遍模型"，比一次图片检测慢得多，超时给宽一些
+SEAT_PROBE_TIMEOUT = _env_int("SEAT_PROBE_TIMEOUT", 900)
 
 app = Flask(__name__)
 
@@ -342,6 +412,252 @@ def _find_log():
     return cand if os.path.isfile(cand) else None
 
 
+def _other_log():
+    """仓库根的 logs/cvinfer.log —— 它存在 ⇒ 程序是**从仓库根**启动的。
+
+    这种启动方式下 `video.source_path: ../test.mp4` 必然打不开（相对路径漂移一格），
+    而且日志/产物都落在仓库根，而网页读的是 <RESULT_DIR>/logs/… ⇒ 页面永远是空的。
+    这条只能靠"另一份日志存在"推出来，日志自己不会说。
+    """
+    mine = _find_log()
+    cand = os.path.join(_REPO_ROOT, "logs", "cvinfer.log")
+    if os.path.isfile(cand) and os.path.realpath(cand) != os.path.realpath(mine or ""):
+        return cand
+    return None
+
+
+# ---------------------- 「为什么一条告警都没有」的自证 ----------------------
+# 实测踩过的坑: 商家画好座位、跑完视频, 页面只给一句「本轮未检测到占座」——
+# 于是他开始猜（没识别到包? zone 画错了?），一下午白跑。
+# 真相却**全都已经写在日志里**: 视频源打不开（一帧都没处理）/ 这轮用的还是旧框 /
+# 候选被复核与推送闸门丢掉了……
+# 所以这里只做一件事: 把日志里**原文**抽出来摆到页面上, 每条结论都附「日志原文」可展开核对。
+# ⚠ 绝不在 Python 里重写占座判据 —— 命中/不命中、该不该报, 一律以 C++ 的日志原文为准。
+_LOG_ROUND_START = "=== CVInfer-Gate 启动 ==="
+_RE_OCC_ON = re.compile(r"占座判定: 已启用 \(座位数=(\d+), 物品类别=\[([^\]]*)\](.*)\)")
+_RE_OCC_STATS = re.compile(r"占座统计:\s*frames=(\d+)\s+seats=(\d+)\s+occupied_events=(\d+)")
+_RE_SEAT_OOB = re.compile(r"座位 \[([^\]]+)\] 区域超出画面 (\d+)x(\d+), 仅 (\d+)% 面积可见")
+_RE_CFG_LOADED = re.compile(r"系统配置加载成功:\s*(\S+)")
+
+
+def _occ_block(text):
+    """取 occupancy 这一段（到下一个顶层键为止）—— 只用于**展示**配置里写了什么。"""
+    m = re.search(r"^occupancy\s*:.*$", text, re.M)
+    if not m:
+        return ""
+    rest = text[m.end():]
+    end = re.search(r"^\S", rest, re.M)
+    return rest[:end.start()] if end else rest
+
+
+def _config_digest():
+    """网页**正在编辑哪份配置**、它有没有 occupancy 段、里面写了什么（display-only）。
+
+    这不是判定: 真值与口径一律以程序日志里的运行期输出为准（见 _diagnose 的「生效配置」那条）。
+    但"我改的是不是程序读的那份文件"必须让商家一眼看到 —— 这是实测最容易白干的一处。
+    """
+    d = {"path": CONFIG_PATH, "exists": os.path.isfile(CONFIG_PATH),
+         "has_occupancy": False, "enabled_text": None, "item_labels": None,
+         "mtime": None, "error": None}
+    if not d["exists"]:
+        return d
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        d["mtime"] = time.strftime("%Y-%m-%d %H:%M:%S",
+                                   time.localtime(os.path.getmtime(CONFIG_PATH)))
+    except OSError as e:
+        d["error"] = f"读配置失败: {e}"
+        return d
+    blk = _occ_block(text)
+    d["has_occupancy"] = bool(blk)
+    if not blk:
+        return d
+    m = re.search(r"^[ \t]+enabled\s*:\s*([^#\n]+)", blk, re.M)
+    if m:
+        d["enabled_text"] = m.group(1).strip()
+    m = re.search(r"^[ \t]+item_labels\s*:\s*\[([^\]]*)\]", blk, re.M)
+    if m:
+        d["item_labels"] = [s.strip().strip("'\"") for s in m.group(1).split(",")
+                            if s.strip()]
+    return d
+
+
+def _last_round(lines):
+    """只留**最后一轮**（= 与当前 output.avi 对应的那次运行）。"""
+    anchors = [i for i, ln in enumerate(lines) if _LOG_ROUND_START in ln]
+    if not anchors:
+        anchors = [i for i, ln in enumerate(lines) if "服务就绪" in ln]
+    return lines[anchors[-1]:] if anchors else lines
+
+
+def _verdict(level, title, detail="", evidence=None):
+    """一条结论 + 它的出处（日志原文, 或"另一份文件"的路径）。前端原样展示, 不做二次加工。"""
+    return {"level": level, "title": title, "detail": detail, "evidence": evidence}
+
+
+def _diagnose(lines):
+    """把"为什么事件列表是空的"从日志原文里读出来。每条都带原文行。
+
+    只做**引用与归纳**, 不复算任何判据:
+      · 有没有真处理过帧（视频源打开失败 / 有没有「服务就绪」「占座统计」）;
+      · 规则层自己的结论（占座统计 occupied_events=N + 每座位那行 `[占座] …` 原文）;
+      · **生效**的配置（`占座判定: 已启用 (座位数=…, 物品类别=[…])`—— 运行期真值, 不是文件里写的）;
+      · 三道下游闸门（复核服务 / alert_on_failure / 告警推送 / 数据库降级）。
+    """
+    expected = _find_log() or os.path.join(RESULT_DIR, "logs", "cvinfer.log")
+    if not lines:
+        return [_verdict(
+            "warn", "还没有可读的日志 —— 这台机器上可能从没跑过 C++ 主程序, 或日志落在了别处",
+            "网页读的就是上面那行路径。启动方式：cd build && ./CVInfer-Gate "
+            "--config config/config.test.yaml --model-config config/model_config.yaml "
+            "（配置里的视频/模型/输出全是**相对启动目录**的路径, 只能在 build/ 下启动）。",
+            expected)]
+
+    def hits(s):
+        return [ln for ln in lines if s in ln]
+
+    v = []
+    video_fail = hits("视频源打开失败")
+    ready = hits("服务就绪")
+    occ_off = hits("占座判定: 已禁用")
+    occ_on = [ln for ln in lines if _RE_OCC_ON.search(ln)]
+    review_down = hits("复核服务暂不可用")
+    review_ready = hits("复核服务就绪")
+    push_off = hits("告警推送: 已禁用")
+    db_deg = hits("以【降级模式】启动")
+    cfg_line = hits("系统配置加载成功")
+    oob = [ln for ln in lines if _RE_SEAT_OOB.search(ln)]
+    seat_reason = hits("[占座]")
+
+    stats = None
+    for ln in reversed(lines):                       # 收尾统计取**最后一次**
+        if _RE_OCC_STATS.search(ln):
+            stats = ln
+            break
+
+    if video_fail:
+        v.append(_verdict(
+            "err", "这轮一帧都没处理：视频源打不开",
+            "没处理帧 ⇒ 检测/追踪/占座全都收不到输入, 事件列表必然是空的 —— 既不是"
+            "「没识别到包」, 也不是 zone 画错。配置里的视频路径是**相对启动目录**解析的"
+            "（config.test.yaml 里是 ../test.mp4）⇒ 必须在 build/ 下启动: "
+            "cd build && ./CVInfer-Gate --config config/config.test.yaml "
+            "--model-config config/model_config.yaml。",
+            video_fail[-1]))
+    elif not ready:
+        v.append(_verdict(
+            "warn", "这轮没跑完：日志里没有「服务就绪」",
+            "程序可能还在启动中、启动即退出, 或被 Ctrl+C 提前打断（下面原文是它最后写的一行）。",
+            lines[-1]))
+
+    if occ_off:
+        v.append(_verdict(
+            "warn", "配置里 occupancy 没开（或这份文件里根本没有 occupancy 段）",
+            "「占座判定: 已禁用」⇒ 规则层一个占座事件都不会产生。先确认网页编辑的那份配置"
+            "就是程序加载的那份（见最上面那行路径）。", occ_off[-1]))
+
+    if occ_on:
+        m = _RE_OCC_ON.search(occ_on[-1])
+        v.append(_verdict(
+            "info", "生效的占座配置（运行期真值，不是文件里写的）：座位数=" + m.group(1)
+            + "，物品类别=[" + m.group(2) + "]",
+            "物品类别是**精确相等**匹配：检测器输出的是 COCO 的类别名（包只有 "
+            "backpack / handbag 两种写法, 根本没有 \"bag\" 这个词）⇒ 列表里写了检测器"
+            "**不会输出**的词, 那个类别就永远不参与占座判定。检测到了却不在列表里的类别"
+            "（例如 bottle / cup）会被规则层有意忽略。",
+            occ_on[-1]))
+
+    if stats:
+        m = _RE_OCC_STATS.search(stats)
+        frames, seats_n, ev_n = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if ev_n == 0:
+            v.append(_verdict(
+                "warn", f"规则层结论：处理了 {frames} 帧、{seats_n} 个座位，占座事件 0 个",
+                "既不是「没跑到」也不是「阈值太严」—— 这是规则层当场给出的结论。"
+                "下面每行 `[占座] 座位 X: …` 就是它给的原因。", stats))
+        else:
+            v.append(_verdict(
+                "ok", f"规则层产生了 {ev_n} 个占座事件（处理 {frames} 帧）",
+                "事件要变成**告警**还得过复核这一关：看下面「复核服务」那条。", stats))
+        for ln in seat_reason[-6:]:
+            v.append(_verdict("info", "规则层对本轮某座位的原话", "", ln))
+    else:
+        v.append(_verdict(
+            "warn", "没有「占座统计」收尾行 ⇒ 这轮没有正常跑完、或没有正常退出",
+            "那一行只在程序**正常退出**（Ctrl+C）时写。跑完请按 Ctrl+C, 别 kill -9。",
+            lines[-1] if lines else expected))
+
+    for ln in oob[-4:]:                              # 越界框: 报出「哪一式多宽」, 不是笼统说画偏了
+        m = _RE_SEAT_OOB.search(ln)
+        v.append(_verdict(
+            "warn", "座位 [" + m.group(1) + "] 有 " + str(100 - int(m.group(4))) + "% 露在画面外",
+            "画面 " + m.group(2) + "x" + m.group(3) + " —— 露在画外的那一截永远不会有目标"
+            "落进来。这不是「画得偏」而是「有一截在画外」, 按当前分辨率重画即可"
+            "（网页 ④ 的探针会直接给建议 zone）。", ln))
+
+    if occ_on or stats:                              # 下游闸门: 规则层报了 ≠ 告警出去了
+        if review_down and not review_ready:
+            v.append(_verdict(
+                "warn", "复核服务没起（日志显示连不上）",
+                "占座候选要送复核、**复核确认了才告警**; 拿不到结论时按 review.alert_on_failure "
+                "兜底（config.test.yaml 里是 false ⇒ 不告警）。所以就算规则层报了占座, "
+                "这轮也不会出现告警。", review_down[-1]))
+        elif review_ready:
+            v.append(_verdict("ok", "复核服务就绪（候选能被裁决）", "", review_ready[-1]))
+
+    if push_off:
+        v.append(_verdict(
+            "info", "告警推送已禁用（只落库）",
+            "这只影响 webhook 推送, **不影响**本页事件列表（本页读的是日志）。", push_off[-1]))
+
+    if db_deg:
+        v.append(_verdict(
+            "warn", "数据库不可用 ⇒ 已降级写本地 db_fallback.csv",
+            "落库链路是断的（不影响事件列表, 但别指望库里查得到）。", db_deg[-1]))
+
+    # 「我改的那份到底是不是程序读的那份」
+    # ⚠ 坑: 程序把「系统配置加载成功: <路径>」打到 **stdout**(ConfigParser.cpp 用 std::cout),
+    #   日志文件里根本没有这行 ⇒ 原先只靠日志的这条判据**永远不触发**(实测面板里查无此条)。
+    #   这里给两条来源: ①日志里若真有就按它(相对启动目录展开); ②否则退回文档约定的启动方式
+    #   —— 从 RESULT_DIR(=build/) 启动、--config 用相对路径 ⇒ 程序读的是 <RESULT_DIR>/config/<同名>。
+    raw = (_RE_CFG_LOADED.search(cfg_line[-1]).group(1) if cfg_line
+           else os.path.join("config", os.path.basename(CONFIG_PATH)))
+    prog_cfg = raw if os.path.isabs(raw) else os.path.join(RESULT_DIR, raw)
+    same = _same_file_content(prog_cfg, CONFIG_PATH)
+    v.append(_verdict(
+        "info" if same else "warn",
+        ("程序加载的配置与网页在编辑的是同一份：" if same
+         else "程序加载的配置与网页在编辑的**不是同一份**：")
+        + "程序= " + prog_cfg + " ／ 网页= " + CONFIG_PATH,
+        "把程序启动目录下的那份展开成真实路径、与服务端**逐字节比对**（不再只比文件名, "
+        "两份都叫 config.test.yaml 会骗过旧判据）。网页保存座位时会顺手同步 build/config "
+        "镜像；两者内容不一致时, 你在网页上画的座位永远不会生效。",
+        cfg_line[-1] if cfg_line else (lines[-1] if lines else expected)))
+
+    other = _other_log()
+    if other:
+        v.append(_verdict(
+            "warn", "仓库根还有一份日志 ⇒ 程序是从**仓库根**启动的",
+            "网页读的是 " + expected + "。从仓库根启动时 video.source_path 的 ../test.mp4 "
+            "必然打不开, 而且日志与 output.avi 都落在仓库根 ⇒ 请在 build/ 下启动。",
+            other))
+
+    return v
+
+
+def _run_diagnosis(log_path, lines):
+    """给 /api/events 附一份「为什么没有告警」的自证材料（全部可回溯到日志原文）。"""
+    return {
+        "log": log_path,
+        "log_mtime": (time.strftime("%Y-%m-%d %H:%M:%S",
+                                    time.localtime(os.path.getmtime(log_path)))
+                      if log_path and os.path.isfile(log_path) else None),
+        "config": _config_digest(),
+        "verdicts": _diagnose(lines),
+    }
+
+
 def _mp4_cache(avi_path):
     """结果视频的 mp4 缓存路径（与源视频同目录）。"""
     stem = avi_path[:-4] if avi_path.lower().endswith(".avi") else avi_path
@@ -466,13 +782,6 @@ _RE_DWELL = re.compile(r"已连续\s*(\d+)\s*秒")
 _RE_PERSON = re.compile(r"人在座位上是\s*(\d+)\s*秒前")
 _RE_VOTE = re.compile(r"近\s*(\d+)\s*帧中\s*(\d+)\s*帧")
 
-# 只解析 occupancy.seats 里的 name + rect/polygon：够用且**不引入 yaml 依赖**
-# （项目口径是"不轻易加依赖"）。解析失败就返回空列表，页面退化为"只显示事件文本"。
-_SEAT_RE = re.compile(
-    r"-\s*name\s*:\s*[\"']?(?P<name>[^\"'\n]+?)[\"']?\s*\n"
-    r"\s*(?P<kind>rect|polygon)\s*:\s*(?P<val>[^\n]+)"
-)
-
 
 def _parse_event(text):
     """把一行事件日志解析成结构化字段（解不出来就只留原文，不会丢信息）。"""
@@ -506,7 +815,14 @@ def _parse_event(text):
 
 
 def _load_seats():
-    """从 config 读座位区。返回 (seats, hint)；seats=[{"name":...,"polygon":[[x,y],…]}]。"""
+    """从 config 读座位区。返回 (seats, hint)。
+
+    文件位置/编码处理留在这里；**解析**在 seats_yaml.parse_seats()（纯文本层，
+    与回写同一套正则 —— 读得出来的就一定写得回去，反之亦然）。
+    seats = [{"name":…, "polygon":[[x,y],…], "kind":"rect"|"polygon",
+              "rect":[x,y,w,h]?}]  —— polygon 一律展开成顶点，画图直接可用；
+    kind/rect 只是把**原始写法**留个记号，P1 的"点选标定"回填时要保持商家原来怎么写的。
+    """
     if not CONFIG_PATH or not os.path.isfile(CONFIG_PATH):
         return [], (f"没找到配置文件（CVINFER_CONFIG={CONFIG_PATH}），"
                     "无法在画面上标出座位位置")
@@ -515,32 +831,67 @@ def _load_seats():
             text = f.read()
     except OSError as e:
         return [], f"读配置失败: {e}"
+    return seats_yaml.parse_seats(text)
 
-    # 只取 occupancy: 段（到下一个顶格 key 为止），免得扫到别处的 rect/polygon
-    m = re.search(r"^occupancy\s*:\s*$", text, re.M)
-    if not m:
-        return [], "配置里没有 occupancy 段（占座判定未启用？）"
-    seg = text[m.end():]
-    nxt = re.search(r"^\S", seg, re.M)     # 下一个顶格键 = 本段结束
-    if nxt:
-        seg = seg[:nxt.start()]
 
-    seats = []
-    for sm in _SEAT_RE.finditer(seg):
-        name = sm.group("name").strip()
-        val = sm.group("val").split("#")[0]  # 去掉行尾注释
-        nums = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", val)]
-        if sm.group("kind") == "rect" and len(nums) >= 4:
-            x, y, w, h = nums[:4]
-            poly = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
-        elif sm.group("kind") == "polygon" and len(nums) >= 6 and len(nums) % 2 == 0:
-            poly = [[nums[i], nums[i + 1]] for i in range(0, len(nums), 2)]
-        else:
-            continue
-        seats.append({"name": name, "polygon": poly})
-    if not seats:
-        return [], "配置里没解析出座位（occupancy.seats 为空？）"
-    return seats, None
+# ------------------- 座位标定回写（网页点选 → occupancy.seats） -------------------
+# 设计取舍: **不做 YAML 整体解析再 dump**。
+# 配置文件是商家手写的现场记录, 里面全是"为什么把 zone 画在这儿"的注释;
+# 用 YAML 库 round-trip 会把这些注释清掉 —— 那就等于毁了他的标定依据。
+# 所以这里只在**文本层**把 occupancy.seats 这一个块换掉, 其余每一个字节
+# (注释/空行/键顺序/行尾注释)原样保留。
+# ⚠ 这套文本层逻辑(定位 seats 块/渲染/替换/结构自检)全在 **seats_yaml.py**：
+#   它零第三方依赖, 所以那条"只换这一段"的约定能被 CI 直接守住
+#   (web_gateway/test_seats_yaml.py)；本文件只负责 HTTP / 环境变量 / 起进程。
+# 另外: "座位是否重叠/顶点是否为负"这类**判定口径**不在这里重写一遍 ——
+# 落盘前交给 C++ 的 `--check-config`(见 _check_config), 保证与程序启动时同一口径。
+
+CONFIG_BACKUP_SUFFIX = _env_str("CVINFER_CONFIG_BACKUP", ".bak")
+CHECK_CONFIG_TIMEOUT = _env_int("CHECK_CONFIG_TIMEOUT", 60)
+
+
+def _read_config_text():
+    """读 CVINFER_CONFIG 原文。返回 (text, err)。"""
+    if not CONFIG_PATH:
+        return None, "没指定配置文件（CVINFER_CONFIG 为空）"
+    if not os.path.isfile(CONFIG_PATH):
+        return None, f"没找到配置文件：{CONFIG_PATH}"
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return f.read(), None
+    except OSError as e:
+        return None, f"读配置失败: {e}"
+
+
+def _check_config(path):
+    """用 C++ 的 `--check-config` 验一遍候选配置。返回 (ok, msg)。
+
+    ⚠ 这里是"口径单一来源"的落点：座位重叠率、顶点约束等规则**只**由
+    ConfigParser::validate() 定义。Python 若不自己重写一遍，就永远不会有
+    "网页说能存、程序却起不来"的分叉。二进制缺失时放行但明确告警。
+    """
+    if not (CVINFER_BIN and os.path.isfile(CVINFER_BIN) and os.access(CVINFER_BIN, os.X_OK)):
+        return True, (f"未找到 C++ 程序（{CVINFER_BIN}），已跳过提交前校验 —— "
+                      "先构建一次才能保证写回的配置一定加载得起来")
+    try:
+        p = subprocess.run([CVINFER_BIN, "--check-config", "--config", path],
+                           capture_output=True, text=True, timeout=CHECK_CONFIG_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False, f"C++ 配置校验超时（{CHECK_CONFIG_TIMEOUT}s）"
+    except OSError as e:
+        return False, f"起不来 C++ 配置校验: {e}"
+    if p.returncode == 0:
+        return True, None
+    msgs = []
+    for ln in (p.stderr or "").splitlines():
+        m = re.match(r"^\[ConfigParser\]\s*[^:]*失败[::]\s*(.+)$", ln.strip())
+        if m:
+            msgs.append(m.group(1))
+    if not msgs:
+        tail = [l.strip() for l in (p.stderr or "").splitlines() if l.strip()]
+        msgs = tail[-1:] or ["配置校验失败（C++ 未给出原因，可手工跑 "
+                             f"{CVINFER_BIN} --check-config --config {path}）"]
+    return False, "；".join(msgs)
 
 
 _video_meta_cache = {}
@@ -616,6 +967,277 @@ def api_scene_frame():
     return resp
 
 
+# ---------------------- 座位标定探针：上传视频 → 在线热力图 ----------------------
+
+def _extract_probe_json(stdout_text):
+    """从探针 stdout 里捞出那行 JSON。
+
+    为什么不直接 json.loads(整段)：探针跑模型时 OpenVINO/其它库偶尔会往 stdout 打日志。
+    稳妥做法 = 逐行（从后往前）尝试解析，取第一个带 'cells' 的对象。
+    """
+    for line in reversed(stdout_text.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and "cells" in obj:
+            return obj
+    return None
+
+
+def _run_seat_probe(video_path):
+    """跑 C++ 探针（口径单一来源）。成功返回 (report, None)，失败 (None, (msg, code))。"""
+    if not (CVINFER_BIN and os.path.isfile(CVINFER_BIN) and os.access(CVINFER_BIN, os.X_OK)):
+        return None, (f"找不到 C++ 程序：{CVINFER_BIN}（先构建一次，或用 CVINFER_BIN 指定路径）", 500)
+    cmd = [
+        CVINFER_BIN,
+        "--config", CONFIG_PATH,
+        "--model-config", MODEL_CONFIG_PATH,
+        "--seat-probe", video_path,
+        "--seat-probe-json",
+        "--seat-probe-stride", str(max(1, SEAT_PROBE_STRIDE)),
+    ]
+    try:
+        proc = subprocess.run(cmd, cwd=_REPO_ROOT, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=SEAT_PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, (f"探针超时（>{SEAT_PROBE_TIMEOUT}s）：调小 SEAT_PROBE_STRIDE 或换更短视频。", 504)
+    except OSError as e:
+        return None, (f"启动探针失败：{e}", 500)
+    if proc.returncode != 0:
+        tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()[-3:]
+        return None, ("探针执行失败：" + " | ".join(tail), 500)
+    report = _extract_probe_json(proc.stdout.decode("utf-8", "replace"))
+    if report is None:
+        return None, ("探针没有输出可解析的 JSON（检查 --config / --model-config 指向的模型是否存在）", 500)
+    return report, None
+
+
+def _heat_bgr(ratio):
+    """热力配色：冷=绿 → 热=红（BGR）。"""
+    r = max(0.0, min(1.0, ratio))
+    return (0, int(210 * (1.0 - r)), int(255 * r))
+
+
+def _blend_rect(img, x, y, w, h, color, alpha):
+    """在 img 上按 alpha 混一层纯色（只作用于相交区域，越界自动裁掉）。"""
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(img.shape[1], x + w), min(img.shape[0], y + h)
+    if x1 <= x0 or y1 <= y0:
+        return
+    roi = img[y0:y1, x0:x1]
+    overlay = np.empty_like(roi)
+    overlay[:] = color
+    cv2.addWeighted(overlay, alpha, roi, 1.0 - alpha, 0, roi)
+
+
+def _render_probe_heatmap(frame, report):
+    """把**已经算好的**格子命中数画到底图上 —— 只渲染，绝不重算归属。"""
+    img = frame.copy()
+    cell_w = int(report.get("cell_w") or 0)
+    cell_h = int(report.get("cell_h") or 0)
+    cols = int(report.get("cols") or 0)
+    rows = int(report.get("rows") or 0)
+    cells = report.get("cells") or []
+    max_hit = max([int(c.get("item_hits", 0)) for c in cells] or [0])
+
+    # 1) 网格线（细灰）：让"哪一格"一眼可读
+    for c in range(1, cols):
+        cv2.line(img, (c * cell_w, 0), (c * cell_w, img.shape[0]), (90, 90, 90), 1)
+    for r in range(1, rows):
+        cv2.line(img, (0, r * cell_h), (img.shape[1], r * cell_h), (90, 90, 90), 1)
+
+    # 2) 热格：item 命中越多越红越实（只染有命中的格，避免一片色块看不出重点）
+    for cell in cells:
+        hits = int(cell.get("item_hits", 0))
+        if hits <= 0:
+            continue
+        ratio = (hits / max_hit) if max_hit else 0.0
+        x, y = int(cell["col"]) * cell_w, int(cell["row"]) * cell_h
+        _blend_rect(img, x, y, cell_w, cell_h, _heat_bgr(ratio), 0.22 + 0.42 * ratio)
+        p_hits = int(cell.get("person_hits", 0))
+        txt = f"{hits}" + (f" / p{p_hits}" if p_hits else "")
+        cv2.putText(img, txt, (x + 6, y + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (255, 255, 255), 2)
+
+    # 3) 建议 zone：亮青色粗框 + 角标（可直接照着填 occupancy.seats）
+    zone = report.get("suggested_zone")
+    if report.get("suggestion_valid") and isinstance(zone, dict):
+        x, y = int(zone["x"]), int(zone["y"])
+        w, h = int(zone["width"]), int(zone["height"])
+        cv2.rectangle(img, (x, y), (x + w, y + h), (255, 255, 0), 3)
+        (tw, th), _ = cv2.getTextSize("suggested zone", cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        ty = y - 8 if y - th - 8 > 0 else y + th + 10
+        cv2.rectangle(img, (x, ty - th - 6), (x + tw + 12, ty + 6), (255, 255, 0), -1)
+        cv2.putText(img, "suggested zone", (x + 6, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (0, 0, 0), 2)
+    return img
+
+
+@app.route('/api/seat-probe', methods=['POST'])
+def api_seat_probe():
+    """上传一段视频 → 跑 C++ 标定探针 → 返回热力图(dataURL) + 结构化数据。
+
+    为什么值得有：occupancy.seats 是"每个现场都不一样"的静态标定，让商家手改 YAML 像素
+    坐标几乎对不准。这里让他**看着图**指位置。口径仍由 C++ 决定（框底边中点落格），
+    Python 只把已算好的格子画出来 ⇒ 热力图与线上判定同源，不会"图上这样、判定那样"。
+    """
+    if 'video' not in request.files:
+        return jsonify(ok=False, error="未上传视频"), 400
+    up = request.files['video']
+    if not up.filename:
+        return jsonify(ok=False, error="视频文件名为空"), 400
+
+    suffix = os.path.splitext(up.filename)[1].lower() or ".mp4"
+    fd, tmp = tempfile.mkstemp(prefix="seat_probe_", suffix=suffix)
+    os.close(fd)
+    try:
+        up.save(tmp)
+        report, err = _run_seat_probe(tmp)
+        if err:
+            return jsonify(ok=False, error=err[0]), err[1]
+
+        # 底图 = 这段视频的一帧（探针跑的就是它，所以图上的位置就是判定的位置）
+        cap = cv2.VideoCapture(tmp)
+        try:
+            ok_frame, frame = cap.read()
+        finally:
+            cap.release()
+
+        heatmap_url = frame_url = ""
+        warn = None
+        if not ok_frame:
+            warn = "视频抽帧失败：只有数据、没有图"
+        else:
+            ok_buf, buf = cv2.imencode(".jpg", _render_probe_heatmap(frame, report),
+                                       [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+            if ok_buf:
+                heatmap_url = ("data:image/jpeg;base64,"
+                               + base64.b64encode(buf.tobytes()).decode("ascii"))
+            ok_buf, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if ok_buf:
+                frame_url = ("data:image/jpeg;base64,"
+                             + base64.b64encode(buf.tobytes()).decode("ascii"))
+
+        # report 里是 width/height/cols/rows/cell_w/cell_h/cells/suggestion_valid/
+        # suggested_zone/label_top —— 前端热力图直接用，P1 画 zone 也吃这份坐标。
+        # stride 一起回：底图是**首帧**、计数却是**整段视频**按 stride 抽样的 ⇒ 页面上那句
+        # "人的落点比物品多"必须能说清它是怎么来的（否则商家会以为图和数对不上）。
+        # item_labels 也一起回：前端要能区分"模型没认出来"与"认出来了但没算成物品"
+        #   （实测：handbag 检出了 90 次, 但配置里写的是 "bag" ⇒ 规则层根本没把它当物品）。
+        return jsonify(ok=True, video_name=up.filename, warn=warn,
+                       stride=SEAT_PROBE_STRIDE,
+                       item_labels=_config_digest().get("item_labels") or [],
+                       config=CONFIG_PATH if os.path.isfile(CONFIG_PATH) else None,
+                       heatmap=heatmap_url, frame=frame_url, **report)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+@app.route('/api/seats')
+def api_seats():
+    """读配置里的座位区 —— 给「点选标定」当初始值（商家改现成的，别从零画）。"""
+    seats, hint = _load_seats()
+    return jsonify(ok=True, seats=seats, count=len(seats), hint=hint,
+                   config=CONFIG_PATH if os.path.isfile(CONFIG_PATH) else None)
+
+
+@app.route('/api/seats', methods=['POST'])
+def api_seats_save():
+    """把网页上点选的座位 zone 写回配置的 occupancy.seats。
+
+    为什么需要它：occupancy.seats 是**每个现场都要重标**的静态常量，而"手改 YAML
+    像素坐标"几乎必然对不准（上一版的热力图已经让人**看见**了位置，这一步让他**指**出来）。
+    三条原则：
+      1) **只动 seats 这一段**：其余字节（注释/空行/键顺序）原样保留 —— 那是商家的现场记录；
+      2) **判定口径不复制**：重叠/顶点约束交给 C++ `--check-config` 验候选文件，
+         验过了才落盘 ⇒ "网页说能存" 与 "程序真能启动" 永远一致；
+      3) 落盘前**先备份**（<config>.bak，一层撤销），再原子替换。
+    dry_run=true = 只校验不写入（前端"校验"按钮 / 后续 P2 即时反馈复用这条路径）。
+    注意：写回后**需要重启 C++ 主程序**才生效（配置只在启动时读一次）。
+    """
+    body = request.get_json(silent=True) or {}
+    seats = body.get("seats")
+    dry = bool(body.get("dry_run"))
+    try:
+        width = int(body.get("width") or 0)
+        height = int(body.get("height") or 0)
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error="width/height 必须是整数"), 400
+
+    issues = seats_yaml.validate_seats_payload(seats, width, height)
+    if issues:
+        return jsonify(ok=False, issues=issues), 400
+
+    norm = [seats_yaml.norm_seat(s) for s in seats]
+    text, err = _read_config_text()
+    if err:
+        return jsonify(ok=False, error=err), 500
+    new_text, kept, err = seats_yaml.splice_seats(text, norm)
+    if err:
+        return jsonify(ok=False, error=err), 400
+    preview = "".join(seats_yaml.render_seats_yaml(norm, 4))
+    keep_note = (f"（保留了 seats 段原有的 {kept} 行说明注释）" if kept else "")
+
+    # ---- 提交前校验：把**候选**配置写到临时文件, 让 C++ 用同一份口径验 ----
+    tmpdir = os.path.dirname(os.path.abspath(CONFIG_PATH)) or "."
+    fd, cand = tempfile.mkstemp(prefix=".config_seats_", suffix=".yaml", dir=tmpdir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        checked, msg = _check_config(cand)
+    finally:
+        try:
+            os.remove(cand)
+        except OSError:
+            pass
+    if not checked:
+        return jsonify(ok=False, issues=[msg], preview=preview, kept_comments=kept,
+                       checked_by="c++", dry_run=dry), 400
+
+    # 二进制缺失时 _check_config 会"放行 + 给告警"(见它的注释)。这条告警**不能吞掉**:
+    # 页面上那句"校验通过"会被商家读成"C++ 认过了"。所以把"跳过"如实回给前端,
+    # 让它改用橙色提示而不是绿字 —— P2 的即时反馈靠这个字段决定说什么。
+    checked_by = "c++" if msg is None else "skipped"
+    note = msg or None
+
+    if dry:
+        return jsonify(ok=True, dry_run=True, seats=norm, count=len(norm),
+                       preview=preview, kept_comments=kept, checked_by=checked_by,
+                       checked_note=note, config=CONFIG_PATH,
+                       hint=("校验通过（未写入配置）" if note is None else
+                             "没找到 C++ 程序，这一版没被真正校验（也未写入配置）") + keep_note)
+
+    backup = CONFIG_PATH + CONFIG_BACKUP_SUFFIX
+    try:
+        shutil.copy2(CONFIG_PATH, backup)
+        fd2, tmp2 = tempfile.mkstemp(prefix=".config_new_", dir=tmpdir)
+        with os.fdopen(fd2, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.chmod(tmp2, os.stat(CONFIG_PATH).st_mode)
+        os.replace(tmp2, CONFIG_PATH)
+    except OSError as e:
+        return jsonify(ok=False, error=f"写配置失败: {e}"), 500
+
+    # 顺手刷新 build/ 下的镜像: 程序 `cd build && … --config config/config.test.yaml`
+    # 读的是那一份; 不同步 ⇒ 网页里画得再准也不生效（见 _sync_build_config_mirror 注释）。
+    mirrored = _sync_build_config_mirror()
+
+    return jsonify(ok=True, seats=norm, count=len(norm), preview=preview,
+                   kept_comments=kept, checked_by=checked_by, checked_note=note,
+                   config=CONFIG_PATH, backup=backup, mirror=mirrored,
+                   hint="已写回配置（只改了 occupancy.seats）" + keep_note + "。"
+                        + (f"已同步给程序按启动目录读到的那份：{mirrored}。" if mirrored else "")
+                        + "要生效请重启 C++ 主程序 —— 配置只在启动时读一次。"
+                        + ("" if note is None else f"⚠ {note}"))
+
+
 @app.route('/api/event-frame')
 def api_event_frame():
     """事件发生**那一刻**的画面（?t=<秒>，取自 /api/events 的 video_t）。
@@ -663,6 +1285,7 @@ def api_events():
             ok=True, source=None, events=[], hint=(
                 "没找到日志文件 —— 这是**最常见**的原因：config 里 log.file 留空时日志只进"
                 "控制台、不落盘。请把它设成 logs/cvinfer.log（或用环境变量 RESULT_LOG 指定）。"),
+            diagnosis=_run_diagnosis(None, []),
         )
     events = []
     try:
@@ -670,6 +1293,10 @@ def api_events():
             lines = [ln.rstrip("\n") for ln in deque(f, maxlen=6000)]
     except OSError as e:
         return jsonify(ok=False, error=f"读日志失败: {e}"), 500
+
+    # 「为什么一条告警都没有」：先按**最后一轮**抽一份自证材料（每条都带日志原文），
+    # 再回到事件抽取 —— 两件事各用一份 lines, 互不干扰。
+    diag = _run_diagnosis(log, _last_round(lines))
 
     # 只认**最后一轮**：output.avi 每次重跑都会被覆盖，前几轮的事件已经没有对应画面了。
     anchors = [i for i, ln in enumerate(lines) if "服务就绪" in ln]
@@ -697,6 +1324,7 @@ def api_events():
                    log_mtime=time.strftime("%Y-%m-%d %H:%M:%S",
                                            time.localtime(os.path.getmtime(log))),
                    count=len(events),
+                   diagnosis=diag,
                    events=events[-120:])          # 最近 120 条足够看
 
 

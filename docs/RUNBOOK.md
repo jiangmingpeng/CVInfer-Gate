@@ -97,7 +97,20 @@ export DB_PASSWORD=<你的 root 口令>                        # config 里是 "
 
 [效果] 起主程序后 `cvinfer_db_healthy 1`，且不再产生 `build/db_fallback.csv`。
 
-### 4.2 复核服务（真 VLM，Phase C）
+### 4.2 复核服务（Phase C）
+
+**[零依赖 mock（CI / 回归最常用，不需要 VLM）]**
+
+```bash
+python3 scripts/mock_review_server.py --port 50052      # 常驻；Ctrl+C 停
+```
+
+[验证] ①端口通：`timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/50052'` 不报 Connection refused；
+②主程序启动日志出现 `[GrpcLlmReviewer] 复核服务就绪: backend=mock, model=mock-vlm, mode=confirm`；
+只看到 `复核服务暂不可用(...)` 就是没连上（见坑 6）。`--mode confirm|reject|drop|error|auto` 与
+`--delay-ms N` 能把「确认才告警 / 否决不告警 / 不可用兜底 / 超时」四条分支都跑出来。
+
+**[真 VLM]**
 
 [所需] vLLM（或任意 OpenAI 兼容端点）+ venv
 
@@ -229,7 +242,7 @@ pkill -TERM -f './CVInfer-Gate --config'
 
 ## 8. 常见坑（实测）
 
-1. **改配置改错文件**：构建会用源码 `config/` 覆盖 `build/config/` ⇒ 改源码，或 `--config` 指绝对路径。
+1. **改配置改错文件**：构建会用源码 `config/` 覆盖 `build/config/` ⇒ 改源码，或 `--config` 指绝对路径。网页「保存到配置」现已**自动把改动同步到 `build/config/` 镜像**（`web_gateway/app.py::_sync_build_config_mirror`），所以商家照旧 `cd build && ./CVInfer-Gate --config config/config.test.yaml` 就能读到新座位。但**手改**仓库根 `config/` 时仍需自己 `cp config/config.test.yaml build/config/`（或重新构建）—— 否则程序读的还是构建时那份旧副本，表现正是「zone 画得再准也 `occupied_events=0`」。
 2. **相对路径按 CWD（`build/`）解析**：`../test.mp4`、`db_fallback.csv`、`logs/`。
 3. **`worker_threads` 必须 ≤ `models[].pool_size`**，否则 worker 借不到引擎白等。
 4. **`device` 必须显式写 `CPU`**：`AUTO` 在带 NPU 插件的 WSL 会段错误。
@@ -238,3 +251,5 @@ pkill -TERM -f './CVInfer-Gate --config'
 7. **RTSP**：`source_type` 与 `source_path` 两个键都要改；抽帧用 `frame_interval`，别用 `target_fps`。
 8. **`python app.py` 报 `ModuleNotFoundError: No module named 'flask'` ⇒ 不是代码坏了**：依赖装在仓库根的 `.venv` 里，你用的是系统 Python。用 `bash web_gateway/run.sh`（一键），或先 `source .venv/bin/activate`。`app.py` 现已把「缺什么 / 用错了解释器 / 怎么装」打成中文提示（退出码 2），不再只丢一句英文堆栈。
 9. **网页「流水线结果」显示“还没有结果视频”**：说明还没跑过 C++ 主程序（没产出 `output.avi`），或 `RESULT_DIR` 不是它在写的位置（默认 `<仓库根>/build`，可用环境变量覆盖）。
+10. **网页说「本轮未检测到占座」/ 事件列表空 ⇒ 先看 ③ 顶部那块「本轮为什么是这样」，别先猜 zone**：它从 `build/logs/cvinfer.log` 的**最后一轮**原文里抽结论（每条都能展开看原文）。最常见的三条：①「这轮一帧都没处理：视频源打不开」—— 相对路径 `../test.mp4` 只能在 `build/` 下启动（见坑 2）；②「规则层结论：frames=N、occupied_events=0」+ 每行 `[占座] 座位 X: 未检出物品` —— 这是规则层**自己给的原因**（物品类别是**精确相等**匹配：写了检测器不会输出的词，如 `bag`，那个类别就等于不参与判定）；③「座位 [X] 有 N% 露在画面外」。面板还会提示：网页在改的配置**绝对路径**、程序实际加载的配置是不是同一份、复核服务在不在、`告警推送: 已禁用`、以及**仓库根是否另有一份日志**（= 从仓库根启动过）。④「`复核统计: submitted=1 … timeout=1`」⇒ **候选没丢、VLM 也答了，只是答晚了一步被客户端判超时**：`review.timeout_ms` 小于 VLM 单次耗时（ROI 放大 3 倍后实测约 1.9~3.5s，冷启动更久）。先预热一次 VLM 再跑；仍超时就调大 `review.timeout_ms`（现默认 10000ms；`/tmp/vlm_review.out` 里 `[vlm] #N … 1894ms` 那行就是实测耗时）。
+    ⚠ 附带修好一条**旧判据从来没生效**的问题：「程序加载的配置与网页在编辑的是同一份」原先只比对**文件名**（`build/config/config.test.yaml` 与 `config/config.test.yaml` 同名 ⇒ 漏判成「同一份」），而且它依赖日志里的 `系统配置加载成功: <路径>` 行 —— 那行是 `ConfigParser.cpp` 用 `std::cout` 打到 **stdout** 的，**根本不进 `cvinfer.log`**，所以面板里查无此条。现在改成：把程序启动目录(`build/`)下的那份展开成**真实路径**、与网页在改的那份**逐字节比对**，并内建 `build/config` 镜像假设作兜底。

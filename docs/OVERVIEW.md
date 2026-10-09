@@ -205,12 +205,12 @@ ModelPoolManager ──每模型── InferenceEnginePool ── OpenVINOEngine
 | Phase D 融合(stub) | 🟢 **可信** | 端到端 `matched=66` |
 | MySQL 落库 | 🟢 **可信** | 表已建，正常写入，不再产生 `db_fallback.csv` |
 | 自检 | 🟢 52/52 | `phase_selftest`，零外部依赖、秒级 |
-| 单元测试 / CI | 🟢 **新增** | `ctest` = `cv_unit_tests`(gtest 179 例) + `phase_selftest`，共 180 项全绿；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过）|
+| 单元测试 / CI | 🟢 **新增** | `ctest` = `cv_unit_tests`(gtest 194 例) + `phase_selftest`，共 195 项全绿；另有 **3 条零依赖自测 step**（`vlm_review` 鉴权拦截器、`web_gateway` 座位配置文本层、`static/app.js` 前端静态配平兜底 —— 后者不解析语法，只保证"文件没被改坏"）；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过）|
 | 可观测性 / 告警外发 | 🟢 **新增** | `/metrics` 20 组指标（Prometheus 文本格式）+ `--health-check`（退出码 0/2/3/4/5）+ 告警 webhook 外发（实测 5/5 投递；死端口 `failed=3 retried=6` 不影响主链路）+ 日志按大小轮转；均默认关闭 |
 | 性能 | 🟢 **已定档** | 30.2 ± 0.7 fps；FP32 天花板 ~33 fps（12 组配置验证）|
 | Phase B 级联 | 🟡 **能跑通 / 精度未回归** | 分类器注册样例见 `config/model_config.yaml` 注释块(占座链路默认不开)；缺的是精度回归 |
 | Phase C 复核 | 🟢 **真 VLM 已跑通** | `vlm_review/` 已提供；已接入真模型（vLLM + `Qwen2-VL-2B-Instruct-AWQ`）端到端跑通；结论质量未定量评测 |
-| `web_gateway` | 🟢 **本地已联调** | 一键启动 `bash web_gateway/run.sh`（自动用/建 `.venv` + 缺依赖自动装）；单图检测（拖拽上传 / 无刷新结果 / 检测列表 / 点击行高亮框 / 下载结果图）+ **结果回看**（`GET /api/results` 产物清单、`GET /api/result-video` 按需转码并支持 Range 拖动、`GET /api/events` 日志事件） |
+| `web_gateway` | 🟢 **本地已联调** | 一键启动 `bash web_gateway/run.sh`（自动用/建 `.venv` + 缺依赖自动装）；单图检测（拖拽上传 / 无刷新结果 / 检测列表 / 点击行高亮框 / 下载结果图）+ **结果回看**（`GET /api/results` 产物清单、`GET /api/result-video` 按需转码并支持 Range 拖动、`GET /api/events` 日志事件）+ **座位标定**（`GET /api/seat-probe` 热力图与建议 zone；`GET/POST /api/seats` 网页点选 → 只改 `occupancy.seats` 那一段回写 YAML，候选配置交 C++ `--check-config` 判口径）+ **标定即时反馈**（P2：拖动中把这一区压到的物品/人落点摆出来，并把服务端 `dry_run` 判决原文点红、被点名的 zone 在画面里描红 —— 判定口径仍是 C++ 的，前端一条都没重写）。标定界面已在真实浏览器里打开过（P1 流程）；P2 的即时反馈已在浏览器里点过一遍：**当场揪出两处手柄名拼写错误**（`edHint` 应为 `editHint`、`edHeat` 应为 `editHeat` —— 语法合法、括号配平，静态配平查不出来；其中 `edHint` 炸在"配置已写盘成功"之后，页面报"请求失败"而文件其实改了），并顺着商家反馈修掉了本地提示的**口径误导**（计数看整段视频、底图只是首帧；抓不到物品标签时不怪 zone）。这两档现已分别由 `scripts/jscheck.py` 第二遍扫描（"用了但没声明"的名字）与 selfcheck 第 8 组契约守起来，但仍**没有真正的浏览器级自动化**（环境无 node，跑不了真语法检查/无头浏览器）—— 静态扫描只保证"名字对得上、文件没改坏"，交互效果仍靠人点 |
 | 输出视频 | 🟡 **未回归** | 且只能在 RTSP 实时源下验证 |
 | 数据库不可用 | 🟢 **已修** | 改为降级：写 `db_fallback.csv` + 后台按 `reconnect_interval_ms` 自动回连并在恢复后回传（启动只做 1 次快速连库）|
 | RTSP 断流/关闭 | 🟢 **已修** | `interrupt_callback` 打断 `av_read_frame` + 读循环内指数退避重连（0.5s→8s），对上层透明 |

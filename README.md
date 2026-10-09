@@ -114,20 +114,25 @@ CVInfer-Gate/
 │   ├── fusion/       # 决策级融合 (时间对齐 + 目标关联 + 置信度融合)
 │   ├── tracking/     # 目标跟踪 (IoU+质心兜底关联, 给目标分配 track_id)
 │   ├── occupancy/    # 占座判定 (静态座位 zone + 几何关系 + 时序状态机; 纯逻辑无模型依赖)
+│   ├── calibration/  # 座位标定探针 (检测框→网格热力→建议 zone; 纯逻辑, 供 --seat-probe)
 │   ├── alert/        # 告警外发 (webhook: 有界队列 + 重试退避, 传输层可注入)
 │   ├── service/      # gRPC 服务 + /metrics 指标端点 (MetricsServer)
 │   └── utils/        # 线程安全队列、配置解析、告警去重(AlertGate)、日志(轮转)、
 │                     # 指标注册表(Metrics) 与极简 HTTP 客户端(HttpClient)
 ├── web_gateway/      # Python Flask BFF 网关（app.py + run.sh 一键启动 + templates/ + static/ 前端页面）
+│                     #   ├ seats_yaml.py           座位配置文本层读写（零依赖：只换 occupancy.seats 这一段）
+│                     #   └ test_seats_yaml.py      上面那层的自测（零依赖, 秒级, 进 CI）
 ├── scripts/          # 建表脚本 schema.sql / 复核 mock / 传感器回放示例 / 告警接收端(alert_receiver.py)
+│                     #   ├ selfcheck_seats_writeback.py  座位回写自检(HTTP+C++ 口径; 只动配置的临时副本)
+│                     #   └ jscheck.py                  前端 app.js 静态自检(配平 + \"用了但没声明\"的名字)
 ├── docker/           # Dockerfile 与 Compose 编排 (+ prometheus.example.yml 抓取配置)
 ├── vlm_review/       # 真 VLM 复核服务端(gRPC; OpenAI兼容/本地transformers/mock)
 ├── tests/            # gRPC 客户端 + Phase A~D 阶段自检 (phase_selftest)
-│   └── unit/         # gtest 单元测试 (纯逻辑: NMS/融合/配置/队列/ROI/告警去重/目标跟踪/占座)
+│   └── unit/         # gtest 单元测试 (纯逻辑: NMS/融合/配置/队列/ROI/告警去重/目标跟踪/占座/座位标定)
 ├── docs/             # 文件级阅读地图 (READING_MAP.md) + 架构总览 (OVERVIEW.md)
 ├── mediamtx          # 内置 RTSP 服务器二进制(有意入库: clone 即可跑 RTSP 演示)
 ├── mediamtx.yml      # mediamtx 配置
-└── .github/workflows # CI: 编译 + ctest + [P2-5] Python 自测
+└── .github/workflows # CI: 编译 + ctest + [P1-3/P2-5] Python 自测 + [P1-4] 前端静态自检
 ```
 
 </details>
@@ -173,7 +178,11 @@ docker compose logs -f cv-infer-gate  # 看推理日志(找 "原视频分辨率"
 ```
 
 浏览器打开 **http://localhost:8080**：上半部分拖拽/选择图片即可实时看到带框结果与检测列表；
-下半部分「③ 流水线结果」可直接在线播放带框结果视频，并列出占座/告警事件。
+下半部分「③ 流水线结果」可直接在线播放带框结果视频，并列出占座/告警事件；
+「④ 座位标定探针」上传一段现场视频即可在线生成**标定热力图**（物品落区染色 + 建议 zone 框），
+并**就在这张底图上点选/拖拽**画出 `occupancy.seats`（画矩形或多边形），点「校验」当场由 **C++** 判合法性、
+点「保存到配置」**只改 `occupancy.seats` 这一段**写回 YAML（注释原样保留、写前自动 `.bak` 备份）
+—— 不用登机器敲命令，也不用对着文本坐标想象位置。
 也可用 gRPC 客户端：`./build/grpc_client`。
 
 > **结果产物**：落在命名卷 `cvinfer-output`（`output.avi` + `logs/cvinfer.log` + 连不上库时的 `db_fallback.csv`），
@@ -212,6 +221,23 @@ cmake --build . --target phase_selftest -j
 cmake --build . --target cv_unit_tests -j
 ctest --output-on-failure            # 一次跑完 cv_unit_tests + phase_selftest
 ./cv_unit_tests --gtest_filter='YoloPostProcessor.*:SensorFusion*'   # 只跑某一块
+
+# 3) 座位标定回写自检（回到**仓库根目录**执行；需 .venv 依赖 + 已构建的 C++ 程序）
+#    断言三条"肉眼看不出、改一行就可能悄悄破掉"的承诺：只改 occupancy.seats 这一段
+#    （其余字节含注释逐字保留）／重叠等判定口径必须由 C++ 拦下且不写文件／写回能被加载
+cd ..                                                # 从 build/ 回到仓库根目录
+python3 scripts/selfcheck_seats_writeback.py     # 退出码 0 = 全通过（只操作配置的临时副本）
+
+# 4) 座位配置文本层自测（零依赖：不需要 .venv / flask / cv2, 也不碰真配置、不起进程）
+#    同属第 3 条那三个承诺, 但纯逻辑、秒级 ⇒ 已挂进 CI（改坏就红）。
+python3 -m web_gateway.test_seats_yaml
+
+# 5) 前端静态自检（零依赖：没有 node 也能跑）
+#    static/app.js 是手写的一千三百行，两档错误都只有浏览器能暴露，所以先钉进 CI：
+#      · 少一个右括号 ⇒ "页面看着还在、整块 JS 却不执行"；
+#      · 手柄名拼错（edHint/editHint、edHeat/editHeat）⇒ 语法合法、括号也配平，运行时才炸
+#        ReferenceError，而且可能炸在"配置已经写盘成功"之后（页面报失败、文件其实改了）。
+python3 scripts/jscheck.py web_gateway/static/app.js
 ```
 
 <details>
@@ -227,6 +253,7 @@ ctest --output-on-failure            # 一次跑完 cv_unit_tests + phase_selfte
 | `test_target_tracker.cpp` | 目标跟踪：id 首次分配/跨帧稳定、快速移动的距离兼底、超出可达范围分裂新 id、标签隔离、遮挡滑行、老化退休后 **id 不复用**、`min_hits` 确认门限、回退帧防御、`enabled=false` 短路、轨迹数有界、dwell 累计、多目标不串号 |
 | `test_config_parser.cpp` | 默认值契约（含 `alert.dedup`、`tracking`、`occupancy`）、`source_type` 与 `rtsp://` 前缀交叉校验、`${VAR:-default}` 展开、灰区颠倒、传感器非法组合、去重/跟踪参数越界、**座位 zone 解析与校验（`rect` 展开为 4 顶点 / `polygon` 顶点数 / 重名 / 空 zone / 票数越界）**、新旧模型格式兼容 |
 | `test_seat_occupancy.cpp` | 占座判定（33 例）：坐标细节（底边中点 vs 框中心、包含度 vs IoU、多边形边界算“在”）、**C1b 防误判**（人拎包走过 = 随身物品；**错误的人标签不得把物品判成“在手”**）、**C2 人框高度门限一致性**（一个被滤掉的人框不得透过 C1b 把物品排除掉）、C4/C5 交互（**单帧误检暂停计时而不清零**；物品真被拿走才复位）、C6 上升沿（一个占用只出一次事件，人回来再走开可再报）、投票窗口滑出、**时基不变量（N 帧跨 T 毫秒结论不变，与抽帧率无关）**、多座位不串号、`enabled=false` 短路、证据文案可读性、无检测/空座位边界 |
+| `test_seat_probe.cpp` | 座位标定探针（12 例）：**底边中点**归属（不用框中心）、单词命中→建议矩形覆盖该格、网格边界语义、越界底边中点不计、`item/person/无关类别`分别路由、`min_item_hits` 去噪（只出现一次的热格不撑起建议）、非整除尺寸向上取整并裁回画面、**标签分布**（次数降序/同次数按名升序）、报告文案可读性、**JSON 报告字段精确匹配 `describe()`**（web 热力图直接吃这份数据；无建议时 `suggested_zone` 必须是 `null` 而不能缺失） |
 | `test_thread_safe_queue.cpp` | DropOldest 丢最旧、Block 不丢帧、close 排空后再返回 false、超时 pop、on_drop 计数 |
 | `test_roi_utils.cpp` | 外扩取整、贴边/越界裁剪、越界判空、负 padding、crop 深拷贝（跨线程送审的安全前提） |
 
@@ -269,6 +296,17 @@ curl -s http://127.0.0.1:9100/metrics | head -40
 GRPC_AUTH_TOKEN=<同 config>  ./CVInfer-Gate --config config/config.ops.yaml --health-check; echo $?  # 0=健康
 #   退出码: 0 健康 / 2 连不上 / 3 超时 / 4 未授权 / 5 不健康
 
+# 2.5) 座位标定探针：跑一遍视频，输出「物品落区网格热力 + 建议座位 rect + 检出标签分布」
+./CVInfer-Gate --config config/config.test.yaml --seat-probe ../test.mp4
+#      加 --seat-probe-json => stdout 只吐一行 JSON（供 web 端画热力图，口径完全一致）
+#      加 --seat-probe-stride 5 => 每 5 帧推理一次（标定不需要逐帧；只改采样密度，不改口径）
+./CVInfer-Gate --config config/config.test.yaml --seat-probe ../test.mp4 --seat-probe-json --seat-probe-stride 5
+
+# 2.6) 配置校验（写回 seats 前的"提交前校验"就是 spawn 它）：0=合法 1=不合法(原因在 stderr)
+#      网页「点选座位 zone → 保存」先把它跑在**候选配置**上, 过了才落盘
+#      ⇒ "网页说能存" 与 "程序真能启动" 永远是同一条口径（不重写任何校验规则）
+./CVInfer-Gate --config config/config.test.yaml --check-config; echo $?
+
 # 3) 优雅退出：看"告警推送统计/日志轮转次数/各阶段统计"
 kill -TERM <pid>
 ```
@@ -294,7 +332,7 @@ kill -TERM <pid>
 |---|---|---|
 | 架构重构 | 🟢 可信 | 11 个架构级 BUG 全修（线程安全/启动时序/优雅关闭/背压/落库）+ **数据库降级 / RTSP 断流重连**（见下）|
 | Phase A~D 四层抽象 | 🟢 可信 | `phase_selftest` 52/52，零外部依赖、秒级 |
-| 单元测试 / CI | 🟢 **新增** | `ctest` = `cv_unit_tests`(gtest 179 例) + `phase_selftest`，共 **180 项全绿**；GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过）。覆盖清单见上文折叠块 |
+| 单元测试 / CI | 🟢 **新增** | `ctest` = `cv_unit_tests`(gtest 194 例) + `phase_selftest`，共 **195 项全绿**；另有 **3 条零依赖自测 step**（`vlm_review` 鉴权拦截器、`web_gateway` 座位配置文本层、`static/app.js` 前端静态配平兜底 —— 后者不解析语法，只保证"文件没被改坏"）挂在同一 workflow。GitHub Actions 每次 push/PR 自动跑（纯文档改动跳过）。覆盖清单见上文折叠块 |
 | MySQL 落库 | 🟢 可信 | 表已建，程序正常写入（**不再产生 `db_fallback.csv`**）；**库不可用不再退出**：降级写 CSV + 后台自动重连并回传 |
 | Phase B 级联 | 🟡 能跑通 / 精度未回归 | 机制可用（`role=classifier` 注册样例见 `config/model_config.yaml` 注释块，与占座业务无关）；占座链路用不到它（`cascade.enabled=false`）。⚠**未做精度回归**（改 `accept_label`/`accept_conf` 无人能自动报警）|
 | Phase C 异步复核 | 🟢 真 VLM 已跑通 / 质量未评测 | 服务端已实现（`vlm_review/`：OpenAI 兼容 / 本地 transformers / mock 三后端 + 鉴权 + Health 探活）；已用 vLLM 起 `Qwen2-VL-2B-Instruct-AWQ` 端到端跑通（未留存日志）。⚠**结论准确率未做定量评测** |
@@ -370,7 +408,13 @@ kill -TERM <pid>
 - 多座**排他归属**（P0）：`update()` 每帧先把每个目标（物品/人）归属到**唯一一个**座位 —— 命中多座（座位相邻/重叠、或用大矩形近似梯形桌面）时按“底边中点在区内优先，再看包含度”取证据最强者；否则一个物品会把多座**同时**判成被占（乱覆盖、事件翻倍），一个人会把多座的占座计时**同时**压住（真占座漏报）。平局取先配置的座位（结果确定、可单测）。同时把 C2 的 `person_seat_iou` 默认值从 **0.15 收紧到 0.30**：15% 太松 —— 邻座/路人的框稍一重叠就命中 C2，计时被反复暂停 ⇒ 漏报（验收片里表现为“该报的没报”）。
 - 位置/交互：与 tracker 一样在 **sink 内**（它**有状态**，必须按 `frame_seq` 递增顺序调用；靠 sink 单线程 + 重排缓冲天然串行），且必须在“无检测早退”**之前**跑（“本帧什么都没检出”正是状态机需要的输入）。`enable=true` 时，命中 `item_labels` 的目标**不再**走“逐物体送审/告警”（否则“书在桌上”会报两次、还白烧 VLM 调用）—— 启动日志会显式提醒这条交互。送审时**把结构化证据拼进 prompt**（`【规则引擎证据】座位 A-12: 检出物品 [laptop], 已连续 412 秒“有物品且无人使用”……`），VLM 从“看图猜场景”变成“对证据做裁判”；ROI 就用座位 zone 本身（**所见即所判**，不引入隐藏缩放）。
 - 配置：`occupancy.{enabled, seats[], item_labels, person_label, item_seat_overlap, item_person_overlap, person_seat_iou, min_person_height_px, t_occupied_ms, t_grace_ms, vote_n, vote_m}`；座位两种写法都支持（`polygon: [[x,y],...]` 或 `rect: [x,y,w,h]`）。**默认 `enabled=false` ⇒ 对存量配置零行为变化**；`config/config.test.yaml` 已带一个可开箱即跑的座位（`config.example.yaml` 里默认关，带完整调参注释）。配置层还会**直接拦下两两重叠的座位**（相对重叠率 > 10% 即报错；仅共边的联排桌不算重叠）—— 重叠本身几乎总是 zone 画错的信号，运行期虽有排他归属兜底，也不该靠它兜。
-- 验证（**真跑**）：`cd build && ./CVInfer-Gate --config config/config.test.yaml --model-config config/model_config.yaml`，启动日志 `占座判定: 已启用 (座位数=1, 物品类别=[book, bag, laptop], t_occupied=2s, t_grace=5s, vote=7/10)`；运行中出现 `[占座] 座位 A-12: 检出物品 [laptop], 已连续 2 秒“有物品且无人使用”, 最近一次检测到人在座位上是 4 秒前`（这一行就是送给 VLM 的证据）；退出时 `占座统计: frames=1332 seats=1 occupied_events=2` + `复核统计: submitted=2 unavailable=2`（复核服务未起 ⇒ 按 `alert_on_failure=false` 不告警）+ `告警去重统计: allowed=2 suppressed=0`。另有 16 格网格探针用于**定位实际机位下物品落在哪”，避免“zone 画大了把人框进去 ⇒ 永远命中 C2、永不判占座”。
+- 验证（**真跑**）：`cd build && ./CVInfer-Gate --config config/config.test.yaml --model-config config/model_config.yaml`，启动日志 `占座判定: 已启用 (座位数=1, 物品类别=[book, bag, laptop], t_occupied=2s, t_grace=5s, vote=7/10)`；运行中出现 `[占座] 座位 A-12: 检出物品 [laptop], 已连续 2 秒“有物品且无人使用”, 最近一次检测到人在座位上是 4 秒前`（这一行就是送给 VLM 的证据）；退出时 `占座统计: frames=1332 seats=1 occupied_events=2` + `复核统计: submitted=2 unavailable=2`（复核服务未起 ⇒ 按 `alert_on_failure=false` 不告警）+ `告警去重统计: allowed=2 suppressed=0`。
+- 标定探针 `--seat-probe <video>`（**新增**）：座位 zone 是每个现场都要重标的常量，而“手改 YAML 像素坐标”几乎必然对不准。跑一遍真实视频即输出**物品落区网格热力 + 建议座位 rect + 检出标签分布**，商家照着填 `occupancy.seats` 即可：`cd build && ./CVInfer-Gate --config config/config.test.yaml --seat-probe ../test.mp4`（读同一份 `occupancy.item_labels`；归属点用**底边中点**，与 C1 判据同源，避免“探针说物品在这格、判定却抓不住”）。这条替代了早期文档里“手工铺 16 格网格”的做法。
+- 标定探针的 web 化 `POST /api/seat-probe`（**新增**）：上传一段视频 → 后端 spawn `CVInfer-Gate --seat-probe <tmp> --seat-probe-json --seat-probe-stride N` → 用返回的**已算好的格子**染色成热力图 + 画建议 zone 框，返回 dataURL + 结构化数据（`cells / suggested_zone / label_top`，坐标即**视频像素坐标**）。页面「④ 座位标定探针」直接展示，并附**检出标签分布**（标签压根没出现 ⇒ 问题在模型/场景，改坐标也没用）。**关键：Python 只渲染、绝不重算归属** —— 若在 Python 里再实现一遍“框落哪格”，就会分叉成「线上判定用 C++ 口径、网页热力图用 Python 口径」，图就骗人了。这层同时是「网页点选 zone 并回写 YAML」（P1，见下条）的底座（底图 + 帧坐标系 + overlay 已在 `sceneSvg` 建立）。相关环境变量：`CVINFER_BIN`、`CVINFER_MODEL_CONFIG`、`SEAT_PROBE_STRIDE`、`SEAT_PROBE_TIMEOUT`。
+- 标定**回写** `POST /api/seats`（**新增**，P1）：在 ④ 的底图上点选/拖拽画 zone（矩形或多边形，可勾选叠加热力图对照；可直接采用探针给的建议 zone、也可「读配置里的座位」改现成的），保存时把 `occupancy.seats` **整段替换**写回 `CVINFER_CONFIG`。三条硬约束：①**只在文本层换这一段**，其余每个字节（注释/空行/键顺序/行尾注释）原样保留 —— 用 YAML 库 round-trip 会把商家手写的现场注释全清掉，那是毁掉他的标定依据；块内**前导注释**（写在 `seats:` 与第一个条目之间、通常正是"为什么把 zone 画在这儿"）也原样带到新块前面（响应里回 `kept_comments`）；`seats: []` 这种行内空列表会先还原成块写法再挂条目。②**判定口径不复制**：候选配置先写临时文件、`spawn CVInfer-Gate --check-config` 用 `ConfigParser::validate()` 的**同一份规则**验一遍，过关才落盘 ⇒ 永远不会有"网页说能存、程序却起不来"的分叉（重叠率 >10%、顶点为负、重名这些规则一条都没在 Python 里重写；失败时把 C++ 的原文中文原因原样回给页面）。③落盘前 `copy2` 出 `<config>.bak`（一层撤销）+ 临时文件 `os.replace` 原子替换。前端只做**几何**自检：名字必填/不重名、rect 宽高为正、polygon 顶点 < 3、**越出画面**（越界的 zone 永远不会有目标落进来，是最常见的画错）。坐标**零换算**：SVG 的 `viewBox` 直接设成视频像素尺寸 ⇒ 图层里写的坐标 == 配置里写的坐标（拖动时也按同一坐标系夹进画面，不许拖出去）。`GET /api/seats` 回填配置里现有座位；`dry_run=true` = 只校验不写入（页面「校验（不写入）」按钮，也是 P2「标定即时反馈」的现成入口）。这套文本层逻辑收在 `web_gateway/seats_yaml.py`（零第三方依赖 ⇒ 与 Flask 解耦、能被单测直接驱动；`app.py` 只剩 HTTP/环境变量/起进程），并由 `web_gateway/test_seats_yaml.py` 把「块外逐字节不变 / 块内前导注释保留 / 读写法对称 / 不复制判定口径」钉进 CI。相关环境变量：`CVINFER_CONFIG_BACKUP`（默认 `.bak`）、`CHECK_CONFIG_TIMEOUT`（默认 60s）。**注意：写回后需重启 C++ 主程序才生效** —— `occupancy` 只在启动时读一次。
+- 「**为什么一条告警都没有**」自证（**新增**，P3）：`GET /api/events` 现在多回一个 `diagnosis` 字段，把「这轮到底跑没跑 / 用哪份配置 / 哪道闸门把候选丢了」从**日志原文**里抽出来，在页面 ③ 顶部摆成一个面板（每条结论都能展开看原文）。**一条判据都没在 Python 里重写** —— 命中/不命中、该不该报一律以 C++ 日志为准，这一层只做**引用与归纳**。为什么值得有：实测商家画好座位、跑完视频，页面只给一句「本轮未检测到占座」，于是他开始猜（没识别到包？zone 画错了？），一下午白跑 —— 而真相（**一帧都没处理**：`video.source_path: ../test.mp4` 是相对**启动目录**解析的，从仓库根启动必然打不开）一直就写在日志里。具体认这些原文：`视频源打开失败`（⇒「这轮一帧都没处理」，并点明要在 `build/` 下启动）／`占座判定: 已启用 (座位数=…, 物品类别=[…])`（**运行期真值**，不是文件里写的；顺带说清「物品类别是**精确相等**匹配 ⇒ 写了检测器不会输出的词，那个类别就永远不参与判定」）／`占座统计: frames=… seats=… occupied_events=0` + 每组 `[占座] 座位 X: <原因>`（**规则层自己给的原因**，事件列表反而会按设计跳过这类收尾行，所以这里必须补上）／`座位 [X] 区域超出画面 WxH, 仅 N% 面积可见`（越界那一截永远不会有目标落进来）／`复核服务暂不可用`（候选走 `alert_on_failure` 兜底）／`告警推送: 已禁用`（只影响 webhook，不影响本页）／`以【降级模式】启动`／`系统配置加载成功: <路径>`（**与网页在编辑的那份对比**：不是同一份 ⇒ 你画的座位永远不生效）。还独立发现一条日志自己不会说的事：**仓库根也存在 `logs/cvinfer.log`** ⇒ 说明程序是从仓库根启动的（那种方式下视频必然打不开，且日志与 `output.avi` 都不在网页读的位置）。同一响应还回 `config`：网页在编辑的**绝对路径** + 有没有 `occupancy` 段 + `enabled` + mtime（页面常显，「我改的到底是不是程序读的那份」不再靠猜）。契约由 `scripts/selfcheck_seats_writeback.py` **第 9 组**守着（喂一段合成的「视频源打开失败」日志 ⇒ 必须认出「一帧都没处理」，且**每条结论都要能指回原文**）。
+- 标定提示**补两档口径**（**新增**，P2 续）：①**检出了、却不在 `occupancy.item_labels` 里**的类别（点名到 `label×次数`）—— 把「模型没认出来」与「认出来了但配置没算成物品」彻底分开（实测：`handbag` 在整段视频里检出 90 次，而配置写的是 `bag`，规则层从没把它当物品，页面却只会说「你画错 zone 了」）；②区里**物品落点几乎都伴随人的落点**（`person > item` 且 `item > 0`）⇒ 多半是人随身在用/随身带的物品，规则层会按「物品在人身上」（包含度）排除掉 ⇒ 要验证占座请换「物品在、人不在」的镜头。探针响应同时回 `item_labels`，并在标定区**回显它要写回的配置路径**（改哪份文件不再是猜）。
+- 标定**即时反馈**（**新增**，P2）：不用等按按钮 —— 边画边告诉你"这一版能不能存"。分两路、各管一段，谁也不许越界：①**服务端即时校验**（复用同一条 `POST /api/seats` + `dry_run=true`）：每次编辑/拖动停顿后（节流 ~300ms 且同一时刻只允许一个请求在飞，实测一次 `--check-config` ~100ms）问一次 C++，红字就是 `--check-config` 的**原文**，并把被点名的座位在画面里**描红**（识别 `[名字]` / `座位名重复：名字` / `第 N 个座位` 三种称呼 —— 纯呈现，一个数值都不改）；②**本地提示**（零延迟、拖动中每帧）：只把**探针已经算好的**格子热力折算成"这一区盖住了多少物品落点 / 多少人的落点"摆出来（按交叠面积估、每格 6×6 采样、复用 `edInPoly`）。**判定口径一条都没在前端重写** —— "重叠多少算多（>10%）"仍然只由 C++ 说了算，前端显示的永远是后端判决原文。本地提示只**摆实测数据、不下判决**（页面末尾自己写明"判定以红/绿那行为准"），两条提醒都不需要魔数：①**整段视频一个物品标签都没抓到**（`Σitem_hits == 0`）⇒ 改口去查模型类别 / `occupancy.item_labels` 对不对得上，**不冤枉 zone**；②**人的落点比物品还多**（`person > item`）⇒ 只当线索列出两种可能，让商家对着原视频判断（是"首帧没人但这段视频里有人经过"还是真画到了"人坐的地方"——后者会让 C2 一直命中 ⇒ 占了座也不报警，见 `docs/READING_MAP.md` §8）。本地提示还会**自报口径**：这些次数是探针跑**整段视频**按 `stride` 抽样累出来的，而页面底图只是**首帧**（后端 `stride` 一起回给前端）—— 商家实测踩过"首帧里没人、却被提示人的落点多"，所以这句话必须写在提示里。手工「校验/保存」按钮的结论会同步写进这一行，两处不会一个绿一个红地打脸。干跑全程**零副作用**（不写盘、不动 mtime、不重建 `.bak`），由 `scripts/selfcheck_seats_writeback.py` 第 8 组断言守着。⚠ 这套前端逻辑只有 `scripts/jscheck.py` 的两遍静态扫描（配平 + "用了但没声明"的名字）+ 人工校对兜着（环境无 node，跑不了真语法检查）。**本次商家在真实浏览器里点了一遍，当场揪出两处手柄名拼写错误**：`edHint`（应为 `editHint`）、`edHeat`（应为 `editHeat`）—— 语法合法、括号也配平，静态配平查不出来；其中 `edHint` 那处发生在**配置已经写盘成功之后**，于是页面报"请求失败"而文件其实已经改了（现已修好，并把这一档补进 `jscheck.py` 第二遍扫描 + selfcheck 第 8 组的手柄 id 契约）。
 - 已知边界：①座位 zone 是**静态**的（机位固定则座位是常量；机位会动/球机巡航则需先做标定，本层不处理）；②时基是**墙钟**而非帧时间戳（因为 rtsp 下没有可靠的帧时间戳）⇒ 推流刚建立/卡顿时会偏；跑文件源建议配 `target_fps` 让两者接近；③未做跨机位/跨摄像头去重（同一物理座位被两个机位拍到会各报一次）；④`t_occupied_ms` 是**业务口径**（默认 300000 = 5 分钟），上线前应由业务方拍板，不是技术参数。
 
 **目标跟踪（track_id）**：
@@ -434,7 +478,7 @@ kill -TERM <pid>
 ### 4. 当工程参考的价值
 
 - 每一层（模型抽象 / 级联 / 复核 / 融合 / 跟踪 / 占座 / 去重 / 告警外发）都是**接口分层 + 可注入替身** ⇒ 能脱离模型、脱离硬件做单测
-- **180 项测试全绿**，其中 `phase_selftest` 一次跑完四层架构（零外部依赖、秒级）⇒ 改代码心里有底
+- **195 项测试全绿**，其中 `phase_selftest` 一次跑完四层架构（零外部依赖、秒级）⇒ 改代码心里有底
 - 文档即资产：阅读地图 / Runbook / 开发史与踩坑记录齐全 ⇒ 接手成本低
 
 ## 未来可完善的方向
@@ -470,5 +514,5 @@ kill -TERM <pid>
 - **Grafana 面板** —— Prometheus 那一半已经有了（`/metrics` + `docker/prometheus.example.yml`），缺的是面板。
 - **告警通知渠道** —— webhook 之外接钉钉 / 企微 / 短信。
 - **网页端实时监控** —— 支持 RTMP / WebRTC 推流，边跑边看（现在是跑完回看 `output.avi`）。
-- **座位可视化配置** —— 在网页上点选座位 zone（现在是手填 `[x,y,w,h]`，已有 16 格网格探针辅助定位）。
+- **座位可视化配置** —— ✅ **P1 已完成**：网页「④」上传视频 → 热力图 → 在底图上**点选/拖拽**画 `occupancy.seats` → 「校验」（C++ 口径）→ 「保存到配置」（只改 seats 段、保留注释、自动 `.bak`）。**剩下的 P2 是"标定即时校验反馈"**：拖动时当场红字提示越界 / 重叠 / 框到了人坐区（复用 `--seat-probe` 的格子与 label 数据，不必等保存那一步）。
 

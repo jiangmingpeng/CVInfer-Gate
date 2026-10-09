@@ -106,6 +106,10 @@
       <!-- 占座告警汇总横幅：有占座时红字提示，无占座时绿字确认 -->
       <div class="occ-banner" id="occBanner" style="display:none"></div>
 
+      <!-- 「为什么一条告警都没有」自证：这段跑没跑、用的是哪份配置与哪个框、闸门在哪一道。
+           每条结论都由后端从**日志原文**抽出（可展开核对），判定口径仍在 C++。 -->
+      <div class="diag" id="resDiag" style="display:none"></div>
+
       <div class="result-toolbar">
         <div class="hint" id="resHint">正在读取结果目录…</div>
         <div class="toolbar-btns">
@@ -136,6 +140,69 @@
 
       <h3 class="res-sub">占座 / 告警事件（从日志抽出，点击可在上方画面中定位）</h3>
       <div class="events" id="events"><div class="muted" style="font-size:12.5px">正在读取…</div></div>
+    </section>
+
+    <!-- ④ 座位标定探针：上传一段真实视频 → 在线热力图，照着画 occupancy.seats -->
+    <section class="card probe-card">
+      <h2>④ 座位标定探针（上传视频 → 在线热力图）</h2>
+      <div class="hint">
+        跑一段现场视频，看「物品实际堆在画面哪一块」，再照着画 occupancy.seats。
+        配色口径与线上占座判定同源（检测框底边中点落格）—— 图上指哪儿，判定就管哪儿。
+      </div>
+      <div class="probe-row">
+        <input type="file" id="probeFile" accept="video/*">
+        <button class="btn-primary probe-btn" id="probeBtn" disabled>生成热力图</button>
+        <span class="muted" id="probeStatus" style="font-size:12px"></span>
+      </div>
+      <div class="probe-out" id="probeOut" style="display:none">
+        <div class="probe-img-wrap">
+          <img id="probeImg" alt="座位标定热力图">
+        </div>
+        <div class="probe-meta">
+          <div id="probeSuggest"></div>
+          <div id="probeLabels" class="probe-labels"></div>
+          <div class="muted" id="probeNote" style="font-size:11.5px"></div>
+        </div>
+      </div>
+      <!-- P1：在底图上**点选**座位 zone → 回写 occupancy.seats（只动那一段，保留注释） -->
+      <div class="edit-wrap" id="editWrap" style="display:none">
+        <div class="edit-bar">
+          <span class="edit-tools">
+            <button class="btn-ghost btn-sm" id="editToolSelect" type="button">▣ 选择/拖动</button>
+            <button class="btn-ghost btn-sm" id="editToolRect" type="button">▭ 画矩形</button>
+            <button class="btn-ghost btn-sm" id="editToolPoly" type="button">⬠ 画多边形</button>
+          </span>
+          <span class="edit-tools">
+            <button class="btn-ghost btn-sm" id="editUseSuggest" type="button">用建议 zone</button>
+            <button class="btn-ghost btn-sm" id="editReload" type="button">读配置里的座位</button>
+            <button class="btn-ghost btn-sm" id="editDel" type="button">删除选中</button>
+          </span>
+          <label class="muted edit-heat"><input type="checkbox" id="editHeat"> 叠热力图</label>
+        </div>
+        <div class="edit-stage" id="editStage" tabindex="0">
+          <img id="editImg" alt="座位标定底图">
+          <svg id="editSvg" class="edit-svg" preserveAspectRatio="none"></svg>
+        </div>
+        <div class="edit-seats" id="editSeats"></div>
+        <div class="edit-bar">
+          <button class="btn-ghost btn-sm" id="editValidate" type="button">校验（不写入）</button>
+          <button class="btn-primary btn-sm" id="editSave" type="button">保存到配置</button>
+          <span class="muted" id="editStatus" style="font-size:12px"></span>
+          <span class="muted" id="editMode" style="font-size:12px"></span>
+        </div>
+        <!-- P2 即时反馈：上面一行 = 服务端 dry_run 的结论（红/绿）, 下面一行 = 探针实测数据（橙） -->
+        <div class="edit-live" id="editLive">
+          <div class="live-row" id="editChk"></div>
+          <div class="live-row tip" id="editTip"></div>
+        </div>
+        <div class="banner err" id="editBanner"></div>
+        <details class="edit-preview" id="editPreviewBox" style="display:none">
+          <summary class="muted" style="font-size:12px">将写入的 occupancy.seats</summary>
+          <pre id="editPreview"></pre>
+        </details>
+        <div class="muted" id="editHint" style="font-size:11.5px"></div>
+      </div>
+      <div class="banner err" id="probeBanner"></div>
     </section>
 
     <div class="foot">

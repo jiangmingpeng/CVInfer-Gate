@@ -40,6 +40,7 @@
 #include "utils/Metrics.h"
 #include "tracking/TargetTracker.h"
 #include "occupancy/SeatOccupancyAnalyzer.h"
+#include "calibration/SeatProbe.h" // --seat-probe 座位标定探针
 #include "alert/AlertNotifier.h"
 #include "inference.grpc.pb.h" // --health-check 探针要用的 Health RPC 存根
 
@@ -165,6 +166,17 @@ void printUsage(const char* argv0) {
               << "  --health-check[=addr]  只做一次健康探针后退出(不加载模型/不连库)\n"
               << "                         默认 127.0.0.1:<grpc.port>, 可用 CVINFER_HEALTH_ADDR 覆盖;\n"
               << "                         退出码 0=serving 1=失败 2=连不上 3=超时 4=未授权\n"
+              << "  --seat-probe <video>   座位标定探针: 跑一遍视频, 输出物品落区热力 +\n"
+              << "                         建议座位 rect 后退出(帮商家对准 occupancy.seats)\n"
+              << "  --seat-probe-json      探针只往 stdout 输出一行 JSON(供 web 端画热力图;\n"
+              << "                         口径与文本报告完全一致, 由 C++ 算完, 上层不重算)\n"
+              << "  --seat-probe-stride N  探针每隔 N 帧推理一次(默认 1=每帧; 标定不需要逐帧,\n"
+              << "                         调大只影响采样密度, 口径不变)\n"
+              << "  --check-config         只校验 app 配置(含 occupancy.seats)后退出, 不加载\n"
+              << "                         模型/不连库/不跑视频: exit 0=合法, 1=不合法(原因在 stderr)\n"
+              << "                         动机: 网页\"点选座位 zone 后回写 YAML\"必须在落盘前\n"
+              << "                         用**同一份校验口径**确认新配置能被加载, 免得商家画完\n"
+              << "                         一启动才发现\"座位重叠/顶点为负\"\n"
               << "  --help                 显示本帮助\n";
 }
 
@@ -184,6 +196,21 @@ int main(int argc, char** argv) {
         resolvePath(argc, argv, "--config", "CVINFER_CONFIG", "config/config.yaml");
     const std::string model_cfg_path =
         resolvePath(argc, argv, "--model-config", "CVINFER_MODEL_CONFIG", "config/model_config.yaml");
+
+    // --check-config: 只校验配置然后退出(不加载模型 / 不连库 / 不跑视频)。
+    // 这是给 web 端「可视化点选座位 zone → 回写 YAML」用的**提交前校验**:
+    // 校验规则不在这里重写一遍, 而是直接复用 ConfigParser::loadAppConfig 内部的
+    // validate() —— 保证「网页说合法」与「程序真能启动」永远是同一条口径。
+    // exit 0 = 合法; 1 = 不合法(具体原因已由 ConfigParser 打到 stderr)。
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--check-config") {
+            ConfigParser checker;
+            const bool ok = checker.loadAppConfig(app_cfg_path);
+            std::cout << "[check-config] " << (ok ? "OK" : "FAIL")
+                      << " config=" << app_cfg_path << std::endl;
+            return ok ? 0 : 1;
+        }
+    }
 
     ConfigParser config_parser;
     if (!config_parser.loadAppConfig(app_cfg_path)) return -1;
@@ -381,6 +408,84 @@ int main(int argc, char** argv) {
     }
     CVLOG_INFO << "使用检测器: " << detector->name()
                << (app_cfg.cascade.enabled ? " (级联模式)" : " (单模型模式)");
+
+    // --seat-probe <video>: 座位标定探针 (一次性, 跑完即退出)
+    //
+    // 存在意义: 把"座位 zone 该画在哪"从"手改 YAML 像素坐标"变成一次**可自助测量** ——
+    // 跑一段真实视频, 把物品/人目标的**底边中点**落进网格统计热力, 合并热格给出
+    // **建议座位区**, 商家照着填 occupancy.seats 即可。归属口径与占座判定 C1 一致
+    // (见 calibration/SeatProbe.h), 避免"探针说物品在这格、判定却抓不住"。
+    // 刻意**不落库/不推流/不起 gRPC**: 探针只回答"物品常出现在画面哪一块"。
+    {
+        std::string probe_video;
+        bool probe_json = false;
+        int probe_stride = 1;
+        for (int i = 1; i < argc; ++i) {
+            const std::string a = argv[i];
+            if (a == "--seat-probe" && i + 1 < argc) {
+                probe_video = argv[i + 1];
+            } else if (a.rfind("--seat-probe=", 0) == 0) {
+                probe_video = a.substr(13); // "--seat-probe=" 长度 13
+            } else if (a == "--seat-probe-json") {
+                probe_json = true;
+            } else if (a == "--seat-probe-stride" && i + 1 < argc) {
+                try { probe_stride = std::stoi(argv[i + 1]); } catch (...) { probe_stride = 1; }
+            } else if (a.rfind("--seat-probe-stride=", 0) == 0) {
+                try { probe_stride = std::stoi(a.substr(20)); } catch (...) { probe_stride = 1; }
+            }
+        }
+        if (probe_stride < 1) probe_stride = 1;
+        if (!probe_video.empty()) {
+            FileVideoSource probe_src;
+            if (!probe_src.open(probe_video)) {
+                CVLOG_ERROR << "[seat-probe] 打不开视频: " << probe_video;
+                db_writer.stop();
+                return -1;
+            }
+            std::vector<std::string> item_labels = app_cfg.occupancy.item_labels;
+            if (item_labels.empty()) item_labels = occupancy::defaultItemLabels();
+            const std::string person_label = app_cfg.occupancy.person_label.empty()
+                ? std::string("person") : app_cfg.occupancy.person_label;
+
+            calibration::SeatProbe probe(calibration::SeatProbe::Config{},
+                                         probe_src.getWidth(), probe_src.getHeight(),
+                                         item_labels, person_label);
+            cv::Mat frame;
+            std::uint64_t frames = 0, dets_total = 0, seen = 0;
+            while (probe_src.read(frame)) {
+                if (frame.empty()) continue;
+                // stride: 跳帧只影响"采样密度", 不改变归属口径(哪个框算进哪一格仍由
+                // SeatProbe 决定)。标定不需要逐帧 —— 逐帧只会让一次标定等成几分钟。
+                const bool sample = (probe_stride <= 1) ||
+                                    (seen % static_cast<std::uint64_t>(probe_stride) == 0);
+                ++seen;
+                if (!sample) continue;
+                std::vector<DetectionResult> dets;
+                if (detector->detect(frame, dets) == DetectStatus::Ok) {
+                    dets_total += dets.size();
+                    probe.addFrame(dets);
+                }
+                ++frames;
+            }
+            probe_src.close();
+
+            if (probe_json) {
+                // 只往 stdout 吐一行 JSON: web 端拿它画热力图(解析失败即视为探针没跑通)。
+                std::cout << probe.report().toJson() << std::endl;
+                // 人看的摘要走 stderr, 免得污染 stdout 的 JSON。
+                std::cerr << "[seat-probe] 视频=" << probe_video
+                          << " 采样帧数=" << frames << "(每 " << probe_stride << " 帧取 1)"
+                          << " 检测框总数=" << dets_total << std::endl;
+            } else {
+                std::cout << probe.report().describe();
+                std::cout << "[seat-probe] 视频=" << probe_video
+                          << " 处理帧数=" << frames
+                          << " 检测框总数=" << dets_total << std::endl;
+            }
+            db_writer.stop();
+            return 0;
+        }
+    }
 
     // 3.5 大模型异步复核 (可选; 复用 gRPC)
     // 仅作用于"告警"链路: 命中 review.trigger 的候选目标裁剪 ROI 后异步送审,

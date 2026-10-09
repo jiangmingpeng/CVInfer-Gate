@@ -238,6 +238,7 @@ if(CV_BUILD_TESTS)
             tests/unit/test_sensor_fusion.cpp
             tests/unit/test_config_parser.cpp
             tests/unit/test_seat_occupancy.cpp
+            tests/unit/test_seat_probe.cpp
             tests/unit/test_yolo_post_processor.cpp
             tests/unit/test_auth_guard.cpp
             # 运维面: 指标 / 日志轮转 / 告警推送
@@ -253,6 +254,7 @@ if(CV_BUILD_TESTS)
             src/service/MetricsServer.cpp  # /metrics 端点
             src/alert/AlertNotifier.cpp    # 告警推送
             src/occupancy/SeatOccupancyAnalyzer.cpp # [占座] 规则判定状态机
+            src/calibration/SeatProbe.cpp          # [标定] 检测框热力聚合/建议 zone
             src/inference/YoloPostProcessor.cpp
         )
         target_include_directories(cv_unit_tests PRIVATE

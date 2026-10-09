@@ -11,7 +11,9 @@
 #   1) cv_unit_tests    —— gtest 单元测试(纯逻辑: NMS/融合/配置/队列/ROI/告警去重/目标跟踪)
 #   2) phase_selftest   —— Phase A~D 接缝自检(原有 50 项)
 #   3) vlm_review 自测  —— [P2-5] Python 侧鉴权拦截器自测(只依赖标准库, 秒级)
-# 两者都注册进 ctest, 由 `ctest --output-on-failure` 统一驱动。
+#   4) 座位回写自测     —— [P1-3] Python 侧座位配置文本层自测(只依赖标准库, 秒级)
+#   5) 前端静态自检     —— [P1-4] static/app.js 的括号/引号配平(node 不可用时的兜底)
+# 前两者注册进 ctest, 由 `ctest --output-on-failure` 统一驱动; 后三者各自一条 step。
 #
 # 触发: 任意分支的 push / PR; 但**纯文档改动跳过**(paths-ignore *.md / docs/**),
 #       且同一分支连续 push 时自动取消旧跑(concurrency)。
@@ -103,3 +105,22 @@ jobs:
       # 覆盖鉴权语义: 放行/拒绝/前缀攻击/尾空格/小写 bearer/metadata 混排/非 ASCII/流式 handler 类型。
       - name: Python 自测 (vlm_review 鉴权拦截器)
         run: python3 -m vlm_review.test_auth_interceptor
+
+      # [P1-3] 座位回写自测: 不需要 flask/cv2/grpc, 也不碰真配置、不起进程。
+      # 守的是三条"肉眼看不出来、改一行就可能悄悄破掉"的承诺:
+      #   ①只换 occupancy.seats 这一段(块外逐字节不变、块内前导注释保留);
+      #   ②读写法对称(单/双引号、转义引号、裸标量、行尾注释、行内空列表 seats: []);
+      #   ③结构自检只查数据本身说不通的,**重叠这类判定口径不复制**(那是 C++ 的事)。
+      - name: Python 自测 (座位配置文本层)
+        run: python3 -m web_gateway.test_seats_yaml
+
+      # [P1-4] 前端静态自检: 环境里没有 node(跑不了 eslint), 而 static/app.js 是手写的一千三百行
+      # ⇒ 用零依赖的 scripts/jscheck.py 守住两档低级错误:
+      #   ①括号/引号/注释配平 —— 少一个右括号的表现是"页面看着还在、其实整块 JS 不执行";
+      #   ②"用了但没声明"的名字 —— 手柄名拼错(edHint/editHint、edHeat/editHeat)语法完全合法、
+      #     括号也配平, ①根本查不出来, 但运行时是 ReferenceError, 而且可能发生在**已经写盘成功
+      #     之后**的后半句里(商家看到"请求失败"、文件其实改了, 反而会重复点)。两处都实测踩过。
+      # ⚠️ 它**不解析语法**: 只能保证"文件没被改坏 + 名字对得上", 真能不能跑仍要靠浏览器/人
+      #    （README 里如实记着这条缺口）。
+      - name: 前端静态自检 (static/app.js)
+        run: python3 scripts/jscheck.py web_gateway/static/app.js
