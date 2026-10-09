@@ -13,7 +13,7 @@
         downloadBtn = $("downloadBtn"), pipelineEl = document.querySelector(".pipeline");
 
   let currentFile = null;
-  const state = { dets: [], selIdx: -1, natW: 0, natH: 0 };
+  const state = { dets: [], selIdx: -1, natW: 0, natH: 0, occupiedSeats: new Set() };
 
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
@@ -229,7 +229,7 @@
   /* ---- ③ 流水线结果：视频 + 文件清单 + 事件 ---- */
   const resHint = $("resHint"), resFiles = $("resFiles"), videoWrap = $("videoWrap"),
         resVideo = $("resVideo"), videoNote = $("videoNote"), eventsEl = $("events"),
-        resRefresh = $("resRefresh"),
+        occBanner = $("occBanner"), resRefresh = $("resRefresh"),
         scene = $("scene"), sceneImg = $("sceneImg"), sceneSvg = $("sceneSvg"),
         sceneLegend = $("sceneLegend"), sceneHint = $("sceneHint"), sceneEmpty = $("sceneEmpty");
 
@@ -323,8 +323,9 @@
         label.setAttribute("y", Math.min.apply(null, ys) + 28);
         label.textContent = seat.name;
         sceneSvg.appendChild(label);
-        return { name: seat.name, el: poly };
+        return { name: seat.name, el: poly, labelEl: label };
       });
+      applyOccupied();   // 事件已先到的话，这里把被占座位标红
       sceneLegend.innerHTML = seatShapes.map((sh) =>
         '<span class="seat-chip">' + esc(sh.name) + "</span>").join("");
       sceneHint.textContent = "底图＝结果视频首帧（" + size.width + "×" + size.height +
@@ -355,37 +356,125 @@
     return out.join(" · ");
   }
 
+  // 占座事件的“事实”用醒目胶囊展示（物品 / 滞留秒数 / 人离座秒数）
+  function occupancyBadges(e) {
+    const chips = [];
+    if (e.items && e.items.length)
+      chips.push('<span class="ev-badge item">物品 ' + esc(e.items.join(" / ")) + "</span>");
+    if (e.dwell_s != null)
+      chips.push('<span class="ev-badge dwell">滞留 ' + e.dwell_s + " 秒</span>");
+    if (e.person_absent_s === null)
+      chips.push('<span class="ev-badge absent">全程未见人</span>');
+    else if (e.person_absent_s != null)
+      chips.push('<span class="ev-badge absent">人离座 ' + e.person_absent_s + " 秒</span>");
+    if (e.vote) chips.push('<span class="ev-badge">投票 ' + esc(e.vote) + "</span>");
+    return chips.join("");
+  }
+
   function renderEvents(list, hint) {
     if (!list.length) {
       eventsEl.innerHTML = '<div class="muted" style="font-size:12.5px">' +
         esc(hint || "暂无事件") + "</div>";
       return;
     }
-    eventsEl.innerHTML = list.slice().reverse().map((e) => {
-      const facts = eventFacts(e);
+    // 占座事件按“滞留时长”从久到近置顶（最严重的先看到）；其余事件保持最新在上。
+    const occ = list.filter((e) => e.kind === "occupancy")
+                    .sort((a, b) => (b.dwell_s || 0) - (a.dwell_s || 0));
+    const rest = list.filter((e) => e.kind !== "occupancy").slice().reverse();
+    eventsEl.innerHTML = occ.concat(rest).map((e, i) => {
       const seatAttr = e.seat ? ' data-seat="' + esc(e.seat) + '"' : "";
       const tAttr = (e.video_t != null) ? ' data-t="' + e.video_t + '"' : "";
       const go = (e.seat || e.video_t != null)
         ? '<span class="ev-go">定格到那一刻 →</span>' : "";
-      return '<div class="ev k-' + esc(e.kind || "other") + '"' + seatAttr + tAttr + ">" +
+      const icon = (e.kind === "occupancy") ? "🪑 " : "";
+      const worst = (e.kind === "occupancy" && i === 0) ? " ev-worst" : "";
+      // 占座：胶囊突出关键事实；其他事件：沿用一行“人话”。
+      const badges = (e.kind === "occupancy") ? occupancyBadges(e) : "";
+      const body = (e.kind === "occupancy")
+        ? (badges ? '<div class="ev-badges">' + badges + "</div>" : "")
+        : (eventFacts(e) ? '<div class="ev-body">' + esc(eventFacts(e)) + "</div>" : "");
+      return '<div class="ev k-' + esc(e.kind || "other") + worst + '"' + seatAttr + tAttr + ">" +
         '<div class="ev-head"><span class="ev-t">' + esc(e.time || "") + "</span>" +
-        '<span class="ev-title">' + esc(eventTitle(e)) + "</span>" + go + "</div>" +
-        (facts ? '<div class="ev-body">' + esc(facts) + "</div>" : "") +
-        '<div class="ev-raw">' + esc(e.text) + "</div></div>";
+        '<span class="ev-title">' + icon + esc(eventTitle(e)) + "</span>" + go + "</div>" +
+        body +
+        '<details class="ev-detail"><summary>原始日志行</summary>' +
+        '<div class="ev-raw">' + esc(e.text) + "</div></details></div>";
     }).join("");
+  }
+
+  // 汇总事件里的占座情况：几个座位、最严重的几条、被占座位名集合（供座位着色）
+  function aggregateOccupancy(events) {
+    const occ = (events || []).filter((e) => e.kind === "occupancy" && e.seat);
+    const worstBySeat = {};
+    occ.forEach((e) => {
+      const cur = worstBySeat[e.seat];
+      if (!cur || (e.dwell_s || 0) > (cur.dwell_s || 0)) worstBySeat[e.seat] = e;
+    });
+    const seats = Object.keys(worstBySeat);
+    const top = seats.map((s) => worstBySeat[s])
+                     .sort((a, b) => (b.dwell_s || 0) - (a.dwell_s || 0)).slice(0, 3);
+    return { count: occ.length, seats: new Set(seats), top: top };
+  }
+
+  // 顶部“占座告警”横幅：一眼看出本轮有没有占座、占了哪几个座位
+  function renderOccBanner(sum, hasLog) {
+    if (!hasLog) { occBanner.style.display = "none"; return; }
+    if (!sum.seats.size) {
+      occBanner.className = "occ-banner clean";
+      occBanner.innerHTML = '<span class="occ-icon">✅</span>' +
+        '<div class="occ-main"><b>本轮未检测到占座</b>' +
+        '<div class="occ-sub">日志中暂无「[占座]」事件。</div></div>';
+      occBanner.style.display = "flex";
+      return;
+    }
+    const rows = sum.top.map((e) => {
+      const bits = [];
+      if (e.items && e.items.length) bits.push(e.items.join(" / "));
+      if (e.dwell_s != null) bits.push("物品滞留 " + e.dwell_s + " 秒");
+      if (e.person_absent_s === null) bits.push("全程未见人");
+      else if (e.person_absent_s != null) bits.push("人离座 " + e.person_absent_s + " 秒");
+      return '<div class="occ-row"><span class="occ-seat">座位 ' + esc(e.seat) + "</span>" +
+        (bits.length ? '<span class="occ-facts">' + esc(bits.join(" · ")) + "</span>" : "") + "</div>";
+    }).join("");
+    const more = (sum.seats.size > sum.top.length)
+      ? '<div class="occ-more">另有 ' + (sum.seats.size - sum.top.length) +
+        " 个座位疑似占座，详见下方事件列表</div>" : "";
+    occBanner.className = "occ-banner";
+    occBanner.innerHTML = '<span class="occ-icon">⚠️</span>' +
+      '<div class="occ-main"><b>检测到 ' + sum.seats.size + ' 个座位疑似占座</b>' +
+      (sum.count > sum.seats.size ? '<span class="occ-count">（共 ' + sum.count + " 条占座事件）</span>" : "") +
+      '<div class="occ-list">' + rows + more + "</div></div>";
+    occBanner.style.display = "flex";
+  }
+
+  // 把“被占座位”在画面示意上标红（与点击定位的琥珀 .focus 区分）
+  function applyOccupied() {
+    if (!seatShapes.length) return;
+    seatShapes.forEach((s) => {
+      const on = state.occupiedSeats.has(s.name);
+      s.el.classList.toggle("occupied", on);
+      if (s.labelEl) s.labelEl.classList.toggle("occupied", on);
+    });
   }
 
   async function loadEvents() {
     try {
       const s = await (await fetch("/api/events")).json();
-      renderEvents(s.events || [], s.hint);
+      const list = s.events || [];
+      const sum = aggregateOccupancy(list);
+      state.occupiedSeats = sum.seats;
+      renderOccBanner(sum, !!s.source);   // source 非空 = 找到了日志
+      renderEvents(list, s.hint);
+      applyOccupied();
     } catch (err) {
       eventsEl.innerHTML = '<div class="muted">读取事件失败：' + esc(String(err)) + "</div>";
+      occBanner.style.display = "none";
     }
   }
 
   // 点事件行 → ①画面示意定格到“那一刻” ②高亮对应座位区 ③播放器也跳到那一刻
   eventsEl.addEventListener("click", (ev) => {
+    if (ev.target.closest("summary")) return;   // 展开/收起原始日志行不触发定位
     const row = ev.target.closest(".ev");
     if (!row) return;
     const seat = row.getAttribute("data-seat");
@@ -411,5 +500,6 @@
   loadEvents();
 
   checkStatus();
-  setInterval(checkStatus, 10000);
+  // 每 10s 顺带刷新一次事件：跑完视频后占座事件会自动冒出来，不用手动点“刷新”
+  setInterval(() => { checkStatus(); loadEvents(); }, 10000);
 })();

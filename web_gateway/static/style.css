@@ -288,3 +288,93 @@ a.btn-ghost { text-decoration: none; display: inline-block; }
   margin-top: 3px; color: var(--muted); font-size: 11px;
   font-family: var(--mono); word-break: break-word;
 }
+
+/* ============================================================
+   占座提示强化（page-level）
+   1) 顶部汇总横幅  2) 占座事件卡片  3) 座位区“占座中”标红
+   ============================================================ */
+
+/* ---------- ① 占座告警汇总横幅 ---------- */
+.occ-banner {
+  display: flex; gap: 12px; align-items: flex-start;
+  margin: 2px 0 14px; padding: 13px 15px; border-radius: 10px;
+  background: linear-gradient(180deg, rgba(248, 81, 73, .18), rgba(248, 81, 73, .07));
+  border: 1px solid rgba(248, 81, 73, .55);
+  animation: occPulse 1.8s ease-in-out infinite;
+}
+.occ-banner.clean {
+  background: linear-gradient(180deg, rgba(63, 185, 80, .14), rgba(63, 185, 80, .05));
+  border-color: rgba(63, 185, 80, .45);
+  animation: none;
+}
+@keyframes occPulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(248, 81, 73, .12), 0 6px 20px rgba(248, 81, 73, .10); }
+  50%      { box-shadow: 0 0 0 2px rgba(248, 81, 73, .32), 0 6px 28px rgba(248, 81, 73, .30); }
+}
+@media (prefers-reduced-motion: reduce) { .occ-banner { animation: none; } }
+.occ-icon { font-size: 22px; line-height: 1.15; flex: none; }
+.occ-main { flex: 1; min-width: 0; }
+.occ-main b { font-size: 15px; font-weight: 700; color: #ffd7d3; letter-spacing: .01em; }
+.occ-banner.clean .occ-main b { color: #b7f0c4; }
+.occ-count { color: var(--muted); font-size: 12px; margin-left: 6px; font-weight: 400; }
+.occ-sub { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+.occ-list { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; }
+.occ-row {
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+  padding: 6px 10px; border-radius: 8px; font-size: 13px;
+  background: rgba(0, 0, 0, .32); border: 1px solid rgba(248, 81, 73, .32);
+}
+.occ-seat { font-weight: 700; color: #ffb4ae; font-family: var(--mono); }
+.occ-facts { color: #e8cfcd; font-size: 12.5px; }
+.occ-more { color: var(--muted); font-size: 12px; margin-top: 3px; }
+
+/* ---------- ② 占座事件卡片：更醒目 ---------- */
+.ev.k-occupancy {
+  border-left: 3px solid rgba(245, 166, 35, .95);
+  border-color: rgba(245, 166, 35, .4);
+  background: linear-gradient(90deg, rgba(245, 166, 35, .13), rgba(245, 166, 35, .03));
+}
+.ev.k-occupancy .ev-title { font-size: 14px; color: #ffd591; }
+.ev.k-occupancy.ev-worst {
+  border-color: rgba(248, 81, 73, .6);
+  border-left-color: rgba(248, 81, 73, .95);
+  background: linear-gradient(90deg, rgba(248, 81, 73, .17), rgba(248, 81, 73, .04));
+  box-shadow: 0 0 14px rgba(248, 81, 73, .18);
+}
+.ev.k-occupancy.ev-worst .ev-title { color: #ffb4ae; }
+.ev-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.ev-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11.5px;
+  background: var(--panel); border: 1px solid var(--line); color: var(--text);
+}
+.ev-badge.item   { color: #ffd591; border-color: rgba(245, 166, 35, .5); background: rgba(245, 166, 35, .12); }
+.ev-badge.dwell  { color: #ffb4ae; border-color: rgba(248, 81, 73, .5); background: rgba(248, 81, 73, .12); }
+.ev-badge.absent { color: #ffb4ae; border-color: rgba(248, 81, 73, .5); background: rgba(248, 81, 73, .12); }
+.ev-detail { margin-top: 5px; }
+.ev-detail > summary {
+  cursor: pointer; color: var(--muted); font-size: 11px;
+  opacity: .8; user-select: none; list-style: none;
+}
+.ev-detail > summary:hover { opacity: 1; }
+.ev-detail > summary::-webkit-details-marker { display: none; }
+.ev-detail[open] > summary { margin-bottom: 3px; }
+
+/* ---------- ③ 座位区“占座中”标红（区别于点击定位的琥珀 .focus） ---------- */
+.seat-poly.occupied {
+  fill: rgba(248, 81, 73, .26);
+  stroke: #f85149;
+  stroke-width: 3.5;
+  stroke-dasharray: 3 4;
+  filter: drop-shadow(0 0 7px rgba(248, 81, 73, .85));
+}
+.seat-label.occupied { fill: #ff9b93; }
+/* 两者同时命中时，让“点击定位”(.focus) 仍然最显眼 */
+.seat-poly.occupied.focus {
+  fill: rgba(245, 166, 35, .34);
+  stroke: #f5a623;
+  stroke-width: 5;
+  stroke-dasharray: none;
+  filter: drop-shadow(0 0 9px rgba(245, 166, 35, .9));
+}
+.seat-poly.occupied.focus + .seat-label { fill: #ffe6b0; }
+

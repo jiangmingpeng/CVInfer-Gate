@@ -233,6 +233,49 @@ bool SeatOccupancyAnalyzer::personUsingSeat(const DetectionResult& d, const Seat
            containment(d.box, z.polygon) >= cfg_.person_seat_iou;
 }
 
+// ---------------------------------------------------------------------------
+// P0: 目标 -> 座位的排他归属
+// ---------------------------------------------------------------------------
+// 座位相邻/重叠(联排桌、或用大矩形近似梯形桌面)时, 一个物品/人会同时满足多个座位的
+// C1/C2。若不仲裁, 同一个物品会把多座**同时**判成被占(乱覆盖), 同一个人会把多座的
+// "人不在"计时**同时**压住(漏报)。这里给每个目标挑一个"证据最强"的座位:
+//   底边中点在多边形内 = 强证据(说明东西/脚确实落在该座位), 记 +2.0;
+//   再叠加与座位区的包含度(0..1)作细分与平局判据。
+// 同分时取**先配置**的座位(遍历顺序固定) => 结果确定、可复现, 不引入随机/顺序依赖。
+float SeatOccupancyAnalyzer::seatScore(const DetectionResult& d, const SeatZone& z) const {
+    const float inside = pointInPolygon(bottomCenter(d.box), z.polygon) ? 2.0f : 0.0f;
+    return inside + containment(d.box, z.polygon);
+}
+
+int SeatOccupancyAnalyzer::bestSeatForItem(const DetectionResult& d,
+                                           const std::vector<DetectionResult>& dets) const {
+    int best = -1;
+    float best_score = -1.0f;
+    for (std::size_t i = 0; i < zones_.size(); ++i) {
+        if (!itemOnSeat(d, zones_[i], dets)) continue; // C1 + C1b
+        const float s = seatScore(d, zones_[i]);
+        if (s > best_score) {
+            best_score = s;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
+int SeatOccupancyAnalyzer::bestSeatForPerson(const DetectionResult& d) const {
+    int best = -1;
+    float best_score = -1.0f;
+    for (std::size_t i = 0; i < zones_.size(); ++i) {
+        if (!personUsingSeat(d, zones_[i])) continue; // C2(内含可信人框过滤)
+        const float s = seatScore(d, zones_[i]);
+        if (s > best_score) {
+            best_score = s;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
 SeatEvidence SeatOccupancyAnalyzer::buildEvidence(std::size_t idx, const SeatStateData& st,
                                                   int item_count,
                                                   std::vector<std::string> item_labels,
@@ -259,23 +302,35 @@ std::vector<OccupancyEvent> SeatOccupancyAnalyzer::update(
     evidence_.clear();
     evidence_.reserve(zones_.size());
 
+    // ---- P0: 每帧先做"目标 -> 座位"的排他归属(每个目标最多算一个座位) ----
+    // 座位相邻/重叠时, 一个物品/人会同时命中多个座位。先给每个目标定好唯一归属
+    // (-1 = 不属于任何座位), 再逐座位统计 => 结果与检测顺序无关, 也不会一物多认领。
+    std::vector<int> item_seat(dets.size(), -1);
+    std::vector<int> person_seat(dets.size(), -1);
+    for (std::size_t k = 0; k < dets.size(); ++k) {
+        const DetectionResult& d = dets[k];
+        if (isItemLabel(d.label, cfg_.item_labels)) {
+            item_seat[k] = bestSeatForItem(d, dets);
+        } else if (d.label == cfg_.person_label) {
+            person_seat[k] = bestSeatForPerson(d);
+        }
+    }
+
     for (std::size_t i = 0; i < zones_.size(); ++i) {
         SeatStateData& st = states_[i];
         const SeatZone& z = zones_[i];
 
-        // ---- 单帧几何判定 ----
+        // ---- 单帧几何判定(只统计"归属给本座位"的目标) ----
         int item_count = 0;
         std::vector<std::string> item_labels;
-        for (const auto& d : dets) {
-            if (!isItemLabel(d.label, cfg_.item_labels)) continue;
-            if (!itemOnSeat(d, z, dets)) continue;
+        for (std::size_t k = 0; k < dets.size(); ++k) {
+            if (item_seat[k] != static_cast<int>(i)) continue;
             ++item_count;
-            if (item_labels.size() < 8) item_labels.push_back(d.label); // 证据里最多列 8 个
+            if (item_labels.size() < 8) item_labels.push_back(dets[k].label); // 证据里最多列 8 个
         }
         bool person_here = false;
-        for (const auto& d : dets) {
-            if (d.label != cfg_.person_label) continue;
-            if (personUsingSeat(d, z)) {
+        for (std::size_t k = 0; k < dets.size(); ++k) {
+            if (person_seat[k] == static_cast<int>(i)) {
                 person_here = true;
                 break;
             }

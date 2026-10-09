@@ -1,10 +1,13 @@
 #include "utils/ConfigParser.h"
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <regex>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -90,6 +93,77 @@ void parseLegacyModel(const YAML::Node& root, ModelConfig& mc) {
     mc.name = "yolov8_detector";
     mc.role = "detector";
     mc.pool_size = 0;
+}
+
+// ---- 凸多边形几何(仅用于"座位重叠"配置校验) ----
+// 刻意**不**引入 OpenCV: ConfigParser 属 utils 层, 不让它依赖视觉库(与 SeatPoint 同一考虑)。
+struct Pt2 {
+    double x = 0.0;
+    double y = 0.0;
+};
+
+std::vector<Pt2> toPt2(const std::vector<SeatPoint>& poly) {
+    std::vector<Pt2> out;
+    out.reserve(poly.size());
+    for (const auto& p : poly)
+        out.push_back(Pt2{static_cast<double>(p.x), static_cast<double>(p.y)});
+    return out;
+}
+
+// 鞋带公式面积(取绝对值 => 对顶点绕向(顺/逆时针)不敏感)
+double polyArea2(const std::vector<Pt2>& p) {
+    if (p.size() < 3) return 0.0;
+    double a = 0.0;
+    for (std::size_t i = 0, n = p.size(); i < n; ++i) {
+        const Pt2& q = p[i];
+        const Pt2& r = p[(i + 1) % n];
+        a += q.x * r.y - r.x * q.y;
+    }
+    return std::abs(a) * 0.5;
+}
+
+// 凸多边形裁剪(Sutherland–Hodgman): 用 clip 的每条边切 subject, 得到交集多边形。
+// 与运行期口径一致 —— 座位按**凸**多边形处理(见 SeatOccupancyAnalyzer.h 的边界说明)。
+std::vector<Pt2> clipConvex(const std::vector<Pt2>& subject, const std::vector<Pt2>& clip) {
+    std::vector<Pt2> out = subject;
+    const std::size_t n = clip.size();
+    for (std::size_t i = 0; i < n && !out.empty(); ++i) {
+        const Pt2 A = clip[i];
+        const Pt2 B = clip[(i + 1) % n];
+        const std::vector<Pt2> in = out;
+        out.clear();
+        // >0 = 在边 AB 的左侧(把 clip 视为逆时针时即"内侧"; 这里对绕向不敏感, 只要一致)
+        const auto side = [&A, &B](const Pt2& p) {
+            return (B.x - A.x) * (p.y - A.y) - (B.y - A.y) * (p.x - A.x);
+        };
+        for (std::size_t j = 0; j < in.size(); ++j) {
+            const Pt2& P = in[j];
+            const Pt2& Q = in[(j + 1) % in.size()];
+            const double sp = side(P);
+            const double sq = side(Q);
+            if (sp >= 0.0) out.push_back(P);
+            if ((sp >= 0.0) != (sq >= 0.0)) {
+                const double denom = sp - sq;
+                if (std::abs(denom) > 1e-12) {
+                    const double t = sp / denom;
+                    out.push_back(Pt2{P.x + (Q.x - P.x) * t, P.y + (Q.y - P.y) * t});
+                }
+            }
+        }
+    }
+    return out;
+}
+
+// 两个凸多边形的交集面积 / min(两者面积) => 相对重叠率 [0,1]。
+// 用"较小者"作分母: 一个座位被另一个完全包住(ratio=1)必须报; 大 zone 与小 zone 只是
+// 轻微压边(ratio 很小)则不算重叠 => 少误报。
+double polyOverlapRatio(const std::vector<SeatPoint>& a, const std::vector<SeatPoint>& b) {
+    const std::vector<Pt2> pa = toPt2(a), pb = toPt2(b);
+    const double aa = polyArea2(pa), ab = polyArea2(pb);
+    const double amin = std::min(aa, ab);
+    if (amin <= 0.0) return 0.0;
+    const double inter = polyArea2(clipConvex(pa, pb));
+    return std::min(1.0, inter / amin);
 }
 
 } // namespace
@@ -603,6 +677,25 @@ bool ConfigParser::validate() const {
                 if (p.x < 0 || p.y < 0)
                     fail("occupancy.seats[" + who + "] 顶点坐标为负: (" +
                          std::to_string(p.x) + "," + std::to_string(p.y) + ")");
+            }
+        }
+        // 座位两两重叠: 同一个物品/人会被两个座位**同时**命中 —— 这正是"乱覆盖/漏报"的
+        // 根源。运行期已有"排他归属"兜底(见 SeatOccupancyAnalyzer 的 P0), 但重叠本身
+        // 几乎总是 zone 画错的信号 => 在配置层直接拦下(相对重叠率 > 10% 即报), 免得
+        // 上线跑一遍才发现。
+        for (std::size_t i = 0; i < oc.seats.size(); ++i) {
+            for (std::size_t j = i + 1; j < oc.seats.size(); ++j) {
+                if (oc.seats[i].polygon.size() < 3 || oc.seats[j].polygon.size() < 3) continue;
+                const double ratio = polyOverlapRatio(oc.seats[i].polygon, oc.seats[j].polygon);
+                if (ratio > 0.10) {
+                    const std::string a =
+                        oc.seats[i].name.empty() ? std::string("(未命名)") : oc.seats[i].name;
+                    const std::string b =
+                        oc.seats[j].name.empty() ? std::string("(未命名)") : oc.seats[j].name;
+                    fail("occupancy.seats 重叠: [" + a + "] 与 [" + b + "] 重叠 " +
+                         std::to_string(static_cast<int>(ratio * 100.0 + 0.5)) +
+                         "% => 同一目标会被两个座位同时命中(乱覆盖/漏报)。请把 zone 分开或缩小。");
+                }
             }
         }
         if (oc.enabled && oc.seats.empty())

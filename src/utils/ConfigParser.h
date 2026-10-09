@@ -263,8 +263,9 @@ struct OccupancyConfig {
     // C1b 物品在人手上: 物品面积落在 person 框内的比例 >= 该值且中心也在人框内
     //     => 随身物品, 不算放在桌上(用包含度而非 IoU, 理由见 SeatOccupancyAnalyzer.h)
     float item_person_overlap = 0.5f;
-    // C2 人在使用座位: 底边中点在区内 **或** 包含度 >= 该值
-    float person_seat_iou = 0.15f;
+    // C2 人在使用座位: 底边中点在区内 **或** 包含度 >= 该值。
+    // 0.30 而非 0.15: 15% 太松 —— 邻座/路人的框稍一重叠就命中, 会把占座计时反复暂停 => 漏报。
+    float person_seat_iou = 0.30f;
     // C2 人框最小高度(像素): 滤掉远景小框/误检; 0 = 不过滤
     int min_person_height_px = 0;
     // C3 判占座的持续时间(ms): "物品在 ∧ 人不在"累计够久才判占座。

@@ -517,7 +517,9 @@ TEST(ConfigParserApp, OccupancyDefaultsOffWithNoSeats) {
     EXPECT_EQ(o.person_label, "person");
     EXPECT_FLOAT_EQ(o.item_seat_overlap, 0.5f);
     EXPECT_FLOAT_EQ(o.item_person_overlap, 0.5f);
-    EXPECT_FLOAT_EQ(o.person_seat_iou, 0.15f);
+    // C2 包含度默认从 0.15 收紧到 0.30: 15% 太松会让邻座/路人框误命中 =>
+    // 占座计时被反复暂停, 真占座漏报。
+    EXPECT_FLOAT_EQ(o.person_seat_iou, 0.30f);
     EXPECT_EQ(o.min_person_height_px, 0);
     EXPECT_EQ(o.t_occupied_ms, 300000); // 5 分钟(业务口径, 上线前需业务方拍板)
     EXPECT_EQ(o.t_grace_ms, 90000);
@@ -679,6 +681,39 @@ video:
 occupancy:
   person_label: person
   item_labels: ["book", "person"]
+)")));
+}
+
+TEST(ConfigParserApp, RejectsOverlappingOccupancySeats) {
+    // 座位重叠 => 同一个物品/人会被两个座位**同时**命中(乱覆盖/漏报)。运行期虽有
+    // "排他归属"兜底, 但重叠本身几乎总是 zone 画错的信号 => 配置层就要拦住。
+    ConfigParser overlap;
+    EXPECT_FALSE(overlap.loadAppConfig(writeTempYaml("cv_ut_occ_ovl.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+occupancy:
+  enabled: true
+  seats:
+    - name: L
+      rect: [100, 100, 160, 160]
+    - name: R
+      rect: [160, 100, 160, 160]
+)")));
+
+    // 紧邻但不重叠(仅共边)是合法的 —— 联排桌常见画法, 不能误报
+    ConfigParser touching;
+    EXPECT_TRUE(touching.loadAppConfig(writeTempYaml("cv_ut_occ_touch.yaml", R"(
+video:
+  source_type: file
+  source_path: /tmp/a.mp4
+occupancy:
+  enabled: true
+  seats:
+    - name: L
+      rect: [100, 100, 160, 160]
+    - name: R
+      rect: [260, 100, 160, 160]
 )")));
 }
 

@@ -449,6 +449,48 @@ TEST_F(SeatTest, MultipleSeatsAreIndependent) {
     EXPECT_EQ(an_->snapshot()[1].state, SeatState::Idle);
 }
 
+// P0: 排他归属 —— 座位重叠时同一个物品**只能算一个座位**, 不能"一物多认领"把两座同时判占。
+// (没有这条仲裁时, 一个物品会把两个重叠座位同时判成 occupied => 事件翻倍/乱覆盖)
+TEST_F(SeatTest, OverlappingSeatsNeverDoubleCountSameItem) {
+    cfg_.t_occupied_ms = 300;
+    // 两座大面积重叠(模拟联排桌画 zone 时互相压边, 或用大矩形近似梯形桌面)
+    zones_ = {zoneRect("L", 100, 100, 160, 160), zoneRect("R", 160, 100, 160, 160)};
+    build();
+    // 物品落在重叠带里 => 底边中点 (190,210) 同时落在 L 和 R 内
+    const cv::Rect item(170, 180, 40, 30);
+    std::vector<OccupancyEvent> all;
+    for (int i = 0; i < 10; ++i) {
+        for (auto& e : step(100, {makeDet("book", item)})) all.push_back(e);
+    }
+    ASSERT_EQ(all.size(), 1u) << "同一个物品只应归属一个座位(否则两座会同时告警)";
+    int occupied = 0;
+    for (const auto& s : an_->snapshot()) {
+        if (s.occupied()) ++occupied;
+    }
+    EXPECT_EQ(occupied, 1) << "重叠座位不应被同一个物品同时认领(乱覆盖)";
+}
+
+// P0: 排他归属(人) —— 一个人最多只让一个座位"有人", 不能把两座的占座计时同时压住(漏报)。
+TEST_F(SeatTest, OverlappingSeatsOnePersonSuppressesAtMostOneSeat) {
+    cfg_.t_occupied_ms = 300;
+    zones_ = {zoneRect("L", 100, 100, 160, 160), zoneRect("R", 160, 100, 160, 160)};
+    build();
+    const cv::Rect itemL(110, 180, 40, 30); // 底边中点(130,210): 只在 L
+    const cv::Rect itemR(280, 180, 40, 30); // 底边中点(300,210): 只在 R
+    // 人站在重叠带: 底边中点(170,220)同时落在 L、R 区内
+    const cv::Rect person(150, 120, 40, 100);
+    for (int i = 0; i < 10; ++i) {
+        step(100, {makeDet("book", itemL), makeDet("book", itemR), makeDet("person", person)});
+    }
+    int occupied = 0;
+    for (const auto& s : an_->snapshot()) {
+        if (s.occupied()) ++occupied;
+    }
+    // 旧实现: 人在两座都命中 => 两座计时都被压住 => 0 个占座(真占座漏报)。
+    // 新实现: 人只归属一座, 另一座(有物品且无人)照常判占 => 恰好 1 个。
+    EXPECT_EQ(occupied, 1) << "一个人最多只应压住一个座位的计时, 不能把两座同时压住";
+}
+
 TEST_F(SeatTest, StatsAndSnapshotConsistent) {
     build();
     const auto item = makeDet("book", kItemOnSeat);

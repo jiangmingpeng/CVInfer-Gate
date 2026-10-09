@@ -37,7 +37,7 @@ pipeline:
 database:
   host: "${DB_HOST:-tcp://mysql-db:3306}"     # 容器网络内按 compose 服务名连
   user: "root"
-  password: "${DB_PASSWORD:-}"
+  password: "${DB_PASSWORD:-12345678jmp}"
   dbname: "cv_infer"
   fallback_path: "/app/output/db_fallback.csv" # 降级文件也落进卷, 便于排查
 

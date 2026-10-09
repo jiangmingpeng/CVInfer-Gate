@@ -51,6 +51,11 @@
 //                                 兜底去重仍交给 main 的 AlertGate(静态框 => 几何去重可靠)
 // C7  证据 evidence              : 输出物品列表 / 已持续时长 / 最近见到人的时刻 / 投票
 //                                 情况, 既写日志也拼进送审提示词 —— 让 VLM 有据可依
+// C1/C2 前置 排他归属             : 同一个目标(物品/人)每帧**最多只归属一个座位**。
+//                                 座位相邻/重叠时一个目标会同时命中多座; 命中多座就按
+//                                 "证据最强"(底边中点在区内优先, 再看包含度)只算一个。
+//                                 否则一个物品会把多座**同时**判成被占(乱覆盖), 一个人
+//                                 会把多座计时**同时**压住(漏报)。平局取先配置的座位(确定性)。
 //
 // ---------------------------------------------------------------------------
 // 边界(诚实说明)
@@ -86,7 +91,10 @@ struct Config {
     std::string person_label = "person";
     float item_seat_overlap = 0.5f;   // C1  包含度阈值 [0,1]
     float item_person_overlap = 0.5f; // C1b 物品面积落在人框内的比例 >= 该值 => 视为手持 [0,1]
-    float person_seat_iou = 0.15f;    // C2  人的包含度阈值 [0,1]
+    // C2 人的包含度阈值 [0,1]。取 0.30(而非旧的 0.15): 15% 太松 —— 俯视机位下邻座/
+    // 路过的人框只要与座位区重叠一点点就会命中 C2, 于是本座位的"物品在 ∧ 人不在"计时
+    // 被反复暂停/清零 => 真占座反而漏报(假阴性)。0.30 要求"人确实落在座位上"才命中。
+    float person_seat_iou = 0.30f;
     int min_person_height_px = 0;     // C2  人框最小高度(0 = 不启用该过滤)
     std::int64_t t_occupied_ms = 300000; // C3 判占座的持续时间(ms)
     std::int64_t t_grace_ms = 90000;     // C4 短暂离开容忍(ms)
@@ -175,6 +183,15 @@ private:
     bool personUsingSeat(const DetectionResult& d, const SeatZone& z) const;
     // 可信的人框(高度过滤): "在用座位"与"拿着物品"两处共用同一把尺
     bool usablePerson(const DetectionResult& d) const;
+
+    // ---- P0: 目标 -> 座位的**排他归属**(见文件头 "C1/C2 前置 排他归属") ----
+    // 单座位的归属打分: 底边中点在区内(强, +2.0) + 包含度(弱, 0..1)
+    float seatScore(const DetectionResult& d, const SeatZone& z) const;
+    // 该物品应归属的座位(命中多座时取分最高者; 不属于任何座位 => -1)
+    int bestSeatForItem(const DetectionResult& d,
+                        const std::vector<DetectionResult>& dets) const;
+    // 该人应归属的座位(同上; 不属于任何座位 => -1)
+    int bestSeatForPerson(const DetectionResult& d) const;
     SeatEvidence buildEvidence(std::size_t idx, const SeatStateData& st, int item_count,
                                std::vector<std::string> item_labels, std::int64_t now_ms) const;
 
