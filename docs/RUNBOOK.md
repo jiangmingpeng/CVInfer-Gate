@@ -19,7 +19,10 @@
 | Python + venv | 3.14（PEP 668：**必须** venv） | 复核服务 / Web / 伪下游 |
 | vLLM（可选） | Qwen2.5-VL-7B | 真 VLM 复核 |
 
-仓库自带素材：`models/{yolov8n,library_det,helmet_cls}.{xml,bin}` + `models/*_labels.txt`、`test.mp4`（`helmet_cls` 是仓库里唯一的分类器样例，仅供 Phase B 注册示例，与占座业务无关）。
+仓库自带素材：`models/{yolov8n,library_det}.{xml,bin}` + `models/*_labels.txt`、`test.mp4`。
+
+> ⚠️ 早前的分类器样例 `helmet_cls.*` **已从仓库移除**（占座主场景用不到 Phase B 级联）；
+> `config/model_config.yaml` 仍以**注释**形式保留 `role=classifier` 的注册样例，需**自备分类器模型**后才能启用 `cascade.enabled`。
 
 ---
 
